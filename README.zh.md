@@ -162,3 +162,19 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 ## 非官方声明
 
 非官方性质与商标声明见 [`TRADEMARKS.md`](TRADEMARKS.md)。Minecraft 是 Mojang / Microsoft 的商标；本项目**不分发游戏本体**。
+
+## 致谢
+
+设计与实现过程中，我们参考学习了以下**启动器项目**的成果（**仅研究其行为与设计**，帮助对齐目录模型、安装流程、账户与版本隔离等约定；其中一些我们自己也长期作为用户在 Windows / 鸿蒙上使用）：
+
+- **HMCL**（Hello Minecraft! Launcher）—— 目录模型 / 原版安装 / 账户与版本隔离
+- **PojavLauncher** —— 在非桌面平台运行 Minecraft 的平台桥接思路
+- **Amethyst**（Pojav 系）—— LWJGLX / 平台适配参考
+- **HomoLauncher** —— 鸿蒙平台启动器参考
+- **PCL（Plain Craft Launcher，Windows）** —— 我们很欣赏其**设计美学与交互**，也长期作为用户使用
+
+正是这些在互联网上**无私分享**的项目——无论**开源**与否——为无数玩家带来了快乐，也让每一位愿意踏入这个领域、动手研究的开发者**拥有一个坚实的起点**。
+
+也感谢 Minecraft 社区，以及上述项目的作者与贡献者。
+
+> 说明：**PCL 为闭源软件**；HMCL / Pojav / Amethyst / HomoLauncher 多为 GPL 系许可。本项目**未包含它们的任何代码**（实现为**净室自研**）——此致谢仅为**研究与设计致敬**，不构成对其代码的使用或衍生。

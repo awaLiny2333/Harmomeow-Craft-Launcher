@@ -162,3 +162,19 @@ The **original code of this project is MIT** (see [`LICENSE`](LICENSE)); bundled
 ## Non-affiliation
 
 See [`TRADEMARKS.md`](TRADEMARKS.md) for trademark / non-affiliation notices. Minecraft is a trademark of Mojang / Microsoft; this project **does not distribute the game itself**.
+
+## Acknowledgements
+
+During design and implementation we studied the behavior and design of several **launcher projects** (to align on the directory model, install flow, accounts and version isolation; some of which we also use as our own daily drivers on Windows / HarmonyOS):
+
+- **HMCL** (Hello Minecraft! Launcher) — directory model / vanilla install / accounts & version isolation
+- **PojavLauncher** — the idea of a platform bridge for running Minecraft off-desktop platforms
+- **Amethyst** (Pojav family) — LWJGLX / platform-adaptation reference
+- **HomoLauncher** — a HarmonyOS launcher reference
+- **PCL (Plain Craft Launcher, Windows)** — we admire its **design aesthetics and interaction**, and use it as our daily driver on Windows
+
+These projects — shared selflessly on the internet, whether **open-source or not** — have brought joy to countless players and given every developer who ventures into this field **a solid starting point**.
+
+Thanks as well to the Minecraft community and to the authors/contributors of these projects.
+
+> Note: **PCL is closed-source**; HMCL / Pojav / Amethyst / HomoLauncher are mostly GPL-family. **This project includes none of their code** (a clean-room implementation) — this acknowledgement is a research & design tribute only, and does not constitute use of, or derivation from, their code.
