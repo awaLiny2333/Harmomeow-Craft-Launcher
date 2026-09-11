@@ -1,0 +1,9 @@
+{
+  "module": {
+    "name": "meowcraftlib",
+    "type": "har",
+    "deviceTypes": [
+      "2in1"
+    ]
+  }
+}

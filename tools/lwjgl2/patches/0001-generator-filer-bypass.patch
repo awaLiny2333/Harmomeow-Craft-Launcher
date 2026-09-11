@@ -1,0 +1,65 @@
+# Meowcraft OHOS port — ref/lwjgl local patch 0001
+#
+# generator: write generated Java directly (bypass JDK 9+ JavacFiler)
+#
+# On JDK 9+ JavacFiler refuses to create a source file whose type name already
+# exists among the compilation inputs. LWJGL2's *core* templates declare exactly
+# the FQN they generate (templates/org/lwjgl/opengl/GL14.java declares
+# org.lwjgl.opengl.GL14), so the generator aborted with:
+#
+#   java.lang.RuntimeException:
+#   -- Failed to process template: org.lwjgl.opengl.GL14 --
+#   Caused by: javax.annotation.processing.FilerException:
+#     Attempt to recreate a file for type org.lwjgl.opengl.GL14
+#
+# Extension templates are unaffected because their declared name keeps the
+# underscores while @Extension.className strips them, so the FQNs differ; GL14 is
+# simply the first same-name template in the template iteration order.
+#
+# Upstream ran the generator on JDK 6/7, before that check existed. We drive the
+# processor with `-proc:only` and compile the generated sources in a separate
+# javac pass, so bypassing the Filer (writing the already-computed outputJava
+# path directly) is safe.
+#
+# Apply from the ref/lwjgl checkout root:
+#     git apply <this file>
+#
+diff --git a/.gitignore b/.gitignore
+index 4684698e..9acf0b01 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -19,4 +19,8 @@
+ /src/native/linux/org_lwjgl_opengl_Display.c
+ 
+ nbproject/project.xml
+-/nbproject/private/
+\ No newline at end of file
++/nbproject/private/
++
++# Meowcraft OHOS port (tools/lwjgl2/generate_sources.sh) build artifacts
++/bin-meow
++/src/hdrs-meow
+\ No newline at end of file
+diff --git a/src/java/org/lwjgl/util/generator/GeneratorVisitor.java b/src/java/org/lwjgl/util/generator/GeneratorVisitor.java
+index 98c933f9..3ca61651 100644
+--- a/src/java/org/lwjgl/util/generator/GeneratorVisitor.java
++++ b/src/java/org/lwjgl/util/generator/GeneratorVisitor.java
+@@ -299,8 +299,16 @@ public class GeneratorVisitor extends ElementKindVisitor6<Void, Void> {
+ 				validateMethod(method);
+ 			}
+ 
+-			// TODO: Back-port LWJGL 3's generation file handling (generate in-memory and avoid touching files if nothing has changed)
+-			java_writer = new PrintWriter(env.getFiler().createSourceFile(Utils.getQualifiedClassName(e), env.getElementUtils().getPackageOf(e)).openWriter());
++			// LOCAL OHOS-PORT PATCH (Meowcraft, tools/lwjgl2): write the generated Java file straight to
++			// disk instead of env.getFiler().createSourceFile(...). On JDK 9+ JavacFiler refuses to create
++			// a source file whose type name already exists among the compilation inputs, and the core
++			// templates declare exactly the FQN they generate (templates/org/lwjgl/opengl/GL14.java declares
++			// org.lwjgl.opengl.GL14) -> "Attempt to recreate a file for type org.lwjgl.opengl.GL14".
++			// Upstream ran on JDK 6/7, before that check existed. We drive the processor with -proc:only and
++			// compile the generated sources in a separate javac pass, so bypassing the Filer is safe.
++			final File outDir = outputJava.getParentFile();
++			if ( outDir != null && !outDir.exists() ) outDir.mkdirs();
++			java_writer = new PrintWriter(outputJava, "UTF-8");
+ 			generateJavaSource(e, java_writer);
+ 
+ 			if ( methods.size() > 0 ) {

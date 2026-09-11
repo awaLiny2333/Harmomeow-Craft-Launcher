@@ -1,0 +1,63 @@
+{
+  "app": {
+    // 签名材料不入库：用 DevEco「Project Structure → Signing Configs → 自动签名」在本地生成
+    // （DevEco 会写回本文件；本地如需忽略该改动可 `git update-index --skip-worktree build-profile.json5`）。
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        "targetSdkVersion": "6.1.0(23)",
+        "compatibleSdkVersion": "6.1.0(23)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "meowjre25",
+      "srcPath": "./libs/meowjre25",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "meowcraftlib",
+      "srcPath": "./libs/meowcraftlib"
+    },
+    {
+      "name": "meowlwjgl3",
+      "srcPath": "./libs/meowlwjgl3"
+    }
+  ]
+}

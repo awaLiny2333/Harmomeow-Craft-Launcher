@@ -1,0 +1,6 @@
+{
+  "name": "libmeowassets.so",
+  "types": "./Index.d.ts",
+  "version": "1.0.0",
+  "description": "Meowcraft native asset helpers (JRE install / rawfile tar extract)"
+}

@@ -1,0 +1,55 @@
+MIT License
+
+Copyright (c) 2026 Harmomeow Craft Launcher contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+SCOPE / 适用范围
+
+The MIT license above covers only the ORIGINAL work of this project: the ArkTS
+application code, the clean-room `meow.launcher`, the self-written native
+bridges (`libmeowcraftbridge.so` / `libmeowjrebridge.so` / `libmeowassets.so`),
+the build tooling under `tools/`, and other files that carry no third-party
+copyright notice.
+
+It does NOT cover bundled or prebuilt third-party components, which remain
+under their own licenses (see `THIRD-PARTY-NOTICES.md`), including but not
+limited to:
+
+  * OpenJDK / JRE                      — GPL-2.0-only WITH Classpath-Exception
+  * OpenAL Soft                        — LGPL-2.0-or-later
+  * FreeType                           — FreeType License (FTL)
+  * LWJGL (3.3.3 / 3.4.3 / 2.9.3)      — BSD-3-Clause
+  * SDL3 (fork)                        — Zlib
+  * shaderc / SPIRV-Cross / SPIRV-Tools / SPIRV-Headers / glslang — Apache-2.0 (…)
+  * gl4es, oshi, libffi                — MIT
+  * gson (shaded)                      — Apache-2.0
+  * stb, tinyfiledialogs               — Public Domain / MIT / Zlib
+
+Several of our files are DERIVATIVES of third-party works (the LWJGL GLFW
+overlay and GLCapabilities, the SDL `ohos` driver, the OpenAL OHAudio backend,
+the oshi/gl4es patches). Those files remain under their upstream licenses and
+may NOT be relicensed under MIT.
+
+Full license texts are in `LICENSES/`. Written source offers for the
+copyleft components are in `SOURCE-OFFER.md`.
+
+Minecraft is a trademark of Mojang/Microsoft; this project is unofficial and
+not affiliated with or endorsed by Mojang or Microsoft. See `TRADEMARKS.md`.

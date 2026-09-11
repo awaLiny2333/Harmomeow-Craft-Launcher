@@ -1,0 +1,1 @@
+# jrelib HSP consumer rules (unused; kept for template parity)

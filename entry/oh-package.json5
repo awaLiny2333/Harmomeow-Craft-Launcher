@@ -1,0 +1,14 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "Please describe the basic information.",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dynamicDependencies": {
+    "meowjre25": "file:../libs/meowjre25"
+  },
+  "dependencies": {
+    "libmeowassets.so": "file:./src/main/cpp/types/libmeowassets"
+  }
+}

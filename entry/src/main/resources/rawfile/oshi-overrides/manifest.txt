@@ -1,0 +1,10 @@
+oshi-core-5.7.4.jar=oshi-core-5.7.4-meow.jar
+oshi-core-5.7.5.jar=oshi-core-5.7.5-meow.jar
+oshi-core-5.8.2.jar=oshi-core-5.8.2-meow.jar
+oshi-core-5.8.5.jar=oshi-core-5.8.5-meow.jar
+oshi-core-6.2.2.jar=oshi-core-6.2.2-meow.jar
+oshi-core-6.4.5.jar=oshi-core-6.4.5-meow.jar
+oshi-core-6.4.10.jar=oshi-core-6.4.10-meow.jar
+oshi-core-6.6.5.jar=oshi-core-6.6.5-meow.jar
+oshi-core-6.9.0.jar=oshi-core-6.9.0-meow.jar
+oshi-core-1.1.jar=oshi-core-1.1-meow.jar

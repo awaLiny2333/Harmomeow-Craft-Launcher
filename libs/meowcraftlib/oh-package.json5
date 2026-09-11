@@ -1,0 +1,11 @@
+{
+  "name": "meowcraftlib",
+  "version": "1.0.0",
+  "description": "Meowcraft launcher runtime (self-built bridge: meowjrebridge + meowcraftbridge)",
+  "main": "Index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "libmeowjrebridge.so": "file:./src/main/cpp/types/libmeowjrebridge"
+  }
+}

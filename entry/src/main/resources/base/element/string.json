@@ -1,0 +1,416 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Harmomeow Craft module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Harmomeow Craft"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Harmomeow Craft"
+    },
+    {
+      "name": "game_dirs_title",
+      "value": "游戏目录"
+    },
+    {
+      "name": "game_dirs_empty",
+      "value": "尚未添加 .minecraft 目录"
+    },
+    {
+      "name": "game_dirs_select_hint",
+      "value": "选择目录"
+    },
+    {
+      "name": "game_dirs_add",
+      "value": "添加文件夹"
+    },
+    {
+      "name": "game_dirs_activated",
+      "value": "已激活"
+    },
+    {
+      "name": "game_dirs_inactive",
+      "value": "未激活"
+    },
+    {
+      "name": "common_activate",
+      "value": "激活"
+    },
+    {
+      "name": "common_remove",
+      "value": "移除"
+    },
+    {
+      "name": "common_delete",
+      "value": "删除"
+    },
+    {
+      "name": "common_confirm",
+      "value": "确定"
+    },
+    {
+      "name": "common_cancel",
+      "value": "取消"
+    },
+    {
+      "name": "common_refresh",
+      "value": "刷新"
+    },
+    {
+      "name": "common_edit",
+      "value": "编辑"
+    },
+    {
+      "name": "common_done",
+      "value": "完成"
+    },
+    {
+      "name": "common_launch",
+      "value": "启动"
+    },
+    {
+      "name": "versions_title",
+      "value": "游戏版本"
+    },
+    {
+      "name": "versions_need_authorize",
+      "value": "需要授权才能读取该目录"
+    },
+    {
+      "name": "versions_need_select",
+      "value": "请先在上方选择一个游戏目录"
+    },
+    {
+      "name": "versions_empty",
+      "value": "未找到已安装的版本"
+    },
+    {
+      "name": "versions_jre_not_ready",
+      "value": "JRE 未就绪，无法启动：请先在下方 Java 环境区解压"
+    },
+    {
+      "name": "versions_game_running",
+      "value": "游戏运行中：请先关闭游戏窗口再启动"
+    },
+    {
+      "name": "version_isolation_label",
+      "value": "启用版本隔离"
+    },
+    {
+      "name": "version_release_label",
+      "value": "发行日期"
+    },
+    {
+      "name": "version_json_label",
+      "value": "JSON 路径"
+    },
+    {
+      "name": "version_renderer_label",
+      "value": "渲染后端"
+    },
+    {
+      "name": "version_delete",
+      "value": "删除版本"
+    },
+    {
+      "name": "version_delete_title",
+      "value": "删除版本"
+    },
+    {
+      "name": "version_delete_message",
+      "value": "确定删除版本 %s ？将删除其版本文件（versions/%s/），且不可恢复。"
+    },
+    {
+      "name": "version_delete_message_isolated",
+      "value": "版本 %s 已启用版本隔离：其存档、选项与日志都落在该版本目录内，删除将一并清除，且不可恢复。"
+    },
+    {
+      "name": "version_delete_failed",
+      "value": "删除失败：文件可能被占用，或该目录无写入权限。"
+    },
+    {
+      "name": "renderer_auto",
+      "value": "推荐"
+    },
+    {
+      "name": "renderer_openglv4",
+      "value": "OpenGLv4"
+    },
+    {
+      "name": "renderer_gl4es",
+      "value": "GL4ES（兼容）"
+    },
+    {
+      "name": "java_env_title",
+      "value": "Java 环境"
+    },
+    {
+      "name": "java_env_ready",
+      "value": "已就绪"
+    },
+    {
+      "name": "java_env_missing",
+      "value": "未解压"
+    },
+    {
+      "name": "java_env_empty",
+      "value": "暂无可用的 Java 运行时"
+    },
+    {
+      "name": "java_env_install",
+      "value": "解压"
+    },
+    {
+      "name": "java_env_installing",
+      "value": "解压中"
+    },
+    {
+      "name": "reason_lock_cursor",
+      "value": "用于锁定游戏窗口内的鼠标以支持视角控制"
+    },
+    {
+      "name": "advanced_title",
+      "value": "高级选项"
+    },
+    {
+      "name": "advanced_show_input_rate",
+      "value": "显示鼠标采样率"
+    },
+    {
+      "name": "advanced_show_input_rate_hint",
+      "value": "游戏窗口左下角显示当前鼠标有效采样率（Hz）"
+    },
+    {
+      "name": "advanced_cpu_count",
+      "value": "CPU 线程数"
+    },
+    {
+      "name": "advanced_cpu_count_hint",
+      "value": "留空 = 自动（用探测到的本机核数）"
+    },
+    {
+      "name": "advanced_max_heap",
+      "value": "最大内存 (MB)"
+    },
+    {
+      "name": "advanced_max_heap_hint",
+      "value": "留空 = 自动（JVM 默认）"
+    },
+    {
+      "name": "accounts_title",
+      "value": "账户"
+    },
+    {
+      "name": "accounts_empty",
+      "value": "尚未添加账户"
+    },
+    {
+      "name": "accounts_select",
+      "value": "选中"
+    },
+    {
+      "name": "accounts_selected",
+      "value": "当前"
+    },
+    {
+      "name": "accounts_add_offline",
+      "value": "添加离线账户"
+    },
+    {
+      "name": "accounts_name_placeholder",
+      "value": "玩家名（[A-Za-z0-9_]，≤16）"
+    },
+    {
+      "name": "accounts_name_invalid",
+      "value": "名字非法或已存在：仅允许字母/数字/下划线，长度 1–16"
+    },
+    {
+      "name": "accounts_type_offline",
+      "value": "离线"
+    },
+    {
+      "name": "accounts_type_microsoft",
+      "value": "微软"
+    },
+    {
+      "name": "accounts_uuid_pending",
+      "value": "UUID：待派生"
+    },
+    {
+      "name": "accounts_add_microsoft",
+      "value": "微软登录"
+    },
+    {
+      "name": "accounts_ms_instruction",
+      "value": "在浏览器打开 %s 并输入下面的代码："
+    },
+    {
+      "name": "accounts_ms_open",
+      "value": "打开浏览器"
+    },
+    {
+      "name": "accounts_ms_waiting",
+      "value": "等待授权…"
+    },
+    {
+      "name": "accounts_ms_error",
+      "value": "登录失败：%s"
+    },
+    {
+      "name": "common_copy",
+      "value": "复制"
+    },
+    {
+      "name": "accounts_refresh",
+      "value": "刷新"
+    },
+    {
+      "name": "accounts_logout",
+      "value": "退出登录"
+    },
+    {
+      "name": "accounts_relogin",
+      "value": "重新登录"
+    },
+    {
+      "name": "accounts_logged_out",
+      "value": "已登出"
+    },
+    {
+      "name": "accounts_login_expired",
+      "value": "微软登录已过期"
+    },
+    {
+      "name": "advanced_scroll_speed",
+      "value": "滚轮速度 (%)"
+    },
+    {
+      "name": "advanced_scroll_speed_hint",
+      "value": "留空 = 100（正常）；越大越快"
+    },
+    {
+      "name": "advanced_render_scale",
+      "value": "显示缩放"
+    },
+    {
+      "name": "advanced_render_scale_hint",
+      "value": "渲染分辨率 = 窗口 / N，再放大铺满；越高越省 GPU、画面越糊；过高可能导致画面渲染异常"
+    },
+    {
+      "name": "render_scale_off",
+      "value": "1x（关闭）"
+    },
+    {
+      "name": "advanced_ms_client_id",
+      "value": "微软 client_id"
+    },
+    {
+      "name": "advanced_ms_client_id_hint",
+      "value": "留空 = 微软登录不可用；需自注册 Azure 公有客户端（个人账户 + 允许公共客户端流）"
+    },
+    {
+      "name": "advanced_auto",
+      "value": "自动"
+    },
+    {
+      "name": "game_input_rate",
+      "value": "鼠标采样 %d Hz"
+    },
+    {
+      "name": "common_download",
+      "value": "下载"
+    },
+    {
+      "name": "common_retry",
+      "value": "重试"
+    },
+    {
+      "name": "download_close",
+      "value": "收起"
+    },
+    {
+      "name": "download_panel_title",
+      "value": "下载新版本"
+    },
+    {
+      "name": "download_loading",
+      "value": "正在获取版本列表"
+    },
+    {
+      "name": "download_empty",
+      "value": "未获取到可下载版本"
+    },
+    {
+      "name": "download_install",
+      "value": "安装"
+    },
+    {
+      "name": "download_installed",
+      "value": "已安装"
+    },
+    {
+      "name": "download_progress",
+      "value": "%d / %d"
+    },
+    {
+      "name": "download_phase_files",
+      "value": "下载文件"
+    },
+    {
+      "name": "download_phase_assets",
+      "value": "下载资源"
+    },
+    {
+      "name": "download_phase_write",
+      "value": "写入版本"
+    },
+    {
+      "name": "download_error_manifest",
+      "value": "获取版本列表失败"
+    },
+    {
+      "name": "download_error_install",
+      "value": "安装失败"
+    },
+    {
+      "name": "download_error_no_write",
+      "value": "目录无写入权限，请重新授权后再下载"
+    },
+    {
+      "name": "download_source_mirror",
+      "value": "镜像（BMCLAPI）"
+    },
+    {
+      "name": "download_source_official",
+      "value": "官方（Mojang）"
+    },
+    {
+      "name": "download_file_progress",
+      "value": "%s / %s"
+    },
+    {
+      "name": "download_fetch",
+      "value": "获取版本列表"
+    },
+    {
+      "name": "download_fetch_hint",
+      "value": "选择下载源后，点「获取版本列表」"
+    },
+    {
+      "name": "download_type_release",
+      "value": "正式版"
+    },
+    {
+      "name": "download_type_snapshot",
+      "value": "快照"
+    },
+    {
+      "name": "download_type_other",
+      "value": "其他"
+    }
+  ]
+}

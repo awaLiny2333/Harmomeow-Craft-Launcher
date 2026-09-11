@@ -1,0 +1,2 @@
+# jrelib HSP obfuscation rules (unused; kept for template parity)
+-disable-obfuscation

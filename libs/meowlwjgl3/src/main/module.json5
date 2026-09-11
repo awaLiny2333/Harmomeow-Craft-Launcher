@@ -1,0 +1,9 @@
+{
+  "module": {
+    "name": "meowlwjgl3",
+    "type": "har",
+    "deviceTypes": [
+      "2in1"
+    ]
+  }
+}
