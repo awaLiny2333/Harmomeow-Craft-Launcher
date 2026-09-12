@@ -6,7 +6,7 @@
  * Entry calls us via `import('meowjre25')` -> libmeowjrebridge.so NAPI.
  *
  * Launch flow: dlopen <jreLibsDir>/libjli.so (JRE module el1) -> JLI_Launch with
- * -Djava.home=<filesDir>/meow-jres/meow_jre25 (meow-slim data unpacked by entry).
+ * OHOS_JAVA_HOME=<filesDir>/meow-jres/meow_jre25 (data unpacked by entry), OHOS_DL_DIR=<jreLibsDir>.
  *
  * 渲染后端：按 MC 版本二选一（单一事实源 = ArkTS `RendererPolicy`，经 launchJvm 传入）：
  *   - ≥1.17：系统桌面 OpenGL（libGLv4.so / openglv4，Mesa Zink 直通）；

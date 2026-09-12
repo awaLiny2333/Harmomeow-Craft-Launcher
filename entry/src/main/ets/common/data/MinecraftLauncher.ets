@@ -229,7 +229,7 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     argv.push(`-Djna.boot.library.path=${opts.nativeLibsDir}`);
     argv.push(`-Dorg.lwjgl.librarypath=${opts.nativeLibsDir}`);
     argv.push(`-Djava.library.path=${craft}${opts.nativeLibsDir}:${nativesDir}`);
-    // freetype 由 jre 自带 libfreetype.so 提供（预编译 JRE 包同款，勿改名覆盖）。
+    // freetype 由随包 libfreetype.so 提供（自编，来自 meowlwjgl3 HAR；libfontmanager 硬依赖，勿改名覆盖）。
   }
 
   // 自研桥模式固定参数（与历史启动器 JVMLauncher overridableArguments 全量对齐——LWJGL 桥与 MeowClassLoader 需要）。

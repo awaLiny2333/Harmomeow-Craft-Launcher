@@ -13,22 +13,27 @@ required by the relevant licenses is satisfied.
 
 ## 1. OpenJDK / Java Runtime Environment (JRE 25)
 
-* Bundled as: `libs/meowjre25/libs/arm64-v8a/*.so` (30 libraries, incl.
-  `libjvm.so`, `libjli.so`) and the runtime data image
+* Bundled as: `libs/meowjre25/libs/arm64-v8a/*.so` (**29 libraries**, incl.
+  `libjvm.so`, `libjli.so`, `libc6.so`) and the runtime data image
   `entry/src/main/resources/rawfile/meow_jre25.tar.gz`
-  (`bin/`, `conf/`, `lib/modules`, …), plus `legal/`-derived font data.
-* Upstream: OpenJDK 25 (aarch64, musl) — OpenHarmony port. The bundled build
-  reports `JAVA_RUNTIME_VERSION=25.0.1-internal-adhoc...` and source commit
-  `78770bfaefd2`.
+  (`bin/`, `conf/`, `lib/modules`, …).
+* Upstream base: official OpenJDK **25.0.2** (aarch64 Linux, **glibc**) —
+  `https://jdk.java.net/archive/` (`JAVA_RUNTIME_VERSION=25.0.2+10-69`) — and the
+  OpenJDK source tree tag **`jdk-25-ga`**
+  (`https://github.com/openjdk/jdk`, commit `6c48f4ed…`).
 * License: **GPL-2.0-only WITH Classpath-Exception** — [`LICENSES/GPL-2.0-with-Classpath-Exception.txt`](LICENSES/GPL-2.0-with-Classpath-Exception.txt)
   and [`LICENSES/GPL-2.0.txt`](LICENSES/GPL-2.0.txt).
-* Modification: the data image was slimmed by `tools/slim_jre_data.py`
-  (removed redundant `.so` copies). NOTE: this removed the JRE's own `legal/`
-  directory; the required license notices are provided here instead.
+* **Modification (we DO modify the JRE):**
+  * 26 official libraries are **binary-patched** (in-place ELF `.dynstr` NEEDED rewrite) to load on OHOS/musl;
+  * `libc6.so` is our self-built glibc-compat shim;
+  * `libjvm.so` / `libjli.so` are **self-built** from OpenJDK source with our OHOS split-layout patches;
+  * the data image is the official 25.0.2 data, **slimmed** via `jlink`.
+  * Complete recipe + patches: `tools/jre25/` — see [`SOURCE-OFFER.md`](SOURCE-OFFER.md).
 * **The Classpath Exception permits this project's own code to be licensed
-  differently (MIT) and linked against the JRE.** Redistribution of the JRE
-  binary requires the corresponding source — see [`SOURCE-OFFER.md`](SOURCE-OFFER.md).
-* Bundled fonts may be subject to the Oracle Lucida font license where present.
+  differently (MIT) and linked against the JRE.** Redistribution of the **modified**
+  JRE binary requires the corresponding source — see [`SOURCE-OFFER.md`](SOURCE-OFFER.md).
+* No bundled fonts (the official build ships none). The JRE's own `legal/`
+  directory is not shipped; the required license notices are provided here instead.
 
 Bundled **`jni.h` / `jni_md.h`** (`libs/meowcraftlib/src/main/cpp/meowcraftbridge/`)
 are copied from OpenJDK and are under the same GPL-2.0+Classpath-Exception terms.

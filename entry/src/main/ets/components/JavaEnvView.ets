@@ -1,6 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { scanJavaEnv, JavaEnvInfo, JRES_DIR } from '../common/data/JavaEnvScanner';
+import { JRE_DATA_TOKEN } from '../common/constants/Paths';
 import { LauncherState, getLauncherState } from '../common/state/LauncherState';
 import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY } from '../common/constants/Constants';
 
@@ -88,25 +89,34 @@ export struct JavaEnvView {
                   .fontWeight(FontWeight.Medium)
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis });
-                Text(obj.item.installed ?
-                  $r('app.string.java_env_ready') : $r('app.string.java_env_missing'))
+                Text(obj.item.installed ? $r('app.string.java_env_ready')
+                  : (obj.item.needsUpgrade ? $r('app.string.java_env_need_upgrade')
+                     : $r('app.string.java_env_missing')))
                   .opacity(OPACITY_SECONDARY)
                   .maxLines(1);
               }
               .width('100%');
-              // 副行：<id>[ · 版本]  完整 java.home 路径（单行空格分隔）
-              Text(this.rowSubText(obj.item))
-                .opacity(OPACITY_SECONDARY)
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis });
+              // 副行：须升级时展示「令牌 旧 → 新」（防用户迷惑）；否则 <版本> + java.home 路径
+              if (obj.item.needsUpgrade) {
+                Text($r('app.string.java_env_token_fmt', obj.item.extractedToken, JRE_DATA_TOKEN))
+                  .opacity(OPACITY_SECONDARY)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis });
+              } else {
+                Text(this.rowSubText(obj.item))
+                  .opacity(OPACITY_SECONDARY)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis });
+              }
             }
             .layoutWeight(1)
             .alignItems(HorizontalAlign.Start);
 
             // 行内操作：未就绪可解压；就绪无动作（后续可放"启动验证"等）
             if (!obj.item.installed) {
-              Button(this.installingId === obj.item.id ?
-                $r('app.string.java_env_installing') : $r('app.string.java_env_install'))
+              Button(this.installingId === obj.item.id ? $r('app.string.java_env_installing')
+                : (obj.item.needsUpgrade ? $r('app.string.java_env_upgrade')
+                   : $r('app.string.java_env_install')))
                 .enabled(this.installingId.length === 0)
                 .onClick(() => this.install(obj.item));
             }
@@ -114,8 +124,8 @@ export struct JavaEnvView {
           .width('100%')
           .alignItems(VerticalAlign.Center);
         })
-        // key 携带 installed：解压前后状态变化会重建该行，确保刷新立即生效
-        .key((e: JavaEnvInfo) => `${e.id}-${e.installed}`);
+        // key 携带 installed/needsUpgrade：状态变化会重建该行，确保刷新立即生效
+        .key((e: JavaEnvInfo) => `${e.id}-${e.installed}-${e.needsUpgrade}`);
 
       Button($r('app.string.common_refresh'))
         .onClick(() => this.refresh());

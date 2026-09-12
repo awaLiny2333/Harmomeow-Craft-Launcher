@@ -121,7 +121,7 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
 
 | Component | Version | License | Bundled | Notes |
 |---|---|---|---|---|
-| OpenJDK / JRE | 25 (OHOS aarch64-musl) | GPL-2.0 + Classpath-Exception | ✅ | Runtime; the only external prebuilt |
+| OpenJDK / JRE | 25.0.2 (official glibc; our binary patches + self-built `libjli`/`libjvm`) | GPL-2.0 + Classpath-Exception | ✅ | Runtime; **fully self-held (zero black box)** — see `tools/jre25/` |
 | LWJGL | 3.3.3 / 3.4.3 / 2.9.3 | BSD-3 | ✅ | **three generations co-exist**, selected per MC version |
 | OpenAL Soft | 1.24.3 | LGPL-2.0+ | ✅ | OHAudio backend |
 | FreeType | 2.13.3 | FTL | ✅ | font rendering |

@@ -407,7 +407,8 @@ export struct GameVersionsView {
           Text($r('app.string.versions_empty'));
         }
         if (!this.state.jreReady) {
-          Text($r('app.string.versions_jre_not_ready'))
+          Text(this.state.jreNeedsUpgrade ? $r('app.string.versions_jre_need_upgrade')
+            : $r('app.string.versions_jre_not_ready'))
             .opacity(OPACITY_SECONDARY)
             .width('100%');
         }

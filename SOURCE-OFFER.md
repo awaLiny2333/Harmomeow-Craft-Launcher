@@ -6,22 +6,31 @@ that written offer.
 
 ## 1. OpenJDK / Java Runtime Environment (GPL-2.0-only WITH Classpath-Exception)
 
-We distribute a **prebuilt** OpenJDK 25 (aarch64, musl; OpenHarmony port):
+We distribute an OpenJDK 25 JRE that we **modified and partly rebuilt**:
 
-* Bundled as `entry/src/main/resources/rawfile/meow_jre25.tar.gz` and
-  `libs/meowjre25/libs/arm64-v8a/*.so`.
-* Build identity: `JAVA_RUNTIME_VERSION=25.0.1-internal-adhoc...`;
-  upstream source commit marker `78770bfaefd2`.
-* We do **not** modify the JRE code; only its data image was slimmed
-  (`tools/slim_jre_data.py` removes duplicate `.so` files — see
-  `THIRD-PARTY-NOTICES.md` §1).
+* Bundled as `entry/src/main/resources/rawfile/meow_jre25.tar.gz` (the `java.home`
+  data image) and `libs/meowjre25/libs/arm64-v8a/*.so` (**29** native libs).
+* **Base**: official OpenJDK **25.0.2** (Linux/aarch64, **glibc**) —
+  `https://jdk.java.net/archive/`, `JAVA_RUNTIME_VERSION=25.0.2+10-69`
+  (`openjdk-25.0.2_linux-aarch64_bin.tar.gz`, sha256
+  `671208d205e70c9805da45a483f670d49dd64654990a7b7223ccffb2abb070dd`).
+* **Our modifications / self-builds** (recipe: `tools/jre25/`):
+  * 26 of the official libraries are **binary-patched** in place (ELF `.dynstr`
+    NEEDED rewrite; `tools/jre25/patch_dynstr.py`) so they load on OHOS (musl);
+  * `libc6.so` — our self-built glibc compatibility shim (`tools/jre25/glibc_compat.c`);
+  * `libjvm.so` and `libjli.so` — **self-built** from OpenJDK source
+    (`https://github.com/openjdk/jdk`, tag **`jdk-25-ga`**, commit `6c48f4ed…`)
+    with our OHOS split-layout patches (`tools/jre25/patches/`);
+  * the data image (`lib/modules`, …) — official 25.0.2 data, **slimmed** via `jlink`.
+
+> **We DO modify the JRE code.** The claim that only a data image was slimmed is obsolete.
 
 In accordance with **GPLv2 §3**, the complete corresponding source code of the
-exact binary we ship is available from the upstream OpenJDK / OpenHarmony
-OpenJDK project at the commit above.
-
-> ⚠️ TODO(maintainer): pin the exact upstream repository URL + tag for the
-> OpenHarmony OpenJDK 25.0.1 aarch64-musl build here.
+exact binaries we ship is available:
+* **Our modifications + rebuild recipe:** `tools/jre25/` (scripts, `patches/*.patch`, `README.md`).
+* **Upstream base sources:** the official OpenJDK **25.0.2** build
+  (`https://jdk.java.net/archive/`) and the OpenJDK source tag **`jdk-25-ga`**
+  (`https://github.com/openjdk/jdk`, commit `6c48f4ed707bf0b15f9b6098de30db8aae6fa40f`).
 
 If you cannot obtain it from upstream, we offer — for **at least three (3)
 years** from the date of distribution — to provide the corresponding source

@@ -93,6 +93,10 @@
       "value": "JRE 未就绪，无法启动：请先在下方 Java 环境区解压"
     },
     {
+      "name": "versions_jre_need_upgrade",
+      "value": "JRE 数据须升级，无法启动：请先在下方 Java 环境区升级"
+    },
+    {
       "name": "versions_game_running",
       "value": "游戏运行中：请先关闭游戏窗口再启动"
     },
@@ -167,6 +171,18 @@
     {
       "name": "java_env_installing",
       "value": "解压中"
+    },
+    {
+      "name": "java_env_need_upgrade",
+      "value": "须升级"
+    },
+    {
+      "name": "java_env_upgrade",
+      "value": "升级"
+    },
+    {
+      "name": "java_env_token_fmt",
+      "value": "令牌 %s → %s"
     },
     {
       "name": "reason_lock_cursor",

@@ -1,0 +1,53 @@
+diff --git a/src/java.base/unix/native/libjli/java_md.c b/src/java.base/unix/native/libjli/java_md.c
+index 0a61971b080..e4a0f51fbee 100644
+--- a/src/java.base/unix/native/libjli/java_md.c
++++ b/src/java.base/unix/native/libjli/java_md.c
+@@ -326,6 +326,12 @@ CreateExecutionEnvironment(int *pargc, char ***pargv,
+         exit(4);
+     }
+ 
++    /* [meow OHOS patch] The launcher runs in-process (JLI_Launch via dlopen); OHOS cannot
++       re-exec, and the host already set LD_LIBRARY_PATH/OHOS_DL_DIR. Skip setenv+execve. */
++    if (getenv("OHOS_JAVA_HOME") != NULL || getenv("OHOS_DL_DIR") != NULL) {
++        return;
++    }
++
+     /*
+      * we seem to have everything we need, so without further ado
+      * we return back, otherwise proceed to set the environment.
+@@ -454,6 +460,16 @@ GetJVMPath(const char *jdkroot, const char *jvmtype,
+ {
+     struct stat s;
+ 
++    /* [meow OHOS patch] JRE natives are flat in OHOS_DL_DIR (el1); no lib/<type>/ layout. */
++    {
++        const char *ohosDl = getenv("OHOS_DL_DIR");
++        if (ohosDl != NULL && ohosDl[0] != '\0') {
++            JLI_Snprintf(jvmpath, jvmpathsize, "%s/" JVM_DLL, ohosDl);
++            JLI_TraceLauncher("OHOS_DL_DIR -> %s\n", jvmpath);
++            return (stat(jvmpath, &s) == 0) ? JNI_TRUE : JNI_FALSE;
++        }
++    }
++
+     if (JLI_StrChr(jvmtype, '/')) {
+         JLI_Snprintf(jvmpath, jvmpathsize, "%s/" JVM_DLL, jvmtype);
+     } else {
+@@ -480,6 +496,18 @@ GetJDKInstallRoot(char *path, jint pathsize, jboolean speculative)
+     char libjava[MAXPATHLEN];
+     struct stat s;
+ 
++    /* [meow OHOS patch] split layout: java.home (data dir) via OHOS_JAVA_HOME;
++       the JRE natives are elsewhere (OHOS_DL_DIR, see GetJVMPath). */
++    {
++        const char *ohosHome = getenv("OHOS_JAVA_HOME");
++        if (ohosHome != NULL && ohosHome[0] != '\0') {
++            JLI_Snprintf(path, pathsize, "%s", ohosHome);
++            path[pathsize - 1] = '\0';
++            JLI_TraceLauncher("OHOS_JAVA_HOME -> %s\n", path);
++            return JNI_TRUE;
++        }
++    }
++
+     JLI_TraceLauncher("Attempt to get JDK installation root from launcher executable path\n");
+ 
+     if (GetApplicationHome(path, pathsize)) {

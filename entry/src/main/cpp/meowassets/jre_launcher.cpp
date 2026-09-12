@@ -11,7 +11,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <dirent.h>
 #include <fstream>
+#include <iterator>
 #include <vector>
 
 #include "hilog/log.h"
@@ -34,6 +36,42 @@ bool WriteFile(const std::string& path, const char* data, size_t size) {
     }
     out.write(data, static_cast<std::streamsize>(size));
     return out.good();
+}
+
+std::string ReadTextFile(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return std::string();
+    }
+    std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) {
+        s.pop_back();
+    }
+    return s;
+}
+
+/* 递归删除（不依赖 <filesystem>：OHOS libc++ 的 filesystem 在 std::__fs）。 */
+bool RemoveAll(const std::string& path) {
+    struct stat st;
+    if (lstat(path.c_str(), &st) != 0) {
+        return true;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        return unlink(path.c_str()) == 0;
+    }
+    DIR* d = opendir(path.c_str());
+    if (d != nullptr) {
+        struct dirent* e;
+        while ((e = readdir(d)) != nullptr) {
+            std::string n = e->d_name;
+            if (n == "." || n == "..") {
+                continue;
+            }
+            RemoveAll(path + "/" + n);
+        }
+        closedir(d);
+    }
+    return rmdir(path.c_str()) == 0;
 }
 
 bool ReadRawAsset(void* mgrVoid, const std::string& assetName, std::string& out) {
@@ -175,14 +213,17 @@ bool Install(void* resourceMgr, const std::string& filesDir, const std::string& 
     }
     const std::string assetName = jreId + ".tar.gz";
     std::string installRoot = filesDir + "/" + kJresRoot + "/" + jreId;
-    // 就绪标记 = 数据镜像关键件 lib/modules（JRE 可执行 .so 只在 el1，不入数据，故不能以 libjli.so 判定）。
+    // 就绪 = 数据关键件 lib/modules 存在（.so 只在 el1，不入数据，不能以 libjli.so 判定）
+    //       且 数据令牌一致（否则 in-place 更新会「新 el1 .so + 旧数据」混合）。
     std::string doneMarker = installRoot + "/lib/modules";
-    if (access(doneMarker.c_str(), F_OK) == 0) {
+    std::string tokenPath = installRoot + "/" + kJreDataTokenFile;
+    if (access(doneMarker.c_str(), F_OK) == 0 &&
+        ReadTextFile(tokenPath) == std::string(kJreDataToken)) {
         OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
                      "JRE already installed at %{public}s", installRoot.c_str());
         return true;
     }
-
+    // 先读+解压到内存，成功后再清旧数据（避免 asset/gunzip 失败却已销毁旧数据）。
     std::string gz;
     if (!ReadRawAsset(resourceMgr, assetName, gz)) {
         OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG,
@@ -194,9 +235,19 @@ bool Install(void* resourceMgr, const std::string& filesDir, const std::string& 
         OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG, "gunzip failed");
         return false;
     }
+    // 令牌不符 / 缺件 → 清掉旧数据再重解压（避免残留旧文件）；清失败则中止（不写令牌，宁可失败也不 fail-open）。
+    if (!RemoveAll(installRoot)) {
+        OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG,
+                     "RemoveAll(%{public}s) failed", installRoot.c_str());
+        return false;
+    }
     MakeDirs(installRoot);
     if (!Untar(tar, installRoot)) {
         OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG, "untar failed");
+        return false;
+    }
+    if (!WriteFile(tokenPath, kJreDataToken, std::strlen(kJreDataToken))) {
+        OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG, "write token failed");
         return false;
     }
     OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,

@@ -2,7 +2,7 @@
  * 文件系统路径与随包资产名（ArkTS 侧唯一来源）。
  *
  * 与 native 镜像保持同值：`entry/src/main/cpp/meowassets/jre_launcher.h`
- * （kJresRoot/kInstallDir/kAssetName）与 `meowjrebridge.cpp`（缺省回退）。
+ * （kJresRoot/kJreDataToken）与 `meowjrebridge.cpp`（缺省回退）。
  * ArkTS/native 无法共享头文件，故 native 侧保留同值字面量 + 交叉引用注释。
  */
 
@@ -11,6 +11,16 @@ export const JRES_ROOT: string = 'meow-jres';
 
 /** 内置 JRE id（= 安装目录名 = rawfile 名前缀）。 */
 export const JRE_ID_MEOW25: string = 'meow_jre25';
+
+/**
+ * [数据门] 随包 JRE 数据版本令牌（java.home 数据内容标识）。
+ * 就绪判断要求解压目录内 `meow_jre_data` == 此值；改随包 JRE 数据时必须同步更新
+ * （与 native `jre_launcher.h::kJreDataToken` 同值），否则 in-place 更新会「新 .so + 旧数据」混合。
+ */
+export const JRE_DATA_TOKEN: string = '25.0.2+10-69-r2';
+
+/** JRE 数据令牌文件名（<installDir>/meow_jre_data）。 */
+export const JRE_DATA_TOKEN_FILE: string = 'meow_jre_data';
 
 /** 启动器 home（账户 / 运行数据），与 JRE 数据同级。 */
 export const MEOW_HOME_DIR: string = 'meow-home';

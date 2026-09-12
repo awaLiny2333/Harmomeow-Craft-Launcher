@@ -121,7 +121,7 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 
 | 组件 | 版本 | 许可 | 随包 | 说明 |
 |---|---|---|---|---|
-| OpenJDK / JRE | 25（OHOS aarch64-musl） | GPL-2.0 + Classpath-Exception | ✅ | 运行时；唯一外部预编译件 |
+| OpenJDK / JRE | 25.0.2（官方 glibc 件；二进制魔改 + 自编 `libjli`/`libjvm`） | GPL-2.0 + Classpath-Exception | ✅ | 运行时；**全自持（零黑箱）**——见 `tools/jre25/` |
 | LWJGL | 3.3.3 / 3.4.3 / 2.9.3 | BSD-3 | ✅ | **三代并存**，按 MC 版本选代 |
 | OpenAL Soft | 1.24.3 | LGPL-2.0+ | ✅ | OHAudio 后端 |
 | FreeType | 2.13.3 | FTL | ✅ | 字体渲染 |

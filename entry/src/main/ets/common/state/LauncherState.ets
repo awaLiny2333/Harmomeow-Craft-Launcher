@@ -45,6 +45,9 @@ export class LauncherState {
   /** 内置 JRE 是否已解压就绪（版本区据此禁用"启动"，避免无 JRE 空启动）。 */
   @Trace jreReady: boolean = false;
 
+  /** JRE 数据须升级（有数据但令牌不符）——版本区据此显示"须升级"型提示而非"未解压"。 */
+  @Trace jreNeedsUpgrade: boolean = false;
+
   /** 游戏 Ability 独立进程是否在运行（版本区据此禁用"启动"，避免重复开游戏）。 */
   @Trace gameRunning: boolean = false;
 
@@ -84,14 +87,19 @@ export class LauncherState {
    */
   refreshJre(filesDir: string): void {
     let ready = false;
+    let needsUpgrade = false;
     const envs = scanJavaEnv(filesDir);
     for (const env of envs) {
       if (env.installed) {
         ready = true;
         break;
       }
+      if (env.needsUpgrade) {
+        needsUpgrade = true;
+      }
     }
     this.jreReady = ready;
+    this.jreNeedsUpgrade = !ready && needsUpgrade;
   }
 
   /** 探测游戏 Ability 进程是否存活（跨进程，免权限）。主窗定时/触发调用。 */
