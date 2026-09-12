@@ -4,7 +4,9 @@
     "type": "shared",
     "libIsolation": true,
     "deviceTypes": [
-      "2in1"
+      "2in1",
+      "tablet",
+      "phone"
     ],
     "deliveryWithInstall": true,
     "installationFree": false
