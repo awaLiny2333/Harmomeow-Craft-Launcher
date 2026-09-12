@@ -10,6 +10,7 @@ import {
   SOURCE_MIRROR, SOURCE_OFFICIAL, TYPE_OTHER, TYPE_RELEASE, TYPE_SNAPSHOT
 } from '../common/constants/DownloadContract';
 import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES } from '../common/constants/LaunchDefaults';
+import { LOADER_FABRIC, LOADER_LEGACY_FABRIC, VERSION_FORM_VANILLA } from '../common/data/VersionResolver';
 import { SettingsTools, RendererOverride } from '../common/data/SettingsTools';
 import {
   canWriteDirectory, isValidInstanceName, PHASE_ASSETS, PHASE_FILES, RemoteVersion, versionDirExists
@@ -122,6 +123,42 @@ export struct GameVersionsView {
   /** 发行日期显示：releaseTime 为 ISO 串（如 2024-06-13T15:00:00+00:00），只取日期部分。 */
   private fmtReleaseDate(raw: string): string {
     return raw.length >= 10 ? raw.substring(0, 10) : raw;
+  }
+
+  /**
+   * 版本类型展示：原版 / Fabric / Legacy Fabric / 未知。
+   * 「未知」= 有继承/补丁形态但加载器识别不出（如 Forge/NeoForge/Quilt/整合包等我们暂不点名的 loader）。
+   */
+  private versionTypeLabel(v: GameVersion): Resource {
+    if (v.loader === LOADER_LEGACY_FABRIC) {
+      return $r('app.string.version_type_legacy_fabric');
+    }
+    if (v.loader === LOADER_FABRIC) {
+      return $r('app.string.version_type_fabric');
+    }
+    if (v.form === VERSION_FORM_VANILLA) {
+      return $r('app.string.version_type_vanilla');
+    }
+    return $r('app.string.version_type_unknown');
+  }
+
+  /**
+   * JSON 路径显示：截去游戏根前缀，只显示游戏目录内的相对路径（如 `versions/<id>/<id>.json`）；
+   * 不在根内（异常）时退回绝对路径。
+   */
+  private relJsonPath(v: GameVersion): string {
+    const root = resolveGameRoot(this.state.selected);
+    const path = v.jsonPath;
+    if (root.length > 0 && path.startsWith(root)) {
+      let rel = path.substring(root.length);
+      if (rel.startsWith('/')) {
+        rel = rel.substring(1);
+      }
+      if (rel.length > 0) {
+        return rel;
+      }
+    }
+    return path;
   }
 
   /** 切换某版本的版本隔离：落盘 Preferences 后回读，保证 UI 与持久化同源。 */
@@ -527,6 +564,13 @@ export struct GameVersionsView {
                   // 隔离开启后该版本的存档/选项/日志落 <root>/versions/<id>，与其它版本互不干扰。
                   if (this.editingId === obj.item.id) {
                     Divider().padding({ top: LAYOUT_PADDING_SMALL, bottom: LAYOUT_PADDING_SMALL });
+                    // 版本类型：原版 / Fabric / Legacy Fabric / 未知（有继承/补丁但识别不出加载器）
+                    Row({ space: LAYOUT_SPACE }) {
+                      Text($r('app.string.version_type_label'));
+                      Text(this.versionTypeLabel(obj.item))
+                        .opacity(OPACITY_SECONDARY);
+                    }
+                    .width('100%');
                     // 发行日期（次要元信息，原在主行副行，移入配置区按"编辑"才显示）
                     if (obj.item.releaseTime.length > 0) {
                       Row({ space: LAYOUT_SPACE }) {
@@ -536,10 +580,10 @@ export struct GameVersionsView {
                       }
                       .width('100%');
                     }
-                    // 完整 json 路径（开发调试用；带小标签，与"发行日期"同款式）
+                    // json 路径（开发调试用；带小标签，与"发行日期"同款式）：显示游戏目录内的相对路径
                     Row({ space: LAYOUT_SPACE }) {
                       Text($r('app.string.version_json_label'));
-                      Text(obj.item.jsonPath)
+                      Text(this.relJsonPath(obj.item))
                         .layoutWeight(1)
                         .opacity(OPACITY_SECONDARY);
                     }

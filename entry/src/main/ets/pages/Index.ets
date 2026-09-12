@@ -98,7 +98,7 @@ struct Index {
   /** 继续上次：用记录里的 jsonPath 直接重开游戏窗口（无需重扫目录）。 */
   private async launchLast(): Promise<void> {
     const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
-    const v = new GameVersion(this.state.lastLaunchVersion, '', this.state.lastLaunchJsonPath, '', 0, '', '', '');
+    const v = new GameVersion(this.state.lastLaunchVersion, '', this.state.lastLaunchJsonPath, '', 0, '', '', '', '');
     const out = await launchInMainProcess(ctx, v);
     if (out.code === LAUNCH_ERR_NO_ACCOUNT) {
       this.getUIContext().showAlertDialog({ message: $r('app.string.versions_need_account') });

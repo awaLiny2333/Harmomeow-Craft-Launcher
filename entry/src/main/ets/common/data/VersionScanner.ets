@@ -1,5 +1,5 @@
 import { fileIo, fileUri } from '@kit.CoreFileKit';
-import { resolveVersion } from './VersionResolver';
+import { resolveVersion, VERSION_FORM_VANILLA } from './VersionResolver';
 
 /**
  * 将 Picker 返回的目录 URI（file://docs/...）转换为可传给 fileIo 的物理路径。
@@ -57,8 +57,11 @@ export class GameVersion {
   /** 真 MC 版本号（解析继承/补丁后；渲染后端/LWJGL 世代判定用），可能与实例名不同。 */
   mcVersion: string;
 
+  /** 形态：'vanilla' / 'inherits' / 'patches'（见 VersionResolver.detectVersionForm）；供"版本类型"展示。 */
+  form: string;
+
   constructor(id: string, type: string, jsonPath: string, mainClass: string, javaVersion: number,
-    releaseTime: string, loader: string, mcVersion: string) {
+    releaseTime: string, loader: string, mcVersion: string, form: string) {
     this.id = id;
     this.type = type;
     this.jsonPath = jsonPath;
@@ -67,6 +70,7 @@ export class GameVersion {
     this.releaseTime = releaseTime;
     this.loader = loader;
     this.mcVersion = mcVersion;
+    this.form = form;
   }
 }
 
@@ -91,6 +95,7 @@ function parseVersionJson(gameRoot: string, dirName: string, jsonPath: string): 
     let releaseTime = leaf.releaseTime ?? '';
     let loader = '';
     let mcVersion = leaf.id ?? '';
+    let form = VERSION_FORM_VANILLA;
     // 解析继承链/补丁取"有效清单"（展示用），真 MC 版本号取解析结果（Fabric 实例 ≠ 目录名）。
     const resolved = resolveVersion(gameRoot, jsonPath);
     if (resolved !== null) {
@@ -101,6 +106,7 @@ function parseVersionJson(gameRoot: string, dirName: string, jsonPath: string): 
       releaseTime = rj.releaseTime ?? releaseTime;
       loader = resolved.loader;
       mcVersion = resolved.mcVersion;
+      form = resolved.form;
     }
     return new GameVersion(
       dirName,
@@ -110,7 +116,8 @@ function parseVersionJson(gameRoot: string, dirName: string, jsonPath: string): 
       javaVersion,
       releaseTime,
       loader,
-      mcVersion
+      mcVersion,
+      form
     );
   } catch {
     return null;

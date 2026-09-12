@@ -122,7 +122,27 @@
     },
     {
       "name": "version_json_label",
-      "value": "JSON 路径"
+      "value": "JSON"
+    },
+    {
+      "name": "version_type_label",
+      "value": "版本类型"
+    },
+    {
+      "name": "version_type_vanilla",
+      "value": "原版"
+    },
+    {
+      "name": "version_type_fabric",
+      "value": "Fabric"
+    },
+    {
+      "name": "version_type_legacy_fabric",
+      "value": "Legacy Fabric"
+    },
+    {
+      "name": "version_type_unknown",
+      "value": "未知"
     },
     {
       "name": "version_renderer_label",
