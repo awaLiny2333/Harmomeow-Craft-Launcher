@@ -105,7 +105,7 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
 
 ## Platform & toolchain
 
-- **Target platform**: HarmonyOS 2-in-1, `targetSdkVersion = 6.1.0(23)`, `deviceTypes = ["2in1"]`; real device **MateBook Fold (Kirin X90)**.
+- **Target platform**: HarmonyOS 2-in-1, `targetSdkVersion = 6.1.0(23)`, `deviceTypes = ["2in1","tablet","phone"]`; real device **MateBook Fold (Kirin X90)**.
 - **Build toolchain**: **DevEco Studio / DevEco Code** and its CLI **`devecocli`**. **The vast majority of this project's artifacts are built by it** — HAP / HSP / HAR, CMake/NDK cross-compilation of the natives, signing, deployment, device management and static analysis. OHOS SDK at `$HOME/devecow/deveco_tools/sdk/default/openharmony`.
 
 ## This machine's environment (dev machine = target device)

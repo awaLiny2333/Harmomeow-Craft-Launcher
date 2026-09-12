@@ -105,7 +105,7 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 
 ## 平台与工具链
 
-- **目标平台**：HarmonyOS 2-in-1，`targetSdkVersion = 6.1.0(23)`，`deviceTypes = ["2in1"]`；实机 **MateBook Fold（Kirin X90）**。
+- **目标平台**：HarmonyOS 2-in-1，`targetSdkVersion = 6.1.0(23)`，`deviceTypes = ["2in1","tablet","phone"]`；实机 **MateBook Fold（Kirin X90）**。
 - **构建工具链**：**DevEco Studio / DevEco Code** 及其命令行 **`devecocli`**。本项目**绝大多数产物都由它构建**——HAP / HSP / HAR、带 native 的 CMake/NDK 交叉编译、签名、部署、设备管理与静态检查。OHOS SDK 位于 `$HOME/devecow/deveco_tools/sdk/default/openharmony`。
 
 ## 本机环境（开发机 = 运行机）
