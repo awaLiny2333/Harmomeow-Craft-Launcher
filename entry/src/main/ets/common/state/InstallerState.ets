@@ -1,6 +1,6 @@
 import { AppStorageV2 } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { RemoteVersion, fetchManifest, installVersion } from '../data/VersionInstaller';
+import { RemoteVersion, fetchManifest, installVersion, removeIncompleteInstance } from '../data/VersionInstaller';
 import { SOURCE_MIRROR, TYPE_OTHER, TYPE_RELEASE,
   TYPE_SNAPSHOT } from '../constants/DownloadContract';
 
@@ -80,8 +80,8 @@ export class InstallerState {
     this.manifestLoading = false;
   }
 
-  /** 安装一个版本（单任务；完成后由调用方刷新版本列表）。 */
-  async install(gameRoot: string, remote: RemoteVersion): Promise<void> {
+  /** 安装一个版本到 `versions/<instanceName>/`（单任务；完成后由调用方刷新版本列表）。 */
+  async install(gameRoot: string, remote: RemoteVersion, instanceName: string): Promise<void> {
     if (this.installingId.length > 0) {
       return;
     }
@@ -95,7 +95,7 @@ export class InstallerState {
     this.fileReceived = 0;
     this.fileTotal = 0;
     try {
-      await installVersion(gameRoot, remote, this.source,
+      await installVersion(gameRoot, remote, this.source, instanceName,
         (phase: number) => {
           this.phase = phase;
         },
@@ -111,6 +111,8 @@ export class InstallerState {
           this.fileTotal = total;
         });
     } catch (error) {
+      // 失败收尾：清掉半装残留（缺 <名>.json 才清，绝不碰完整实例），避免"扫描不到又占名"的僵尸目录。
+      removeIncompleteInstance(gameRoot, instanceName);
       const err = error as BusinessError;
       this.errorKind = INSTALL_ERR_INSTALL;
       this.errorDetail = err.message ?? '';

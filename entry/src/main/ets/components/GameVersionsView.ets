@@ -12,7 +12,7 @@ import {
 import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES } from '../common/constants/LaunchDefaults';
 import { SettingsTools, RendererOverride } from '../common/data/SettingsTools';
 import {
-  canWriteDirectory, PHASE_ASSETS, PHASE_FILES, RemoteVersion
+  canWriteDirectory, isValidInstanceName, PHASE_ASSETS, PHASE_FILES, RemoteVersion, versionDirExists
 } from '../common/data/VersionInstaller';
 import { GameVersion, resolveGameRoot } from '../common/data/VersionScanner';
 import { deleteVersionDir } from '../common/data/VersionTools';
@@ -25,6 +25,11 @@ import { AccountState, getAccountState } from '../common/state/AccountState';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'GameVersionsView';
+
+/** 实例名校验结果（UI 据此显示提示 / 是否允许「确认安装」）。 */
+const NAME_OK: number = 0;
+const NAME_INVALID: number = 1;
+const NAME_CONFLICT: number = 2;
 
 /**
  * 游戏版本列表区块（与 GameDirsView 平级，由 Index 挂载）。
@@ -49,6 +54,15 @@ export struct GameVersionsView {
 
   /** 是否展开"下载新版本"面板（由"下载/收起"按钮切换）。 */
   @Local showDownload: boolean = false;
+
+  /** 正在设置实例名的远程版本 id（空串 = 未展开"设置实例名"安装面板）。 */
+  @Local installTargetId: string = '';
+
+  /** 安装面板里的实例名输入（默认 = 版本号）。 */
+  @Local installName: string = '';
+
+  /** 安装面板目标远程版本（缓存对象：切下载源/类型导致 visible 重建时仍可确认）。 */
+  private installTargetRef: RemoteVersion | null = null;
 
   /** 逐版本渲染后端覆盖（编辑面板的下拉；与 Preferences 同源）。 */
   @Local overrides: RendererOverride[] = [];
@@ -272,16 +286,6 @@ export struct GameVersionsView {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'open game window for %{public}s', v.id);
   }
 
-  /** 某版本是否已安装（依据当前已扫描到的版本列表）。 */
-  private isInstalled(versionId: string): boolean {
-    for (const v of this.state.versions) {
-      if (v.id === versionId) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   /** 切换下载面板；不再自动拉清单（由用户选源后点「获取版本列表」）。 */
   private toggleDownload(): void {
     this.showDownload = !this.showDownload;
@@ -376,11 +380,48 @@ export struct GameVersionsView {
     return `${(bytes / mb).toFixed(1)} MB`;
   }
 
+  /** 打开某远程版本的"设置实例名"安装面板（默认名 = 版本号）。 */
+  private openInstallPanel(remote: RemoteVersion): void {
+    this.installTargetRef = remote;
+    this.installTargetId = remote.id;
+    this.installName = remote.id;
+  }
+
+  /** 关闭"设置实例名"安装面板。 */
+  private closeInstallPanel(): void {
+    this.installTargetRef = null;
+    this.installTargetId = '';
+  }
+
+  /** 实例名校验结果：NAME_OK / NAME_INVALID / NAME_CONFLICT（`versions/<名>` 已存在）。 */
+  private instanceNameErrorKind(): number {
+    const name = this.installName.trim();
+    if (!isValidInstanceName(name)) {
+      return NAME_INVALID;
+    }
+    const root = resolveGameRoot(this.state.selected);
+    if (root.length > 0 && versionDirExists(root, name)) {
+      return NAME_CONFLICT;
+    }
+    return NAME_OK;
+  }
+
+  /** 确认安装：名称合法且不冲突、游戏未运行才真正安装（否则禁止）。 */
+  private async confirmInstall(): Promise<void> {
+    const remote = this.installTargetRef;
+    if (remote === null || this.state.gameRunning || this.instanceNameErrorKind() !== NAME_OK) {
+      return;
+    }
+    const name = this.installName.trim();
+    this.closeInstallPanel();
+    await this.installRemote(remote, name);
+  }
+
   /**
-   * 安装某远程版本：写入当前选中目录对应的游戏根；完成后刷新版本列表。
+   * 把某远程版本安装为实例 `versions/<instanceName>/`；完成后刷新版本列表。
    * 安装前校验目录写权限（授权失效时不能写，UI 明确提示）。
    */
-  async installRemote(remote: RemoteVersion): Promise<void> {
+  async installRemote(remote: RemoteVersion, instanceName: string): Promise<void> {
     const root = resolveGameRoot(this.state.selected);
     if (root.length === 0) {
       // 兜底：解析不出目录时给出可见错误，而不是静默无反应。
@@ -393,7 +434,7 @@ export struct GameVersionsView {
       this.installer.errorDetail = '';
       return;
     }
-    await this.installer.install(root, remote);
+    await this.installer.install(root, remote, instanceName);
     this.state.refreshVersions();
   }
 
@@ -603,6 +644,45 @@ export struct GameVersionsView {
             .borderRadius(BORDER_RADIUS)
             .width('100%')
             .alignItems(HorizontalAlign.Start);
+            // 「设置实例名」安装面板（对齐 HMCL：安装时给实例起名，名称即 versions/<名> 目录名）
+            if (this.installTargetId.length > 0) {
+              Column({ space: LAYOUT_SPACE_SMALL }) {
+                Text($r('app.string.download_instance_for', this.installTargetId))
+                  .opacity(OPACITY_SECONDARY);
+                Row({ space: LAYOUT_SPACE }) {
+                  TextInput({ text: this.installName,
+                    placeholder: $r('app.string.download_instance_placeholder') })
+                    .layoutWeight(1)
+                    .onChange((v: string) => {
+                      this.installName = v;
+                    })
+                    .onSubmit(() => this.confirmInstall());
+                  Button($r('app.string.download_confirm_install'))
+                    .enabled(this.installer.installingId.length === 0
+                      && !this.state.gameRunning
+                      && this.instanceNameErrorKind() === NAME_OK)
+                    .onClick(() => this.confirmInstall());
+                  Button($r('app.string.common_cancel'))
+                    .onClick(() => this.closeInstallPanel());
+                }
+                .width('100%')
+                .alignItems(VerticalAlign.Center);
+                if (this.instanceNameErrorKind() === NAME_INVALID) {
+                  Text($r('app.string.download_instance_name_invalid'))
+                    .opacity(OPACITY_SECONDARY)
+                    .width('100%');
+                } else if (this.instanceNameErrorKind() === NAME_CONFLICT) {
+                  Text($r('app.string.download_instance_name_conflict'))
+                    .opacity(OPACITY_SECONDARY)
+                    .width('100%');
+                }
+              }
+              .padding(LAYOUT_PADDING_SMALL)
+              .backgroundColor($r('app.color.brand_bg'))
+              .borderRadius(BORDER_RADIUS)
+              .width('100%')
+              .alignItems(HorizontalAlign.Start);
+            }
             if (this.installer.manifestLoading) {
               Text($r('app.string.download_loading'))
                 .opacity(OPACITY_SECONDARY);
@@ -668,13 +748,10 @@ export struct GameVersionsView {
                         }
                         .layoutWeight(1)
                         .alignItems(HorizontalAlign.Start);
-                        Button(this.isInstalled(obj.item.id)
-                          ? $r('app.string.download_installed')
-                          : $r('app.string.download_install'))
+                        Button($r('app.string.download_install'))
                           .enabled(this.installer.installingId.length === 0
-                            && !this.state.gameRunning
-                            && !this.isInstalled(obj.item.id))
-                          .onClick(() => this.installRemote(obj.item));
+                            && !this.state.gameRunning)
+                          .onClick(() => this.openInstallPanel(obj.item));
                       }
                       .padding(LAYOUT_PADDING_SMALL)
                       .backgroundColor($r('app.color.brand_bg'))

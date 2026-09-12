@@ -4,7 +4,8 @@ import { DEFAULT_LIBRARY_URL, DOWNLOAD_CONCURRENCY, ENV_OS_ARCH, ENV_OS_BITS, EN
   LEGACY_INDEX_URL_PREFIX, MOJANG_RESOURCES, fileCandidates,
   manifestCandidates } from '../constants/DownloadContract';
 import { ASSET_HASH_PREFIX_LENGTH, assetObjectPath, assetsIndexesDir, librariesDir,
-  versionJarPath, versionJsonPath } from '../constants/Paths';
+  versionDir, versionJarPath, versionJsonPath } from '../constants/Paths';
+import { removeTreeBestEffort } from './VersionTools';
 import { downloadFile, fetchText } from './Downloader';
 
 /**
@@ -439,29 +440,87 @@ export async function fetchManifest(source: string): Promise<RemoteVersion[]> {
   return out;
 }
 
-/** 判断某远程版本是否已安装（本地 versions 目录下已有 json）。 */
-export function isInstalled(gameRoot: string, versionId: string): boolean {
-  return exists(versionJsonPath(gameRoot, versionId));
+/**
+ * 实例名称合法性（= 安装目标目录名；对齐 HMCL 的 instance name 校验）。
+ * 只拦**真正危险/非法**的名字（路径穿越、文件系统非法字符），**不设"保留后缀"之类私规**
+ *（HMCL 亦不禁 `*removed`；删除残留已移出 versions/，见 VersionTools）。
+ * 规则：非空且非纯空白；非 `.` / `..`；不以 `.` 或空格结尾；
+ * 不含路径分隔符 `/` `\`、控制字符、或各平台文件系统非法字符 `: * ? " < > |`。
+ */
+export function isValidInstanceName(name: string): boolean {
+  if (name.length === 0 || name.trim().length === 0) {
+    return false;
+  }
+  if (name === '.' || name === '..') {
+    return false;
+  }
+  if (name.endsWith('.') || name.endsWith(' ')) {
+    return false;
+  }
+  for (let i = 0; i < name.length; i++) {
+    const c = name.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f) {
+      return false; // 控制字符（含 NUL）
+    }
+    const ch = name.charAt(i);
+    if (ch === '/' || ch === '\\' || ch === ':' || ch === '*' || ch === '?'
+      || ch === '"' || ch === '<' || ch === '>' || ch === '|') {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** 目标实例目录 `<root>/versions/<name>/` 是否已存在（命名冲突检测）。 */
+export function versionDirExists(gameRoot: string, name: string): boolean {
+  try {
+    return fileIo.statSync(`${gameRoot}/versions/${name}`).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**
- * 安装一个原版版本到 gameRoot。
+ * 安装失败收尾：若 `<root>/versions/<name>` 存在但**缺 `<name>.json`**（半装残留），best-effort 清掉。
+ * 有 json 视为完整实例，绝不触碰。这样失败后同名可重试，不会留下"扫描不到又占名（冲突）"的僵尸目录。
+ */
+export function removeIncompleteInstance(gameRoot: string, name: string): void {
+  if (name.length === 0 || !isValidInstanceName(name)) {
+    return;
+  }
+  if (exists(versionJsonPath(gameRoot, name))) {
+    return;
+  }
+  removeTreeBestEffort(versionDir(gameRoot, name));
+}
+
+/**
+ * 安装一个原版版本到 gameRoot 下的**实例目录 `versions/<instanceName>/`**。
  *
+ * `instanceName` = 实例名（目录名，玩家安装时设置；对齐 HMCL）。
+ * 版本 json 原样写入 `<instanceName>.json`（其内部 id 不改，磁盘与 HMCL 一致），
+ * client jar 落 `<instanceName>.jar`；启动/扫描按目录名定位（见 VersionScanner 身份约定）。
+ *
+ * @param instanceName 实例名（`versions/` 下的目录名）
  * @param onPhase   阶段变化回调（PHASE_FILES / PHASE_ASSETS / PHASE_WRITE）
  * @param onCount   进度回调（已完成 / 总数，按阶段重置）
  * @param onCurrent 当前处理项标签回调
  */
 export async function installVersion(gameRoot: string, remote: RemoteVersion, source: string,
+  instanceName: string,
   onPhase: (phase: number) => void,
   onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void,
   onFileProgress: (received: number, total: number) => void): Promise<void> {
+  if (!isValidInstanceName(instanceName)) {
+    throw new Error('invalid instance name');
+  }
   onPhase(PHASE_FILES);
   const versionJsonText = await fetchText(fileCandidates(remote.url, source));
   const versionJson = JSON.parse(versionJsonText) as VersionJson;
-  const id = (versionJson.id ?? '').length > 0 ? (versionJson.id ?? '') : remote.id;
-  if (id.length === 0) {
-    throw new Error('version id missing');
+  // 扫描器按"存在 <名>.json 且其内部 id 非空"识别实例；缺 id 的 json 装了也扫不到 → 提前拒绝。
+  if ((versionJson.id ?? '').length === 0) {
+    throw new Error('version json id missing');
   }
 
   // 第一批：client jar + libraries + 资源索引
@@ -470,7 +529,7 @@ export async function installVersion(gameRoot: string, remote: RemoteVersion, so
   if (client !== undefined) {
     const url = client.url ?? '';
     if (url.length > 0) {
-      files.push(newItem(`${id}.jar`, [url], versionJarPath(gameRoot, id),
+      files.push(newItem(`${instanceName}.jar`, [url], versionJarPath(gameRoot, instanceName),
         client.sha1 ?? '', client.size ?? 0));
     }
   }
@@ -506,5 +565,5 @@ export async function installVersion(gameRoot: string, remote: RemoteVersion, so
 
   // 最后写版本清单：扫描器只认这个文件，保证不出现"半装被识别"的版本
   onPhase(PHASE_WRITE);
-  writeText(versionJsonPath(gameRoot, id), versionJsonText);
+  writeText(versionJsonPath(gameRoot, instanceName), versionJsonText);
 }

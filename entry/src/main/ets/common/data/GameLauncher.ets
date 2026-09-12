@@ -2,7 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { buildLaunchArgv } from './MinecraftLauncher';
+import { buildLaunchArgv, readVersionId } from './MinecraftLauncher';
 import { startJvm } from '../state/JvmLauncher';
 import { stageClasspathDir } from './ClasspathStager';
 import { Account, AccountsTools, ACCOUNT_TYPE_MICROSOFT } from './AccountsTools';
@@ -66,8 +66,10 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   hilog.info(LOG_DOMAIN, LOG_TAG, 'version %{public}s isolation=%{public}s',
     versionId, isolated ? 'on' : 'off');
   const cpuChip = readCpuChip();
-  // 渲染后端按 MC 版本选（≤1.16 → gl4es/GLES；≥1.17 → 系统桌面 GL）。lib 必须与 startJvm 传的一致。
-  const renderer = rendererForVersion(versionId, settings.rendererOverride(versionId));
+  // 渲染后端按**版本 json 的内部 id**（真 MC 版本号）选（≤1.16 → gl4es/GLES；≥1.17 → 桌面 GL）。
+  // 注意：versionId 现在是实例名（目录名，玩家可任取），不能拿它判版本。
+  const mcVersion = readVersionId(jsonPath);
+  const renderer = rendererForVersion(mcVersion, settings.rendererOverride(versionId));
   const argv = buildLaunchArgv({
     gameRoot: gameRoot,
     gameDir: gameDir,

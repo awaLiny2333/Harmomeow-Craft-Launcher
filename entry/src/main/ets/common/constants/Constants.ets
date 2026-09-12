@@ -57,6 +57,10 @@ export const BORDER_RADIUS: number = 14;
 // 极细外边距（1vp）：修 TextInput layoutWeight(1) 的轻微布局抖动（账户区输入框用）。
 export const LAYOUT_MARGIN_HAIRLINE: number = 1;
 
+// 删除版本的临时残留目录（放在游戏根下、`versions/` 之外；同文件系统可原子 rename）。
+// 放在 versions/ 之外 → 用户可任意命名实例（含 *removed），不会与残留冲突，扫描器也无需按后缀排除。
+export const MEOW_TRASH_DIR: string = '.meow-trash';
+
 // 页面响应式断点：窗口宽度 ≥ 此值（vp）时，账户区左移为独立侧栏（形成左右分栏）。
 export const LAYOUT_WIDE_MIN_W: number = 640;
 // 宽屏分栏时账户侧栏宽度（vp）。

@@ -380,6 +380,12 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   return argv;
 }
 
+/** 读取版本 json 的内部 `id`（真正的 MC 版本号，如 "1.16.5"）；失败/缺省返回 ''。 */
+export function readVersionId(jsonPath: string): string {
+  const json = readJson(jsonPath);
+  return json === null ? '' : (json.id ?? '');
+}
+
 /** 读取并解析版本 json。 */
 function readJson(path: string): VersionJson | null {
   try {

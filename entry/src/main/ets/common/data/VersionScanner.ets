@@ -111,7 +111,8 @@ interface GameJavaVersion {
  * 目录里没有 versions/ 时返回空数组（只是"还没装版本"，不是无效目录）。
  *
  * 对每个版本：遍历 versions/<v>/<v>.json；条目身份 = 目录名 `<v>`（见 GameVersion.id）。
- * 跳过 "removed" 结尾的目录（历史启动器约定 / 删除残留）。
+ * 排除逻辑（对齐 HMCL）：**不按名字/后缀排除**，只要求存在 `<v>/<v>.json` 且可解析；
+ * 删除残留已移出 `versions/`（见 VersionTools），非实例目录（无同名 json）自然被跳过。
  *
  * @param dirUri Picker 选中的目录 URI（file://docs/...），需已授权。
  */
@@ -130,9 +131,6 @@ export function scanVersions(dirUri: string): GameVersion[] {
 
   const result: GameVersion[] = [];
   for (const name of entries) {
-    if (name.endsWith('removed')) {
-      continue;
-    }
     try {
       const stat = fileIo.statSync(`${versionsPath}${name}`);
       if (stat.isDirectory()) {

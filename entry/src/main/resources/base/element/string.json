@@ -385,8 +385,24 @@
       "value": "安装"
     },
     {
-      "name": "download_installed",
-      "value": "已安装"
+      "name": "download_instance_for",
+      "value": "为 %s 设置实例名称"
+    },
+    {
+      "name": "download_instance_placeholder",
+      "value": "实例名称（默认与版本号相同）"
+    },
+    {
+      "name": "download_confirm_install",
+      "value": "确认安装"
+    },
+    {
+      "name": "download_instance_name_invalid",
+      "value": "实例名称非法：不能为空、不能以 . 或空格结尾，且不能包含 / \\ : * ? \" < > | 或控制字符"
+    },
+    {
+      "name": "download_instance_name_conflict",
+      "value": "该实例名称已存在，请换一个名称"
     },
     {
       "name": "download_progress",
