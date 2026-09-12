@@ -18,6 +18,7 @@
 | `ref/freetype` | https://gitlab.freedesktop.org/freetype/freetype | `VER-2-13-3` | 见 `tools/freetype/` |
 | `ref/oshi` | https://github.com/oshi/oshi | 多版本 | 见 `tools/oshi/` |
 | `ref/SDL` + `ref/SDL-3.4.14` | https://github.com/libsdl-org/SDL.git | `release-3.4.14` | `git clone … ref/SDL` → `git -C ref/SDL worktree add --detach ref/SDL-3.4.14 release-3.4.14`（见 `tools/sdl/`） |
+| `ref/jdk26u` | https://github.com/openjdk/jdk26u.git | `jdk-26.0.2.1-ga` | **JDK 26 更新仓**（26.0.x 不在主线 `openjdk/jdk`！）——随包 JRE 自编件的精确源，见 `tools/jre26/` |
 | `ref/{shaderc,glslang,SPIRV-Tools,SPIRV-Headers,spirv-cross}` | google/shaderc、KhronosGroup/* | 按官方 LWJGL natives 的 `.git` 标记钉修订 | `tools/shaderc/rebuild_for_meowcraft.sh` **自动 clone**（见 `tools/shaderc/README.md`） |
 
 **其它外部输入**（按需下载，见各 README）：libffi 源码 tarball（`https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz`）、
@@ -25,7 +26,8 @@ LWJGL/gson/jspecify 走 Maven Central（脚本自动下载 + `.sha1` 校验）�
 
 **JRE 收编输入**（见 `tools/jre26/`）：官方 OpenJDK **26.0.2.1**（aarch64 Linux，**glibc**，来自 `https://jdk.java.net/archive/`）
 tar（`openjdk-26.0.2.1_linux-aarch64_bin.tar.gz`，sha256 `b96b265a4a1a36c02454148891aa58ca63303cbc2d1b7979c33b4fe99e09117b`）
-+ OpenJDK 源码 **`https://github.com/openjdk/jdk`** 的 **`jdk-26-ga`** tag（供自编 `libjli`+`libjvm`；commit `4408cd2a07a…`）
++ OpenJDK 源码 **`https://github.com/openjdk/jdk26u`**（**更新仓**）的 **`jdk-26.0.2.1-ga`** tag（供自编 `libjli`+`libjvm`；
+commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61` 精确对齐**）
 + 用户提供的 **openEuler 24.03 aarch64 容器**（编 `libjvm`；设备不能执行编译产物）。**零黑箱。**
 
 ## 2. 工具清单
@@ -37,7 +39,7 @@ tar（`openjdk-26.0.2.1_linux-aarch64_bin.tar.gz`，sha256 `b96b265a4a1a36c02454
 | `gl4es/` | `libgl4es.so` | 自编 **gl4es v1.1.7** OHOS 移植（桌面固定管线 GL → 原生 GLES 翻译层）；**MC ≤1.16**（含 1.6.x–1.12.2，经 LWJGL2 `extgl` 取址）的渲染翻译层 |
 | `openal/` | `libopenal.so` | OpenAL Soft **1.24.3** OHOS 移植（OHAudio 默认后端 + 导出 `ALC_SOFT_system_events`） |
 | `freetype/` | `libfreetype.so` | FreeType 2.13.3 OHOS 交叉编 |
-| `jre26/` | 随包 JRE 集（`libs/*.so` + `java.home` 数据） | **魔改官方 OpenJDK 26.0.2.1(glibc) 跑 OHOS(musl)，零黑箱**：官方 26 lib **原地改 `.dynstr`** + `libc6.so` 兼容层 + **自编 `libjli`** + **自编 `libjvm`**（openEuler 容器编，两件均带 OHOS 分体 patch）；数据经 jlink 瘦身。见 `tools/jre26/README.md` |
+| `jre26/` | 随包 JRE 集（`libs/*.so` + `java.home` 数据） | **魔改官方 OpenJDK 26.0.2.1(glibc) 跑 OHOS(musl)，零黑箱**：官方 26 lib **原地改 `.dynstr`** + `libc6.so` 兼容层 + **自编 `libjli`** + **自编 `libjvm`**（openEuler 容器编，两件均带 OHOS 分体 patch，源 = 更新仓 `jdk26u` @ `jdk-26.0.2.1-ga`）；数据经 jlink 瘦身。见 `tools/jre26/README.md` |
 | `jre25/` | —（历史配方） | **25 时代**的随包 JRE 配方/溯源（已发布版本）；随包 JRE 已升级到 26，**勿用于当前随包**。见 `tools/jre25/README.md` |
 | `sdl/` | `libSDL3.so` | 自编 OHOS **SDL3**（fork tag `release-3.4.14`）+ 自研 **`ohos` 驱动**（窗口/EGL/输入/grab）；**MC 26.3** 的平台绑定 |
 | `shaderc/` | `libshaderc.so`、`libspirv-cross.so` | 自编（glslang/SPIRV-Tools 静态并入；按官方 natives `.git` 钉修订）；**MC 26.3 `renderpearl`** 用 |
@@ -88,15 +90,16 @@ sh tools/lwjgl/install_natives.sh --native libspirv-cross.so=stuffs/research/sha
 sh tools/oshi/build_oshi_meow.sh …                       # oshi-overrides 现代 ×9（+ legacy 1.1，见 tools/oshi/README.md）
 sh tools/meow-launcher/build_meow_launcher.sh            # launcher.jar（人跑 javac）
 # JRE 集（魔改官方 glibc 件跑 OHOS，零黑箱；完整步骤见 tools/jre26/README.md 的「复现」）
-#   0) 输入：解官方 tar 到 stuffs/research/jdk26/_inspect；复用 jdk clone 建 jdk-26-ga 源码树（jdk26/jdk 符号链接）
-#   1) 容器(openEuler/aarch64)：装环境 + 编 libjvm(glibc) + jlink 瘦 modules
+#   0) 输入：解官方 tar 到 stuffs/research/jdk26/_inspect；clone **更新仓** openjdk/jdk26u → ref/jdk26u，
+#      再 worktree jdk26u-src @ `jdk-26.0.2.1-ga`（26.0.x 不在主线 openjdk/jdk）
+#   1) 容器(openEuler/aarch64)：装环境 + 编 libjvm(glibc) +（仅换官方输入时）jlink 瘦 modules
 sh tools/jre26/linux_bootstrap.sh              # 容器内：装工具链 + boot JDK
-sh tools/jre26/linux_build_jvm.sh              # 容器内：out-linux/libjvm.so（glibc，可复现）
-sh tools/jre26/linux_slim_jre.sh               # 容器内：out-linux/modules.slim
+sh tools/jre26/linux_build_jvm.sh              # 容器内：out-linux/libjvm.so（glibc，可复现；默认源 ref/jdk26u）
+sh tools/jre26/linux_slim_jre.sh               # 容器内：out-linux/modules.slim（仅换官方输入时需要）
 #   2) 宿主：组装（魔改 26 官方件 + 自编 libc6/libjli + 魔改 libjvm + 数据瘦身）
 sh tools/jre26/rebuild_for_meowcraft.sh \
     --official-jdk stuffs/research/jdk26/_inspect/jdk-26.0.2.1 \
-    --jdk-src      stuffs/research/jdk26/jdk26src \
+    --jdk-src      stuffs/research/jdk26/jdk26u-src \
     --libjvm       stuffs/research/jdk26/out-linux/libjvm.so \
     --modules-slim stuffs/research/jdk26/out-linux/modules.slim \
     --out          stuffs/research/jdk26/out
@@ -114,7 +117,7 @@ devecocli run --module entry meowjre --device <serial>
 - **natives 必须随包**：平台只对随包 native 打 fs-verity；运行时写入数据区的文件 `dlopen` 一律 EINVAL。
   故多版本 natives 同放一个随包目录、用**后缀名**区分（见 `tools/lwjgl/README.md`）。
 - **确定性**：`pack_jar.py`（固定时间戳 + 排序）、`pack_extras.py`（gzip mtime=0 + 排序）→ 逐字节可复现。
-- **JRE 可复现**：`libc6.so`/`libjli.so`、官方 26 件魔改、数据 tar（`tools/jre26/pack_jre_data.py`）均**逐字节**；自编 `libjvm` 同 OS/工具链/源/**同路径** + `SOURCE_DATE_EPOCH=1770909215`（jdk-26-ga 提交）**3× cmp 一致**（`faa773b9…`，见 `tools/jre26/README.md` §可复现性）。
+- **JRE 可复现**：`libc6.so`/`libjli.so`、官方 26 件魔改、数据 tar（`tools/jre26/pack_jre_data.py`）均**逐字节**；自编 `libjvm` 同 OS/工具链/源/**同路径** + `SOURCE_DATE_EPOCH=1784133400`（`jdk-26.0.2.1-ga` 提交）**2× cmp 一致**（`d28164cd…`；`linux_verify_jvm_repro.sh` 默认 2，`MEOW_REPRO_N` 可调高。见 `tools/jre26/README.md` §可复现性）。
 - **native 可复现**：同 tag + 同 SDK + **同 `--src`/`--out` 绝对路径** → 逐字节一致（链接器把输出路径写进 `.dynstr`；换路径同功能、哈希不同）。本工具链的新原生已 **3× 干净重建 `cmp` 一致**（对照 2026-09-11 盘上随包件）：`libSDL3.so`(`241bbfef…`)、`libshaderc.so`(`0cff3465…`)、`libspirv-cross.so`(`93ad9907…`)、`liblwjgl.so`(`df886466…`)；其中 `spirv-cross` 需 `SOURCE_DATE_EPOCH`（`tools/shaderc/build_shaderc_meow.sh` 已内置，取 pinned 提交时间）。`libgl4es.so`(`90c6ff6b…`) 同路径下**预期**可复现（见 `tools/gl4es/README.md`，尚未 3× 验证）。
 - **构建期断言（缺件在发包时拦下，运行期不加防护）**：`pack_extras.py --require <member>`（断言 tar 成员齐，如各代 `lwjgl-<gen>.jar`）；
   `install_natives.sh --verify`（断言 `natives.manifest` 每项在盘且 sha 匹配）。缺件属"我们发包可掌控"→ 只在构建期拦，不在运行时查（省开销）。
@@ -123,7 +126,7 @@ devecocli run --module entry meowjre --device <serial>
 ## 5. 权威文档
 
 - **工具内详解**：`tools/lwjgl/README.md` §1（**overlay 机制**：为什么要覆盖 / 5 步流水线 / 两层判据 / 加代清单），§2–§4（各代构建 / 打包 / digests）。
-- **JRE 收编**：`tools/jre26/README.md`（现役：输入/工序/可复现/digests/与 25 差异）、`tools/jre25/README.md`（历史）。
+- **JRE 收编**：`tools/jre26/README.md`（现役：输入/工序/可复现/digests/与 25 差异；源 = 更新仓 `jdk26u` @ `jdk-26.0.2.1-ga`）、`tools/jre25/README.md`（历史）。
 - **legacy（MC 1.6.x–1.16.x）**：`tools/lwjgl2/README.md`（LWJGL2 `liblwjgl.so`：生成/编译/随包/踩坑/可复现）、`tools/gl4es/README.md`（gl4es `libgl4es.so`：NOEGL 宿主自持上下文）。
 - **SDL3 / shaderc**：`tools/sdl/README.md`（拉取/补丁/驱动文件/digest）、`tools/shaderc/README.md`；复盘对照 `notes/20-design/26.3-SDL适配复盘.md`、方案 `notes/20-design/sdl3桥接方案.md`。
 - 设计/流程：`notes/20-design/{净室-meow-launcher,净室-lwjgl-glfw-bridge,lwjgl自编方案,lwjgl多版本并存方案}.md`
@@ -145,5 +148,5 @@ devecocli run --module entry meowjre --device <serial>
 | `ref/jna-cache/` | JNA jar 下载缓存（oshi 构建用） | oshi 构建时**自动重下**（见 `tools/oshi/README.md`） |
 
 - 删 **worktree** 务必用 `git -C ref/<repo> worktree remove --force <path>`（或 `rm -rf` 后 `git -C ref/<repo> worktree prune`），否则留悬挂条目。
-- `ref/` 只保留**源码 clone**（`lwjgl3` / `lwjgl` / `openal-soft` / `freetype` / `oshi` / `gl4es`）作为可重建输入；外部参照仓（`Amethyst-Android` / `HMCL` / `HomoLauncher` / `PojavLauncher_iOS`）**不入 app 仓库、不随包**，**保留供继续学习参考（用户决定：勿删）**。
+- `ref/` 只保留**源码 clone**（`lwjgl3` / `lwjgl` / `openal-soft` / `freetype` / `oshi` / `gl4es` / `jdk26u`）作为可重建输入；外部参照仓（`Amethyst-Android` / `HMCL` / `HomoLauncher` / `PojavLauncher_iOS`）**不入 app 仓库、不随包**，**保留供继续学习参考（用户决定：勿删）**。
 - 2026-09-10：已删 `ref/openal-soft.build`(18M) + `ref/lwjgl3-3.4.3`(174M) + `ref/jna-cache`(15M)，共省 ~207M（按上表重建）。

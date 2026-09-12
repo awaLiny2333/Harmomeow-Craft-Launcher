@@ -6,7 +6,7 @@ set -u
 SHARE="${MEOW_SHARE:-/mnt/linux_share/Documents/Meow/Codes/HMOS/HarmonyOS_Projects/HarmonyOS_Projects/Meowcraft}"
 J26="$SHARE/stuffs/research/jdk26"
 WORK="${MEOW_WORK:-$HOME/meow-jvm26}"
-export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1770909215}"   # 与 libjvm 一致，固定 jlink 输出
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1784133400}"   # 与 libjvm 一致，固定 jlink 输出
 
 # boot JDK：优先容器原生 fs 里的，否则用挂载的
 BOOT="$WORK/bootjdk"

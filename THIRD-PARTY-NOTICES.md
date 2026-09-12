@@ -19,8 +19,8 @@ required by the relevant licenses is satisfied.
   (`bin/`, `conf/`, `lib/modules`, …).
 * Upstream base: official OpenJDK **26.0.2.1** (aarch64 Linux, **glibc**) —
   `https://jdk.java.net/archive/` (`JAVA_RUNTIME_VERSION=26.0.2.1+1-7`) — and the
-  OpenJDK source tree tag **`jdk-26-ga`**
-  (`https://github.com/openjdk/jdk`, commit `4408cd2a07a…`).
+  OpenJDK source tree tag **`jdk-26.0.2.1-ga`** from the **update repository**
+  `https://github.com/openjdk/jdk26u` (commit `d55edf1cba61…`).
 * License: **GPL-2.0-only WITH Classpath-Exception** — [`LICENSES/GPL-2.0-with-Classpath-Exception.txt`](LICENSES/GPL-2.0-with-Classpath-Exception.txt)
   and [`LICENSES/GPL-2.0.txt`](LICENSES/GPL-2.0.txt).
 * **Modification (we DO modify the JRE):**

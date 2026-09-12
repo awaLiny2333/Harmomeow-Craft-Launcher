@@ -1,18 +1,21 @@
 #!/bin/sh
 # 容器内：原生构建 JDK26 的 libjvm.so（aarch64-linux-gnu）。
-# 全程用容器原生 fs（$HOME/meow-jvm），只把最终 libjvm.so 拷回共享挂载。
+# 全程用容器原生 fs（$HOME/meow-jvm26），只把最终 libjvm.so 拷回共享挂载。
 # 用法（容器内）:
 #   sh /mnt/linux_share/Documents/Meow/Codes/HMOS/HarmonyOS_Projects/HarmonyOS_Projects/Meowcraft/Harmomeow-Craft-Launcher/tools/jre26/linux_build_jvm.sh
 set -u
 SHARE="${MEOW_SHARE:-/mnt/linux_share/Documents/Meow/Codes/HMOS/HarmonyOS_Projects/HarmonyOS_Projects/Meowcraft}"
 J26="$SHARE/stuffs/research/jdk26"
+# 源仓：官方 26 更新版在**独立更新仓 jdk26u**（非主线的 jdk-26-ga），用于与官方件精确对齐
+JDK_REPO="${JDK_REPO:-$SHARE/ref/jdk26u}"
 WORK="${MEOW_WORK:-$HOME/meow-jvm26}"
 echo "== SHARE: $SHARE"
+echo "== REPO : $JDK_REPO"
 echo "== WORK : $WORK"
 mkdir -p "$WORK"; cd "$WORK" || exit 2
 
-# 可复现：固定 SOURCE_DATE_EPOCH（= jdk-26-ga 提交时间 2026-02-12T15:13:35Z）
-export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1770909215}"
+# 可复现：固定 SOURCE_DATE_EPOCH（= jdk-26.0.2.1-ga 提交时间 2026-07-15T16:36:40Z）
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1784133400}"
 echo "== SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH"
 
 echo; echo "========== 1) boot JDK（拷到原生 fs 再解包，避开挂载 utime 问题） =========="
@@ -23,17 +26,17 @@ if [ ! -x "$WORK/bootjdk/bin/java" ]; then
 fi
 echo "  java : $("$WORK/bootjdk/bin/java" -version 2>&1 | head -1)"
 
-echo; echo "========== 2) 源码（每次重取干净源码；默认 jdk-26-ga，可用 JDK_TAG 覆盖） =========="
+echo; echo "========== 2) 源码（每次重取干净源码；默认 jdk-26.0.2.1-ga，可用 JDK_TAG 覆盖） =========="
 rm -rf "$WORK/src"
-# 默认用文档/digests 对应的 jdk-26-ga；如需官方精确 commit：联网 + export JDK_TAG=<commit>（digests 会随之变化）
-TAG="${JDK_TAG:-jdk-26-ga}"
-if ! git -C "$J26/jdk" rev-parse "$TAG" >/dev/null 2>&1; then
-    echo "  本地无 $TAG，尝试 fetch"; git -C "$J26/jdk" fetch --depth 1 origin tag "$TAG" 2>/dev/null || true
+# 默认 = 官方 26.0.2.1 件的确切源（release 的 SOURCE=git:d55edf1cba61 == jdk26u 的 jdk-26.0.2.1-ga）
+TAG="${JDK_TAG:-jdk-26.0.2.1-ga}"
+if ! git -C "$JDK_REPO" rev-parse "$TAG" >/dev/null 2>&1; then
+    echo "  本地无 $TAG，尝试 fetch"; git -C "$JDK_REPO" fetch --depth 1 origin tag "$TAG" 2>/dev/null || true
 fi
-git -C "$J26/jdk" rev-parse "$TAG" >/dev/null 2>&1 || { echo "  找不到 tag: $TAG"; exit 2; }
-echo "  使用 tag: $TAG ($(git -C "$J26/jdk" rev-parse --short "$TAG^{commit}"))"
+git -C "$JDK_REPO" rev-parse "$TAG" >/dev/null 2>&1 || { echo "  找不到 tag: $TAG"; exit 2; }
+echo "  使用 tag: $TAG ($(git -C "$JDK_REPO" rev-parse --short "$TAG^{commit}"))"
 mkdir -p "$WORK/src"
-git -C "$J26/jdk" archive "$TAG" | tar -x -C "$WORK/src"
+git -C "$JDK_REPO" archive "$TAG" | tar -x -C "$WORK/src"
 ls "$WORK/src" | head -3 | sed 's/^/    /'
 
 echo; echo "========== 2.6) 打 HotSpot OHOS 分体补丁 =========="

@@ -29,8 +29,10 @@ In accordance with **GPLv2 §3**, the complete corresponding source code of the
 exact binaries we ship is available:
 * **Our modifications + rebuild recipe:** `tools/jre26/` (scripts, `patches/*.patch`, `README.md`).
 * **Upstream base sources:** the official OpenJDK **26.0.2.1** build
-  (`https://jdk.java.net/archive/`) and the OpenJDK source tag **`jdk-26-ga`**
-  (`https://github.com/openjdk/jdk`, commit `4408cd2a07a14243a58cd9d30813302bfbe81133`).
+  (`https://jdk.java.net/archive/`) and the OpenJDK source tag **`jdk-26.0.2.1-ga`**
+  from the **update repository** `https://github.com/openjdk/jdk26u`
+  (commit `d55edf1cba61219d17565da51cd13a4d425f7c59` — identical to the official
+  build's `SOURCE=git:d55edf1cba61`).
 
 If you cannot obtain it from upstream, we offer — for **at least three (3)
 years** from the date of distribution — to provide the corresponding source
