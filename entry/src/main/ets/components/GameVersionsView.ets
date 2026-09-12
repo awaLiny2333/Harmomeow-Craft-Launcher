@@ -434,7 +434,13 @@ export struct GameVersionsView {
       this.installer.errorDetail = '';
       return;
     }
-    await this.installer.install(root, remote, instanceName);
+    const ok = await this.installer.install(root, remote, instanceName);
+    if (ok) {
+      // 与 HMCL 一致（enableIsolation）：新装实例默认开启版本隔离（游戏数据落 versions/<id>/）。
+      const settings = new SettingsTools(this.context());
+      settings.setVersionIsolation(instanceName, true);
+      this.state.isolatedIds = settings.versionIsolationIds();
+    }
     this.state.refreshVersions();
   }
 

@@ -80,10 +80,10 @@ export class InstallerState {
     this.manifestLoading = false;
   }
 
-  /** 安装一个版本到 `versions/<instanceName>/`（单任务；完成后由调用方刷新版本列表）。 */
-  async install(gameRoot: string, remote: RemoteVersion, instanceName: string): Promise<void> {
+  /** 安装一个版本到 `versions/<instanceName>/`（单任务）；返回是否成功。 */
+  async install(gameRoot: string, remote: RemoteVersion, instanceName: string): Promise<boolean> {
     if (this.installingId.length > 0) {
-      return;
+      return false;
     }
     this.installingId = remote.id;
     this.errorKind = INSTALL_ERR_NONE;
@@ -94,6 +94,7 @@ export class InstallerState {
     this.current = '';
     this.fileReceived = 0;
     this.fileTotal = 0;
+    let ok = true;
     try {
       await installVersion(gameRoot, remote, this.source, instanceName,
         (phase: number) => {
@@ -116,8 +117,10 @@ export class InstallerState {
       const err = error as BusinessError;
       this.errorKind = INSTALL_ERR_INSTALL;
       this.errorDetail = err.message ?? '';
+      ok = false;
     }
     this.installingId = '';
+    return ok;
   }
 
   /** 设置下载源（面板用）；清空已加载的清单，等待用户点「获取版本列表」。 */
