@@ -9,6 +9,8 @@ import { RENDERER_LIB, VULKAN_LIB_DISABLED, WINDOW_DEFAULT_W, WINDOW_DEFAULT_H,
   LWJGL_NAME_MAPPER } from '../constants/LaunchDefaults';
 import { MEOW_CLASS_LOADER, MEOW_MAIN_CLASS } from '../constants/LaunchContract';
 import { NATIVES_DIR } from '../constants/Paths';
+import { VersionJson, VersionRule, VersionRuleArg, VERSION_FORM_VANILLA,
+  resolveVersion, resolveVersionByPath } from './VersionResolver';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'GameLauncher';
@@ -41,61 +43,7 @@ export function setWindowDisplaySize(w: number, h: number): void {
  * 离线约定：username=Player、uuid/accessToken 占位（MC 离线可进主菜单）。
  */
 
-/** 平台规则 os 字段。 */
-interface RuleOs {
-  name?: string;
-  arch?: string;
-}
-
-/** 单条平台规则。 */
-interface VersionRule {
-  action?: string;
-  os?: RuleOs;
-}
-
-/** 带规则的参数项。 */
-interface VersionRuleArg {
-  rules?: VersionRule[];
-  value?: string | string[];
-}
-
-/** arguments 分组。 */
-interface VersionArguments {
-  game?: Array<string | VersionRuleArg>;
-  jvm?: Array<string | VersionRuleArg>;
-}
-
-/** assetIndex 信息。 */
-interface AssetIndex {
-  id?: string;
-}
-
-/** 依赖库 artifact 下载信息。 */
-interface ArtifactInfo {
-  path?: string;
-}
-
-/** 依赖库 downloads 信息。 */
-interface LibraryDownloads {
-  artifact?: ArtifactInfo;
-}
-
-/** 版本 json 子集。 */
-interface VersionJson {
-  id?: string;
-  mainClass?: string;
-  minecraftArguments?: string;
-  arguments?: VersionArguments;
-  assetIndex?: AssetIndex;
-  libraries?: VersionLibrary[];
-}
-
-/** 依赖库。 */
-interface VersionLibrary {
-  name?: string;
-  rules?: VersionRule[];
-  downloads?: LibraryDownloads;
-}
+/** 版本 json 数据模型（含三形态判定与合并）见 ./VersionResolver —— 唯一 schema 归属。 */
 
 /**
  * 平台规则命中：无规则默认允许；否则存在 allow 且 os 匹配当前平台才放行。
@@ -172,10 +120,12 @@ export interface LaunchOptions {
  * 超长 -cp 在本 JLI 移植会失效，调用方应把 jar 平铺后用 "<dir>/*" 通配传入 classpath。
  */
 export function buildLaunchArgv(opts: LaunchOptions): string[] {
-  const json = readJson(opts.jsonPath);
-  if (json === null) {
+  // 归一版本清单：展开 inheritsFrom 继承链 / HMCL patches[]（见 VersionResolver）。
+  const resolved = resolveVersion(opts.gameRoot, opts.jsonPath);
+  if (resolved === null) {
     return [];
   }
+  const json = resolved.json;
   // 实例身份 = versions 目录名（opts.versionId，对齐 HMCL）；无则退回 json 的 id。
   const id = (opts.versionId !== undefined && opts.versionId.length > 0)
     ? opts.versionId : (json.id ?? '');
@@ -239,7 +189,13 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
 
   // 自研桥模式固定参数（与历史启动器 JVMLauncher overridableArguments 全量对齐——LWJGL 桥与 MeowClassLoader 需要）。
   if (opts.meowcraftLaunch === true) {
-    argv.push(`-Djava.system.class.loader=${MEOW_CLASS_LOADER}`);
+    // 自研 system classloader 只服务 vanilla：它让我们在运行期往 classpath 追加 jar。
+    // **Fabric（等加载器）必须走默认 app classloader**：Fabric Knot 要求 loader 类由父加载器持有、
+    // game 类由它自己的 KnotClassLoader 持有；若我们自设 system CL，KnotClassLoader 会把 loader 类
+    // 当 game 类加载 → `verifyNotInTargetCl` 抛错 + mixin 类分裂。故加载器实例不设该 -D。
+    if (resolved.form === VERSION_FORM_VANILLA) {
+      argv.push(`-Djava.system.class.loader=${MEOW_CLASS_LOADER}`);
+    }
     // 渲染后端按 MC 版本选（见 RendererPolicy）：≥1.17 → 桌面 GL libGLv4.so(Zink)；
     // ≤1.16 → gl4es(libgl4es.so，GLES 上的固定管线翻译)。必须与 startJvm 传的 rendererLib 一致；
     // glfwstub 不自建 EGL，交给渲染后端（桥按 MEOWCRAFT_RENDERER 决定 GL/GLES）。
@@ -380,19 +336,14 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   return argv;
 }
 
-/** 读取版本 json 的内部 `id`（真正的 MC 版本号，如 "1.16.5"）；失败/缺省返回 ''。 */
+/**
+ * 读取**解析后的真 MC 版本号**（如 "1.16.5"），渲染后端/LWJGL 世代判定用。
+ * 注意：不是 json 内部 `id` —— Fabric 实例的 `id` 形如 `fabric-loader-0.15.11-1.20.1`，
+ * 真版本号在继承链根 / `game` 补丁里（见 ./VersionResolver）。失败/缺省返回 ''。
+ */
 export function readVersionId(jsonPath: string): string {
-  const json = readJson(jsonPath);
-  return json === null ? '' : (json.id ?? '');
-}
-
-/** 读取并解析版本 json。 */
-function readJson(path: string): VersionJson | null {
-  try {
-    return JSON.parse(fileIo.readTextSync(path)) as VersionJson;
-  } catch {
-    return null;
-  }
+  const resolved = resolveVersionByPath(jsonPath);
+  return resolved === null ? '' : resolved.mcVersion;
 }
 
 /** 宏表：值由 json + 离线约定决定。gameDir = 运行目录（隔离时 = versions/<id>），
@@ -455,6 +406,26 @@ function expand(raw: string, macros: LaunchMacros): string {
   return out;
 }
 
+/**
+ * 由 maven 描述符 `group:artifact:version[:classifier][@ext]` 推本地 maven 相对路径
+ * （对齐 Java 侧 LibraryResolver.artifactPath）。Fabric loader 库常只给 `name`+`url`、
+ * 无 `downloads.artifact.path`，需此回退才能进 classpath。
+ */
+function mavenPathFromName(name: string): string {
+  const at = name.indexOf('@');
+  const ext = at >= 0 ? name.substring(at + 1) : 'jar';
+  const base = at >= 0 ? name.substring(0, at) : name;
+  const parts = base.split(':');
+  if (parts.length < 3) {
+    return '';
+  }
+  const group = parts[0].replace(/\./g, '/');
+  const artifact = parts[1];
+  const version = parts[2];
+  const classifier = parts.length >= 4 ? `-${parts[3]}` : '';
+  return `${group}/${artifact}/${version}/${artifact}-${version}${classifier}.${ext}`;
+}
+
 /** 从已解析 json 收集本规则+存在的 jar（库 + 版本 jar）。
  *  org.lwjgl.* 排除：LWJGL 全家由 clean-room 合并 jar 替代（鸿蒙 musl .so + glfw 桥）。 */
 function collectFromJson(gameRoot: string, json: VersionJson, versionId: string): string[] {
@@ -464,7 +435,10 @@ function collectFromJson(gameRoot: string, json: VersionJson, versionId: string)
     if (!ruleAllows(lib.rules)) {
       continue;
     }
-    const rel = lib.downloads?.artifact?.path ?? '';
+    let rel = lib.downloads?.artifact?.path ?? '';
+    if (rel.length === 0) {
+      rel = mavenPathFromName(lib.name ?? '');
+    }
     if (rel.startsWith('org/lwjgl/')) {
       // LWJGL3（`org/lwjgl/lwjgl/<ver>/…`）由 clean-room 合并 jar 替代 → 跳过。
       // LWJGL2（legacy ≤1.12.2）的 core/util（`org/lwjgl/lwjgl/lwjgl|_util/<ver>/…`）必须随包进
@@ -518,12 +492,12 @@ const LWJGL_GEN_TABLE: LwjglGenRule[] = [
  * `NoSuchMethodError`，即"该加一代"的信号）。
  */
 export function lwjglGeneration(jsonPath: string): string {
-  const json = readJson(jsonPath);
+  const resolved = resolveVersionByPath(jsonPath);
   let major = -1;
   let minor = -1;
-  if (json !== null) {
+  if (resolved !== null) {
     const prefix = 'org.lwjgl:lwjgl:';
-    for (const lib of json.libraries ?? []) {
+    for (const lib of resolved.json.libraries ?? []) {
       const name = lib.name ?? '';
       if (!name.startsWith(prefix)) {
         continue;
@@ -552,11 +526,21 @@ export function lwjglGeneration(jsonPath: string): string {
  * 直接拼长 -cp（可达上万字符）在本 JLI 移植中会导致类加载失效。
  */
 export function collectJarSources(gameRoot: string, jsonPath: string, versionId: string): string[] {
-  const json = readJson(jsonPath);
-  if (json === null) {
+  const resolved = resolveVersion(gameRoot, jsonPath);
+  if (resolved === null) {
     return [];
   }
-  return collectFromJson(gameRoot, json, versionId);
+  const parts = collectFromJson(gameRoot, resolved.json, versionId);
+  // 继承/补丁实例的客户端 jar 在基座版本目录（叶子目录常无 <id>.jar）——补进 classpath，
+  // 这样平铺目录对 Fabric 也自带 MC jar（不依赖自研 classloader 的运行期追加）。
+  const baseId = resolved.clientJarId;
+  if (baseId.length > 0 && baseId !== versionId) {
+    const baseJar = `${gameRoot}/versions/${baseId}/${baseId}.jar`;
+    if (fileExists(baseJar) && !parts.includes(baseJar)) {
+      parts.push(baseJar);
+    }
+  }
+  return parts;
 }
 
 /**
@@ -565,12 +549,12 @@ export function collectJarSources(gameRoot: string, jsonPath: string, versionId:
  * 因此 legacy 版本**不得**混入我们随包的 LWJGL3 jar。
  */
 export function isLegacyLwjgl(jsonPath: string): boolean {
-  const json = readJson(jsonPath);
-  if (json === null) {
+  const resolved = resolveVersionByPath(jsonPath);
+  if (resolved === null) {
     return false;
   }
   const prefix = 'org.lwjgl.lwjgl:';
-  for (const lib of json.libraries ?? []) {
+  for (const lib of resolved.json.libraries ?? []) {
     // Respect per-library rules: a version whose only org.lwjgl.lwjgl: entries are rule-excluded
     // (e.g. Windows-only) must NOT be treated as legacy — otherwise we would drop our LWJGL3 jar
     // and lwjglClasspathOk() would then abort the launch.

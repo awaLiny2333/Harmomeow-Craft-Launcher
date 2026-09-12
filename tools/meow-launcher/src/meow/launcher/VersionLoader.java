@@ -63,6 +63,12 @@ public final class VersionLoader {
         if (notEmpty(child.type)) {
             parent.type = child.type;
         }
+        if (notEmpty(child.jar)) {
+            parent.jar = child.jar;
+        }
+        if (child.assetIndex != null) {
+            parent.assetIndex = child.assetIndex;
+        }
 
         parent.libraries = mergeLibraries(parent.libraries, child.libraries);
         parent.arguments = mergeArguments(parent.arguments, child.arguments);

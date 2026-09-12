@@ -51,7 +51,7 @@ export const CLIENT_MOD_NAME: string = 'Harmomeow Craft';
 
 // ---- staging（启动支持 jar 载体）----
 /** 内容令牌：meowcraft_extras.tar.gz 内容变更（换 jar / 打补丁）时递增，强制重抽缓存。 */
-export const EXTRAS_VERSION: string = '20260911-accounts';
+export const EXTRAS_VERSION: string = '20260913-fabric2';
 /** 平铺目录必须保留的公共 jar（其余 .jar 视为残留删除；各代 lwjgl jar 按版本另行保留）。 */
 export const EXPECTED_EXTRA_JARS: string[] = ['launcher.jar', 'gson-for-launcher.jar'];
 // ---- LWJGL 世代（多版本并存：随包多代 jar+natives，按 MC 版本选一）----

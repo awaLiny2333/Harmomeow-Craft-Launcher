@@ -96,22 +96,27 @@ public final class MeowLauncher {
         String classpath = LibraryResolver.build(version);
         System.out.println("Args init finished. Now starting game");
 
-        MeowClassLoader loader = (MeowClassLoader) ClassLoader.getSystemClassLoader();
-        String javaClassPath = System.getProperty("java.class.path");
-        if (javaClassPath != null) {
-            for (String entry : javaClassPath.split(File.pathSeparator)) {
+        // Vanilla 侧自研 system classloader（MeowClassLoader）允许运行期追加 classpath；
+        // 加载器实例（Fabric）走默认 app classloader（-cp 已齐全），此时不追加，直接用系统 CL 加载主类。
+        ClassLoader systemLoader = ClassLoader.getSystemClassLoader();
+        if (systemLoader instanceof MeowClassLoader) {
+            MeowClassLoader loader = (MeowClassLoader) systemLoader;
+            String javaClassPath = System.getProperty("java.class.path");
+            if (javaClassPath != null) {
+                for (String entry : javaClassPath.split(File.pathSeparator)) {
+                    if (!entry.isEmpty()) {
+                        loader.addURL(new File(entry).toURI().toURL());
+                    }
+                }
+            }
+            for (String entry : classpath.split(":")) {
                 if (!entry.isEmpty()) {
                     loader.addURL(new File(entry).toURI().toURL());
                 }
             }
         }
-        for (String entry : classpath.split(":")) {
-            if (!entry.isEmpty()) {
-                loader.addURL(new File(entry).toURI().toURL());
-            }
-        }
 
-        Class<?> mainClass = loader.loadClass(version.mainClass);
+        Class<?> mainClass = systemLoader.loadClass(version.mainClass);
         Method mainMethod = mainClass.getMethod("main", String[].class);
         mainMethod.invoke(null, new Object[]{gameArgs});
     }

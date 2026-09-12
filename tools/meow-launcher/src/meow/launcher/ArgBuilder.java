@@ -36,7 +36,10 @@ public final class ArgBuilder {
         macros.put("auth_xuid", account.xuid);
         macros.put("assets_root", GameDirs.assets);
         macros.put("game_assets", GameDirs.assets);
-        macros.put("assets_index_name", version.assets);
+        String assetIndexName = (version.assets != null && !version.assets.isEmpty())
+                ? version.assets
+                : (version.assetIndex != null ? version.assetIndex.id : null);
+        macros.put("assets_index_name", assetIndexName);
         macros.put("clientid", account.clientToken);
         macros.put("game_directory", gameDir.getAbsolutePath());
         macros.put("user_properties", "{}");

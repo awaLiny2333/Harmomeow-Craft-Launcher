@@ -1,4 +1,5 @@
 import { fileIo, fileUri } from '@kit.CoreFileKit';
+import { resolveVersion } from './VersionResolver';
 
 /**
  * 将 Picker 返回的目录 URI（file://docs/...）转换为可传给 fileIo 的物理路径。
@@ -50,13 +51,22 @@ export class GameVersion {
   /** 版本发布日期（releaseTime），供展示/排序。可能为空。 */
   releaseTime: string;
 
-  constructor(id: string, type: string, jsonPath: string, mainClass: string, javaVersion: number, releaseTime: string) {
+  /** 加载器：'' / 'fabric' / 'legacy_fabric'（见 VersionResolver.detectLoader）。 */
+  loader: string;
+
+  /** 真 MC 版本号（解析继承/补丁后；渲染后端/LWJGL 世代判定用），可能与实例名不同。 */
+  mcVersion: string;
+
+  constructor(id: string, type: string, jsonPath: string, mainClass: string, javaVersion: number,
+    releaseTime: string, loader: string, mcVersion: string) {
     this.id = id;
     this.type = type;
     this.jsonPath = jsonPath;
     this.mainClass = mainClass;
     this.javaVersion = javaVersion;
     this.releaseTime = releaseTime;
+    this.loader = loader;
+    this.mcVersion = mcVersion;
   }
 }
 
@@ -68,24 +78,39 @@ export class GameVersion {
  * json 里的 `id` 仅要求存在（把"任意 json"挡在外面），身份一律用 `dirName`；
  * 解析失败/缺 id 时返回 null（该版本目录被跳过）。
  */
-function parseVersionJson(dirName: string, jsonPath: string): GameVersion | null {
+function parseVersionJson(gameRoot: string, dirName: string, jsonPath: string): GameVersion | null {
   try {
     const text = fileIo.readTextSync(jsonPath);
-    const obj = JSON.parse(text) as GameVersionJson;
-    if ((obj.id ?? '').length === 0) {
+    const leaf = JSON.parse(text) as GameVersionJson;
+    if ((leaf.id ?? '').length === 0) {
       return null;
     }
-    const type = obj.type ?? '';
-    const mainClass = obj.mainClass ?? '';
-    const javaVersion = obj.javaVersion?.majorVersion ?? 8;
-    const releaseTime = obj.releaseTime ?? '';
+    let type = leaf.type ?? '';
+    let mainClass = leaf.mainClass ?? '';
+    let javaVersion = leaf.javaVersion?.majorVersion ?? 8;
+    let releaseTime = leaf.releaseTime ?? '';
+    let loader = '';
+    let mcVersion = leaf.id ?? '';
+    // 解析继承链/补丁取"有效清单"（展示用），真 MC 版本号取解析结果（Fabric 实例 ≠ 目录名）。
+    const resolved = resolveVersion(gameRoot, jsonPath);
+    if (resolved !== null) {
+      const rj = resolved.json;
+      type = rj.type ?? type;
+      mainClass = rj.mainClass ?? mainClass;
+      javaVersion = rj.javaVersion?.majorVersion ?? javaVersion;
+      releaseTime = rj.releaseTime ?? releaseTime;
+      loader = resolved.loader;
+      mcVersion = resolved.mcVersion;
+    }
     return new GameVersion(
       dirName,
       type.length > 0 ? type : 'unknown',
       jsonPath,
       mainClass,
       javaVersion,
-      releaseTime
+      releaseTime,
+      loader,
+      mcVersion
     );
   } catch {
     return null;
@@ -134,7 +159,7 @@ export function scanVersions(dirUri: string): GameVersion[] {
     try {
       const stat = fileIo.statSync(`${versionsPath}${name}`);
       if (stat.isDirectory()) {
-        const v = parseVersionJson(name, `${versionsPath}${name}/${name}.json`);
+        const v = parseVersionJson(rootPath, name, `${versionsPath}${name}/${name}.json`);
         if (v) {
           result.push(v);
         }

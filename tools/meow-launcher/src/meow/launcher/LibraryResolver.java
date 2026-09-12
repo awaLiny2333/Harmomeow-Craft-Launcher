@@ -46,9 +46,34 @@ public final class LibraryResolver {
             }
             classpath.append(entry).append(':');
         }
-        classpath.append(GameDirs.versions).append('/').append(version.id)
-                .append('/').append(version.id).append(".jar");
+        String jarId = resolveJarId(version);
+        classpath.append(GameDirs.versions).append('/').append(jarId)
+                .append('/').append(jarId).append(".jar");
         return classpath.toString();
+    }
+
+    /**
+     * Version id whose {@code <id>.jar} provides the client classes.
+     *
+     * <p>For an {@code inheritsFrom} form (e.g. a Fabric profile
+     * {@code fabric-loader-<loader>-<game>}) the leaf has no jar of its own; the vanilla client jar
+     * lives in the base version directory. An explicit {@code jar} field wins, otherwise the
+     * inherited base id, otherwise the version id; falls back to the version id when the resolved
+     * jar is absent but the version's own jar exists.
+     */
+    private static String resolveJarId(VersionJson version) {
+        String base = (version.jar != null && !version.jar.isEmpty()) ? version.jar
+                : (version.inheritsFrom != null && !version.inheritsFrom.isEmpty()
+                        ? version.inheritsFrom : version.id);
+        if (!versionJarExists(base) && version.id != null && !version.id.isEmpty()
+                && versionJarExists(version.id)) {
+            return version.id;
+        }
+        return base;
+    }
+
+    private static boolean versionJarExists(String id) {
+        return id != null && new File(GameDirs.versions + "/" + id + "/" + id + ".jar").exists();
     }
 
     private static boolean isSkipped(String name) {

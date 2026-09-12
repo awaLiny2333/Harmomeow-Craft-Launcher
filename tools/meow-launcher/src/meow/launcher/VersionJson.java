@@ -7,8 +7,10 @@ package meow.launcher;
 public class VersionJson {
     public String id;
     public String inheritsFrom;
+    public String jar;
     public String mainClass;
     public String assets;
+    public AssetIndex assetIndex;
     public String type;
     public String minecraftArguments;
 
@@ -25,6 +27,10 @@ public class VersionJson {
     }
 
     public static class LoggingFile {
+        public String id;
+    }
+
+    public static class AssetIndex {
         public String id;
     }
 
