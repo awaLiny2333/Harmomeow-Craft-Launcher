@@ -11,24 +11,24 @@ required by the relevant licenses is satisfied.
 
 ---
 
-## 1. OpenJDK / Java Runtime Environment (JRE 25)
+## 1. OpenJDK / Java Runtime Environment (JRE 26)
 
-* Bundled as: `libs/meowjre25/libs/arm64-v8a/*.so` (**29 libraries**, incl.
+* Bundled as: `libs/meowjre/libs/arm64-v8a/*.so` (**29 libraries**, incl.
   `libjvm.so`, `libjli.so`, `libc6.so`) and the runtime data image
-  `entry/src/main/resources/rawfile/meow_jre25.tar.gz`
+  `entry/src/main/resources/rawfile/meow_jre.tar.gz`
   (`bin/`, `conf/`, `lib/modules`, …).
-* Upstream base: official OpenJDK **25.0.2** (aarch64 Linux, **glibc**) —
-  `https://jdk.java.net/archive/` (`JAVA_RUNTIME_VERSION=25.0.2+10-69`) — and the
-  OpenJDK source tree tag **`jdk-25-ga`**
-  (`https://github.com/openjdk/jdk`, commit `6c48f4ed…`).
+* Upstream base: official OpenJDK **26.0.2.1** (aarch64 Linux, **glibc**) —
+  `https://jdk.java.net/archive/` (`JAVA_RUNTIME_VERSION=26.0.2.1+1-7`) — and the
+  OpenJDK source tree tag **`jdk-26-ga`**
+  (`https://github.com/openjdk/jdk`, commit `4408cd2a07a…`).
 * License: **GPL-2.0-only WITH Classpath-Exception** — [`LICENSES/GPL-2.0-with-Classpath-Exception.txt`](LICENSES/GPL-2.0-with-Classpath-Exception.txt)
   and [`LICENSES/GPL-2.0.txt`](LICENSES/GPL-2.0.txt).
 * **Modification (we DO modify the JRE):**
   * 26 official libraries are **binary-patched** (in-place ELF `.dynstr` NEEDED rewrite) to load on OHOS/musl;
   * `libc6.so` is our self-built glibc-compat shim;
   * `libjvm.so` / `libjli.so` are **self-built** from OpenJDK source with our OHOS split-layout patches;
-  * the data image is the official 25.0.2 data, **slimmed** via `jlink`.
-  * Complete recipe + patches: `tools/jre25/` — see [`SOURCE-OFFER.md`](SOURCE-OFFER.md).
+  * the data image is the official 26.0.2.1 data, **slimmed** via `jlink`.
+  * Complete recipe + patches: `tools/jre26/` — see [`SOURCE-OFFER.md`](SOURCE-OFFER.md).
 * **The Classpath Exception permits this project's own code to be licensed
   differently (MIT) and linked against the JRE.** Redistribution of the **modified**
   JRE binary requires the corresponding source — see [`SOURCE-OFFER.md`](SOURCE-OFFER.md).

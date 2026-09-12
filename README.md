@@ -121,7 +121,7 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
 
 | Component | Version | License | Bundled | Notes |
 |---|---|---|---|---|
-| OpenJDK / JRE | 25.0.2 (official glibc; our binary patches + self-built `libjli`/`libjvm`) | GPL-2.0 + Classpath-Exception | ✅ | Runtime; **fully self-held (zero black box)** — see `tools/jre25/` |
+| OpenJDK / JRE | 26.0.2.1 (official glibc; our binary patches + self-built `libjli`/`libjvm`) | GPL-2.0 + Classpath-Exception | ✅ | Runtime; **fully self-held (zero black box)** — see `tools/jre26/` |
 | LWJGL | 3.3.3 / 3.4.3 / 2.9.3 | BSD-3 | ✅ | **three generations co-exist**, selected per MC version |
 | OpenAL Soft | 1.24.3 | LGPL-2.0+ | ✅ | OHAudio backend |
 | FreeType | 2.13.3 | FTL | ✅ | font rendering |
@@ -153,7 +153,7 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
 ## Production
 
 - **Runtime environment**: an ordinary HarmonyOS PC (2-in-1), API ≥ 23.
-- **Deploy order**: install the HAR/HSP first (`meowjre25` / `meowcraftlib` / `meowlwjgl3`), then the `entry` HAP; **after changing natives, clean the module build and rebuild the HSP**.
+- **Deploy order**: install the HAR/HSP first (`meowjre` / `meowcraftlib` / `meowlwjgl3`), then the `entry` HAP; **after changing natives, clean the module build and rebuild the HSP**.
 
 ## License
 

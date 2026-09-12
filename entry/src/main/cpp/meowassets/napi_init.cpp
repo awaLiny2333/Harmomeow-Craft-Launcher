@@ -6,7 +6,7 @@
  *   extractRawTar(resourceManager: object, assetName: string, destDir: string): boolean
  *
  * 本 so 只承载 JRE 数据安装与 rawfile tar 解压工具。
- * JVM 启动与游戏渲染由 meowjre25 HSP（meowcraftlib 并入的桥）负责。
+ * JVM 启动与游戏渲染由 meowjre HSP（meowcraftlib 并入的桥）负责。
  * 入口侧早期为 GL 预览 / 直启 JVM / dlopen 探针写的导出均已清理（无调用方）。
  */
 #include "napi/native_api.h"

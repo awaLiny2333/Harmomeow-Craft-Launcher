@@ -23,9 +23,9 @@
 **其它外部输入**（按需下载，见各 README）：libffi 源码 tarball（`https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz`）、
 LWJGL/gson/jspecify 走 Maven Central（脚本自动下载 + `.sha1` 校验）、OHOS SDK（`$HOME/devecow/deveco_tools/sdk/default/openharmony/native`，可用 `$OHOS_SDK_NATIVE` 覆盖）。
 
-**JRE 收编输入**（见 `tools/jre25/`）：官方 OpenJDK **25.0.2**（aarch64 Linux，**glibc**，来自 `https://jdk.java.net/archive/`）
-tar（`openjdk-25.0.2_linux-aarch64_bin.tar.gz`，sha256 `671208d205e70c9805da45a483f670d49dd64654990a7b7223ccffb2abb070dd`）
-+ OpenJDK 源码 **`https://github.com/openjdk/jdk`** 的 **`jdk-25-ga`** tag（供自编 `libjli`+`libjvm`；commit `6c48f4ed…`）
+**JRE 收编输入**（见 `tools/jre26/`）：官方 OpenJDK **26.0.2.1**（aarch64 Linux，**glibc**，来自 `https://jdk.java.net/archive/`）
+tar（`openjdk-26.0.2.1_linux-aarch64_bin.tar.gz`，sha256 `b96b265a4a1a36c02454148891aa58ca63303cbc2d1b7979c33b4fe99e09117b`）
++ OpenJDK 源码 **`https://github.com/openjdk/jdk`** 的 **`jdk-26-ga`** tag（供自编 `libjli`+`libjvm`；commit `4408cd2a07a…`）
 + 用户提供的 **openEuler 24.03 aarch64 容器**（编 `libjvm`；设备不能执行编译产物）。**零黑箱。**
 
 ## 2. 工具清单
@@ -37,13 +37,14 @@ tar（`openjdk-25.0.2_linux-aarch64_bin.tar.gz`，sha256 `671208d205e70c9805da45
 | `gl4es/` | `libgl4es.so` | 自编 **gl4es v1.1.7** OHOS 移植（桌面固定管线 GL → 原生 GLES 翻译层）；**MC ≤1.16**（含 1.6.x–1.12.2，经 LWJGL2 `extgl` 取址）的渲染翻译层 |
 | `openal/` | `libopenal.so` | OpenAL Soft **1.24.3** OHOS 移植（OHAudio 默认后端 + 导出 `ALC_SOFT_system_events`） |
 | `freetype/` | `libfreetype.so` | FreeType 2.13.3 OHOS 交叉编 |
-| `jre25/` | 随包 JRE 集（`libs/*.so` + `java.home` 数据） | **魔改官方 OpenJDK 25.0.2(glibc) 跑 OHOS(musl)，零黑箱**：官方 26 lib **原地改 `.dynstr`** + `libc6.so` 兼容层 + **自编 `libjli`** + **自编 `libjvm`**（openEuler 容器编，两件均带 OHOS 分体 patch）；数据经 jlink 瘦身。见 `tools/jre25/README.md` |
+| `jre26/` | 随包 JRE 集（`libs/*.so` + `java.home` 数据） | **魔改官方 OpenJDK 26.0.2.1(glibc) 跑 OHOS(musl)，零黑箱**：官方 26 lib **原地改 `.dynstr`** + `libc6.so` 兼容层 + **自编 `libjli`** + **自编 `libjvm`**（openEuler 容器编，两件均带 OHOS 分体 patch）；数据经 jlink 瘦身。见 `tools/jre26/README.md` |
+| `jre25/` | —（历史配方） | **25 时代**的随包 JRE 配方/溯源（已发布版本）；随包 JRE 已升级到 26，**勿用于当前随包**。见 `tools/jre25/README.md` |
 | `sdl/` | `libSDL3.so` | 自编 OHOS **SDL3**（fork tag `release-3.4.14`）+ 自研 **`ohos` 驱动**（窗口/EGL/输入/grab）；**MC 26.3** 的平台绑定 |
 | `shaderc/` | `libshaderc.so`、`libspirv-cross.so` | 自编（glslang/SPIRV-Tools 静态并入；按官方 natives `.git` 钉修订）；**MC 26.3 `renderpearl`** 用 |
 | `oshi/` | `oshi-core-<v>-meow.jar` ×10 | CPU 拓扑合成补丁；**现代 9 项 + legacy `oshi-core-1.1`（MC 1.16.x）** |
 | `meow-launcher/` | `launcher.jar` | 净室自研 `meow.launcher`（无 GPL/Pojav/HMCL） |
 | `relocate_gson.py` | `gson-for-launcher.jar` | `com.google.gson` → `meow.gson`（launcher 专用） |
-| ~~`slim_jre_data.py`~~ | ~~`meow_jre25.tar.gz`~~ | **已废弃**（旧 JRE 时代工具）。现用 `tools/jre25/linux_slim_jre.sh`（jlink 裁 modules）+ `tools/jre25/pack_jre_data.py`（确定性打包） |
+| ~~`slim_jre_data.py`~~ | ~~`meow_jre*.tar.gz`~~ | **已废弃**（旧 JRE 时代工具）。现用 `tools/jre26/linux_slim_jre.sh`（jlink 裁 modules）+ `tools/jre26/pack_jre_data.py`（确定性打包） |
 | `oshi/pack_jar.py` | — | **确定性** jar 打包器（launcher/lwjgl/oshi 共用） |
 
 ## 3. 从零复现顺序（关键产物）
@@ -86,34 +87,34 @@ sh tools/lwjgl/install_natives.sh --native libshaderc.so=stuffs/research/shaderc
 sh tools/lwjgl/install_natives.sh --native libspirv-cross.so=stuffs/research/shaderc/out/libspirv-cross.so
 sh tools/oshi/build_oshi_meow.sh …                       # oshi-overrides 现代 ×9（+ legacy 1.1，见 tools/oshi/README.md）
 sh tools/meow-launcher/build_meow_launcher.sh            # launcher.jar（人跑 javac）
-# JRE 集（魔改官方 glibc 件跑 OHOS，零黑箱；完整步骤见 tools/jre25/README.md 的「复现」）
-#   0) 输入：解官方 tar 到 stuffs/research/jdk25/_inspect；clone openjdk/jdk 建 jdk-25-ga 源码树
+# JRE 集（魔改官方 glibc 件跑 OHOS，零黑箱；完整步骤见 tools/jre26/README.md 的「复现」）
+#   0) 输入：解官方 tar 到 stuffs/research/jdk26/_inspect；复用 jdk clone 建 jdk-26-ga 源码树（jdk26/jdk 符号链接）
 #   1) 容器(openEuler/aarch64)：装环境 + 编 libjvm(glibc) + jlink 瘦 modules
-sh tools/jre25/linux_bootstrap.sh              # 容器内：装工具链 + boot JDK
-sh tools/jre25/linux_build_jvm.sh              # 容器内：out-linux/libjvm.so（glibc，可复现）
-sh tools/jre25/linux_slim_jre.sh               # 容器内：out-linux/modules.slim
+sh tools/jre26/linux_bootstrap.sh              # 容器内：装工具链 + boot JDK
+sh tools/jre26/linux_build_jvm.sh              # 容器内：out-linux/libjvm.so（glibc，可复现）
+sh tools/jre26/linux_slim_jre.sh               # 容器内：out-linux/modules.slim
 #   2) 宿主：组装（魔改 26 官方件 + 自编 libc6/libjli + 魔改 libjvm + 数据瘦身）
-sh tools/jre25/rebuild_for_meowcraft.sh \
-    --official-jdk stuffs/research/jdk25/_inspect/jdk-25.0.2 \
-    --jdk-src      stuffs/research/jdk25/jdk25src \
-    --libjvm       stuffs/research/jdk25/out-linux/libjvm.so \
-    --modules-slim stuffs/research/jdk25/out-linux/modules.slim \
-    --out          stuffs/research/jdk25/out
+sh tools/jre26/rebuild_for_meowcraft.sh \
+    --official-jdk stuffs/research/jdk26/_inspect/jdk-26.0.2.1 \
+    --jdk-src      stuffs/research/jdk26/jdk26src \
+    --libjvm       stuffs/research/jdk26/out-linux/libjvm.so \
+    --modules-slim stuffs/research/jdk26/out-linux/modules.slim \
+    --out          stuffs/research/jdk26/out
 
 # C. 部署（改 libs 后必须先清模块 build；见下）
-rm -rf libs/{meowlwjgl3,meowjre25,meowcraftlib}/build entry/build
-devecocli build --modules entry meowjre25      # 注意：不带 --modules 只出 HAP，不出 HSP
-devecocli run --module entry meowjre25 --device <serial>
+rm -rf libs/{meowlwjgl3,meowjre,meowcraftlib}/build entry/build
+devecocli build --modules entry meowjre      # 注意：不带 --modules 只出 HAP，不出 HSP
+devecocli run --module entry meowjre --device <serial>
 ```
 
 ## 4. 通用坑（改 libs / 打包 / 部署）
 
-- **hvigor 不追踪 `libs/<abi>/` 增删**：加了/删了 `.so` 后必须清模块 build 再 `build --modules entry meowjre25`，
+- **hvigor 不追踪 `libs/<abi>/` 增删**：加了/删了 `.so` 后必须清模块 build 再 `build --modules entry meowjre`，
   否则 HSP 不重打（设备报 `… not found`）。见记忆 `meowcraft_hvigor_libs_delete_stale`。
 - **natives 必须随包**：平台只对随包 native 打 fs-verity；运行时写入数据区的文件 `dlopen` 一律 EINVAL。
   故多版本 natives 同放一个随包目录、用**后缀名**区分（见 `tools/lwjgl/README.md`）。
 - **确定性**：`pack_jar.py`（固定时间戳 + 排序）、`pack_extras.py`（gzip mtime=0 + 排序）→ 逐字节可复现。
-- **JRE 可复现**：`libc6.so`/`libjli.so`（各 **3× cmp**）、26 官方件魔改（2× cmp）、数据 tar（`tools/jre25/pack_jre_data.py`，2× cmp）均**逐字节**；自编 `libjvm` 同 OS/工具链/源/**同路径** + `SOURCE_DATE_EPOCH=1755018936` **3× cmp 一致**（见 `tools/jre25/README.md` §可复现性）。
+- **JRE 可复现**：`libc6.so`/`libjli.so`、官方 26 件魔改、数据 tar（`tools/jre26/pack_jre_data.py`）均**逐字节**；自编 `libjvm` 同 OS/工具链/源/**同路径** + `SOURCE_DATE_EPOCH=1770909215`（jdk-26-ga 提交）**3× cmp 一致**（`faa773b9…`，见 `tools/jre26/README.md` §可复现性）。
 - **native 可复现**：同 tag + 同 SDK + **同 `--src`/`--out` 绝对路径** → 逐字节一致（链接器把输出路径写进 `.dynstr`；换路径同功能、哈希不同）。本工具链的新原生已 **3× 干净重建 `cmp` 一致**（对照 2026-09-11 盘上随包件）：`libSDL3.so`(`241bbfef…`)、`libshaderc.so`(`0cff3465…`)、`libspirv-cross.so`(`93ad9907…`)、`liblwjgl.so`(`df886466…`)；其中 `spirv-cross` 需 `SOURCE_DATE_EPOCH`（`tools/shaderc/build_shaderc_meow.sh` 已内置，取 pinned 提交时间）。`libgl4es.so`(`90c6ff6b…`) 同路径下**预期**可复现（见 `tools/gl4es/README.md`，尚未 3× 验证）。
 - **构建期断言（缺件在发包时拦下，运行期不加防护）**：`pack_extras.py --require <member>`（断言 tar 成员齐，如各代 `lwjgl-<gen>.jar`）；
   `install_natives.sh --verify`（断言 `natives.manifest` 每项在盘且 sha 匹配）。缺件属"我们发包可掌控"→ 只在构建期拦，不在运行时查（省开销）。
@@ -122,6 +123,7 @@ devecocli run --module entry meowjre25 --device <serial>
 ## 5. 权威文档
 
 - **工具内详解**：`tools/lwjgl/README.md` §1（**overlay 机制**：为什么要覆盖 / 5 步流水线 / 两层判据 / 加代清单），§2–§4（各代构建 / 打包 / digests）。
+- **JRE 收编**：`tools/jre26/README.md`（现役：输入/工序/可复现/digests/与 25 差异）、`tools/jre25/README.md`（历史）。
 - **legacy（MC 1.6.x–1.16.x）**：`tools/lwjgl2/README.md`（LWJGL2 `liblwjgl.so`：生成/编译/随包/踩坑/可复现）、`tools/gl4es/README.md`（gl4es `libgl4es.so`：NOEGL 宿主自持上下文）。
 - **SDL3 / shaderc**：`tools/sdl/README.md`（拉取/补丁/驱动文件/digest）、`tools/shaderc/README.md`；复盘对照 `notes/20-design/26.3-SDL适配复盘.md`、方案 `notes/20-design/sdl3桥接方案.md`。
 - 设计/流程：`notes/20-design/{净室-meow-launcher,净室-lwjgl-glfw-bridge,lwjgl自编方案,lwjgl多版本并存方案}.md`
@@ -135,7 +137,7 @@ devecocli run --module entry meowjre25 --device <serial>
 
 | 路径 | 是什么 | 重建方式 |
 |---|---|---|
-| `stuffs/research/**` | 构建/调研临时产物（`lwjgl_build*` / `lwjgl_natives*` / `libffi` / `openal` / `gl4es` …） | 按 §3 顺序重跑对应脚本（各 README 有配方） |
+| `stuffs/research/**` | 构建/调研临时产物（`lwjgl_build*` / `lwjgl_natives*` / `libffi` / `openal` / `gl4es` / `jdk25` / `jdk26` …） | 按 §3 顺序重跑对应脚本（各 README 有配方） |
 | `stuffs/lwjgl2/` | LWJGL2 native 构建/复现产物（`build/`、`repro/`、`liblwjgl.so`） | `sh tools/lwjgl2/build_lwjgl2_meow.sh --src ref/lwjgl --sdk-native $SDK/native --out stuffs/lwjgl2 --with-display` |
 | `ref/lwjgl/{bin-meow,src/hdrs-meow,src/generated,src/native/generated}` | LWJGL2 生成物（补丁加入 `.gitignore`，可删可重建） | `sh tools/lwjgl2/generate_sources.sh`（需先 `git apply` 补丁） |
 | `ref/openal-soft.build/` | OpenAL worktree（tag 1.24.3，已打补丁）+ build 目录 | `sh tools/openal/rebuild_for_meowcraft.sh 1.24.3`（自动建 worktree + 补丁 + 编译） |

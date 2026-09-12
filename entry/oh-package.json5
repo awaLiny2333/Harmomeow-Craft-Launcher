@@ -6,7 +6,7 @@
   "author": "",
   "license": "",
   "dynamicDependencies": {
-    "meowjre25": "file:../libs/meowjre25"
+    "meowjre": "file:../libs/meowjre"
   },
   "dependencies": {
     "libmeowassets.so": "file:./src/main/cpp/types/libmeowassets"

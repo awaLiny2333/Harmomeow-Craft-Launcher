@@ -74,6 +74,36 @@ bool RemoveAll(const std::string& path) {
     return rmdir(path.c_str()) == 0;
 }
 
+/* 清理 meow-jres 下「非当前 id」的旧 JRE 数据目录（换版本/改名后遗留的孤儿）。
+ * 随包 JRE 同一时刻只有一个 id（镜像 Paths.ets::BUNDLED_JRE_IDS）；旧 id 不会再被加载，
+ * 留着只是占空间。若将来随包多个 JRE，须改为只清「已知但不再随包」的 id。 */
+void PurgeStaleJreData(const std::string& jresRoot, const std::string& keepId) {
+    DIR* d = opendir(jresRoot.c_str());
+    if (d == nullptr) {
+        return;
+    }
+    std::vector<std::string> stale;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        std::string n = e->d_name;
+        if (n == "." || n == ".." || n == keepId) {
+            continue;
+        }
+        stale.push_back(n);
+    }
+    closedir(d);
+    for (const std::string& n : stale) {
+        std::string p = jresRoot + "/" + n;
+        if (RemoveAll(p)) {
+            OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
+                         "purged stale JRE data: %{public}s", p.c_str());
+        } else {
+            OH_LOG_Print(LOG_APP, LOG_WARN, LOG_DOMAIN, LOG_TAG,
+                         "purge failed (ignored): %{public}s", p.c_str());
+        }
+    }
+}
+
 bool ReadRawAsset(void* mgrVoid, const std::string& assetName, std::string& out) {
     auto* mgr = static_cast<NativeResourceManager*>(mgrVoid);
     RawFile* f = OH_ResourceManager_OpenRawFile(mgr, assetName.c_str());
@@ -212,7 +242,10 @@ bool Install(void* resourceMgr, const std::string& filesDir, const std::string& 
         return false;
     }
     const std::string assetName = jreId + ".tar.gz";
-    std::string installRoot = filesDir + "/" + kJresRoot + "/" + jreId;
+    const std::string jresRoot = filesDir + "/" + kJresRoot;
+    std::string installRoot = jresRoot + "/" + jreId;
+    // 换版本/改名后清理旧 JRE 数据（非当前 id）；幂等，失败仅告警不阻断安装。
+    PurgeStaleJreData(jresRoot, jreId);
     // 就绪 = 数据关键件 lib/modules 存在（.so 只在 el1，不入数据，不能以 libjli.so 判定）
     //       且 数据令牌一致（否则 in-place 更新会「新 el1 .so + 旧数据」混合）。
     std::string doneMarker = installRoot + "/lib/modules";

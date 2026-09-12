@@ -1,0 +1,12 @@
+{
+  "name": "meowjre",
+  "version": "1.0.0",
+  "description": "Meowcraft JRE runtime carrier (self-contained isolated HSP: JRE+components natives + meowcraftlib bridge merged)",
+  "main": "Index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "meowcraftlib": "file:../meowcraftlib",
+    "meowlwjgl3": "file:../meowlwjgl3"
+  }
+}

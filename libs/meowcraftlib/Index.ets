@@ -2,8 +2,8 @@
 // - libmeowjrebridge.so：JLI 启动（dlopen 指定 JRE 的 libjli + 设 OHOS_DL_DIR）、
 //   surface 注入、输入透传（meowSend*）、光标锁、关窗。
 // - libmeowcraftbridge.so：GLFW/GL 桥（ring+pump/EGL）。
-// JRE 运行时（OpenJDK25 .so + 组件）在 meowjre25 HSP；JRE 数据（modules/conf）在
-// filesDir/meow-jres/meow_jre25（随 entry rawfile 解压）。launchJvm 参数化
+// JRE 运行时（官方 OpenJDK 件 + 组件）在 meowjre HSP；JRE 数据（modules/conf）在
+// filesDir/meow-jres/meow_jre（随 entry rawfile 解压）。launchJvm 参数化
 // jreHome/jreLibsDir，与 JRE 版本解耦。
 import bridge from 'libmeowjrebridge.so';
 

@@ -121,7 +121,7 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 
 | 组件 | 版本 | 许可 | 随包 | 说明 |
 |---|---|---|---|---|
-| OpenJDK / JRE | 25.0.2（官方 glibc 件；二进制魔改 + 自编 `libjli`/`libjvm`） | GPL-2.0 + Classpath-Exception | ✅ | 运行时；**全自持（零黑箱）**——见 `tools/jre25/` |
+| OpenJDK / JRE | 26.0.2.1（官方 glibc 件；二进制魔改 + 自编 `libjli`/`libjvm`） | GPL-2.0 + Classpath-Exception | ✅ | 运行时；**全自持（零黑箱）**——见 `tools/jre26/` |
 | LWJGL | 3.3.3 / 3.4.3 / 2.9.3 | BSD-3 | ✅ | **三代并存**，按 MC 版本选代 |
 | OpenAL Soft | 1.24.3 | LGPL-2.0+ | ✅ | OHAudio 后端 |
 | FreeType | 2.13.3 | FTL | ✅ | 字体渲染 |
@@ -153,7 +153,7 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 ## 生产环境
 
 - **运行环境**：一般普通鸿蒙 PC（2-in-1），API ≥ 23。
-- **部署顺序**：先装 HAR/HSP（`meowjre25` / `meowcraftlib` / `meowlwjgl3`），再装 `entry` HAP；**改 native 后需清模块 build 再重建 HSP**。
+- **部署顺序**：先装 HAR/HSP（`meowjre` / `meowcraftlib` / `meowlwjgl3`），再装 `entry` HAP；**改 native 后需清模块 build 再重建 HSP**。
 
 ## 许可证
 

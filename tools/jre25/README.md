@@ -1,5 +1,8 @@
 # tools/jre25 — 魔改官方 OpenJDK(glibc) 跑 OHOS(musl)，产出随包 JRE
 
+> ⚠️ **历史配方**：随包 JRE 已升级到 **26**（见 `tools/jre26/`）。本目录保留为 **25 时代**
+> （已发布版本）的配方与溯源记录，勿用于当前随包。
+
 把**官方 OpenJDK 25.0.2（Linux/aarch64，glibc）**改造成能在 **OHOS(musl)** 上加载运行的 JRE 集，
 替换原先「外部预编译 OHOS JRE 黑箱」。目标：随包 JRE 的每个 `.so` 都**可复现、可溯源**。
 

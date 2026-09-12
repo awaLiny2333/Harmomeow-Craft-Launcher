@@ -5,7 +5,7 @@ import { JRE_DATA_TOKEN } from '../common/constants/Paths';
 import { LauncherState, getLauncherState } from '../common/state/LauncherState';
 import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY } from '../common/constants/Constants';
 
-// native 导出（installJre：rawfile meow_jre25.tar.gz -> filesDir/meow-jres/meow_jre25）
+// native 导出（installJre：rawfile meow_jre.tar.gz -> filesDir/meow-jres/meow_jre）
 import native from 'libmeowassets.so';
 
 const LOG_DOMAIN = 0x0001;

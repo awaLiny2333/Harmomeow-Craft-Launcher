@@ -106,7 +106,7 @@ export class GameInputController {
     this.onRate = onRate;
   }
 
-  /** 由 GameWindow 注入已 import 的 meowjre25 桥。 */
+  /** 由 GameWindow 注入已 import 的 meowjre 桥。 */
   setBridge(b: JreLibModule): void {
     this.bridge = b;
   }
@@ -196,7 +196,7 @@ export class GameInputController {
       return this.bridge;
     }
     try {
-      const b = await import('meowjre25') as JreLibModule;
+      const b = await import('meowjre') as JreLibModule;
       this.bridge = b;
       return b;
     } catch (e) {

@@ -6,8 +6,8 @@ const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'JvmLauncher';
 
 /**
- * meowjre25 HSP 模块形态（自研启动桥；其 native 在 HSP namespace 内 dlopen
- * JRE 模块的 libjli 起 JVM）。JRE 数据在 filesDir/meow-jres，JRE .so 在 meowjre25 HSP。
+ * meowjre HSP 模块形态（自研启动桥；其 native 在 HSP namespace 内 dlopen
+ * JRE 模块的 libjli 起 JVM）。JRE 数据在 filesDir/meow-jres，JRE .so 在 meowjre HSP。
  * 唯一共享类型：入口/游戏页等所有使用方从此处 import，勿各自重复声明。
  */
 /**
@@ -70,7 +70,7 @@ export async function startJvm(uiContext: common.UIAbilityContext, argv: string[
   }
   jvmStarted = true;
   try {
-    const craft = await import('meowjre25') as JreLibModule;
+    const craft = await import('meowjre') as JreLibModule;
     const jreHome = jreHomeDir(uiContext.filesDir);
     const jreLibsDir = hspLibsDir(uiContext.bundleCodeDir); // JRE 模块自足 el1（桥同目录）
     hilog.info(LOG_DOMAIN, LOG_TAG, 'launching, argv0=%{public}s argn=%{public}d jre=%{public}s',
@@ -79,7 +79,7 @@ export async function startJvm(uiContext: common.UIAbilityContext, argv: string[
       glProfile);
     return true;
   } catch (e) {
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'meowjre25 launch error: %{public}s', JSON.stringify(e));
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'meowjre launch error: %{public}s', JSON.stringify(e));
     return false;
   }
 }

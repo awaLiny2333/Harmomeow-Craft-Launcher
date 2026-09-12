@@ -63,7 +63,7 @@ struct GameWindow {
   private launchFallbackTimer: number = -1;
   private requestCloseSent: boolean = false;
 
-  /** meowjre25 模块引用（surface 就绪后赋值），供全屏请求轮询使用。 */
+  /** meowjre 模块引用（surface 就绪后赋值），供全屏请求轮询使用。 */
   private jrelib: JreLibModule | null = null;
   /** 全屏请求轮询定时器（-1 = 未启动）。 */
   private fsTimer: number = -1;
@@ -148,7 +148,7 @@ struct GameWindow {
     this.requestCloseSent = true;
     hilog.info(LOG_DOMAIN, LOG_TAG, 'surface gone -> request game window close');
     try {
-      const jrelib = await import('meowjre25') as JreLibModule;
+      const jrelib = await import('meowjre') as JreLibModule;
       jrelib.requestGameWindowClose?.();
     } catch (e) {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'request close fail: %{public}s', JSON.stringify(e));
@@ -164,10 +164,10 @@ struct GameWindow {
       return;
     }
     try {
-      // 1. 加载 meowjre25，先注入 surface（必须在 JVM 启动前）。全链路自研：
+      // 1. 加载 meowjre，先注入 surface（必须在 JVM 启动前）。全链路自研：
       //    meowSetSurfaceId 创建 OH_NativeWindow 写 env+0；meowResizeSurface 同 sid
       //    只标尺寸（render 线程 pump diff apply，重建 EGL surface），sid 变更才重建窗。
-      const jrelib = await import('meowjre25') as JreLibModule;
+      const jrelib = await import('meowjre') as JreLibModule;
       this.jrelib = jrelib;
       this.input?.setBridge(jrelib);
       // 原生鼠标增量输入：把 ContentSlot 的 NodeContent 交给 native（挂 NDK 覆盖节点）。

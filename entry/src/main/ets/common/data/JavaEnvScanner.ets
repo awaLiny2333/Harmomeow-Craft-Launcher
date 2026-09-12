@@ -1,5 +1,5 @@
 import { fileIo } from '@kit.CoreFileKit';
-import { JRES_ROOT, JRE_ID_MEOW25, JRE_DATA_TOKEN, JRE_DATA_TOKEN_FILE } from '../constants/Paths';
+import { JRES_ROOT, JRE_ID_MEOW, JRE_DATA_TOKEN, JRE_DATA_TOKEN_FILE } from '../constants/Paths';
 
 /** JRE 数据根目录名（= Paths.JRES_ROOT；保留别名以兼容既有引用）。 */
 export const JRES_DIR: string = JRES_ROOT;
@@ -7,12 +7,12 @@ export const JRES_DIR: string = JRES_ROOT;
 /**
  * Java 运行时（JRE）环境条目。
  *
- * java.home 约定 = <filesDir>/meow-jres/<id>，id 即安装目录名。
- * 内置来源：entry rawfile 的 meow_jre25.tar.gz（魔改派生：C2 瘦身纯数据）
- * 解压到 filesDir/meow-jres/meow_jre25。
+ * java.home 约定 = <filesDir>/meow-jres/<id>，id 即安装目录名（**版本无关**，如 "meow_jre"）。
+ * 内置来源：entry rawfile 的 meow_jre.tar.gz（魔改派生：纯数据）解压到 filesDir/meow-jres/meow_jre。
+ * JRE 版本由 release 的 JAVA_VERSION 展示；数据令牌不符 → needsUpgrade。
  */
 export class JavaEnvInfo {
-  /** 唯一标识；同时是 meow-jres 下安装目录名（java.home 子目录），如 "meow_jre25"。 */
+  /** 唯一标识；同时是 meow-jres 下安装目录名（java.home 子目录），如 "meow_jre"。 */
   id: string;
 
   /** 是否已解压就绪（filesDir/meow-jres/<id>/lib/modules 存在 且 数据令牌一致；
@@ -25,7 +25,7 @@ export class JavaEnvInfo {
   /** 盘上数据的令牌（未解压/无令牌时为空）——用于向用户展示 旧→新。 */
   extractedToken: string;
 
-  /** 解析出的 Java 版本，如 "25.0.2"；未安装时为空。 */
+  /** 解析出的 Java 版本，如 "26.0.2.1"；未安装时为空。 */
   version: string;
 
   constructor(id: string, installed: boolean, needsUpgrade: boolean, extractedToken: string, version: string) {
@@ -38,7 +38,7 @@ export class JavaEnvInfo {
 }
 
 /** 随包内置的 JRE id 清单（顺序即 UI 展示顺序）；对应 rawfile 中 <id>.tar.gz。 */
-const BUNDLED_JRE_IDS: string[] = [JRE_ID_MEOW25];
+const BUNDLED_JRE_IDS: string[] = [JRE_ID_MEOW];
 
 /**
  * 扫描 Java 环境状态：探测每个内置 JRE 是否已解压 + 解析版本。

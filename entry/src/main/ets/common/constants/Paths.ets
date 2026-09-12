@@ -4,20 +4,24 @@
  * 与 native 镜像保持同值：`entry/src/main/cpp/meowassets/jre_launcher.h`
  * （kJresRoot/kJreDataToken）与 `meowjrebridge.cpp`（缺省回退）。
  * ArkTS/native 无法共享头文件，故 native 侧保留同值字面量 + 交叉引用注释。
+ *
+ * ⚠️ JRE 命名**版本无关**：模块/JRE id 固定（`meowjre` / `meow_jre`），JRE 版本只由
+ * **数据令牌**（JRE_DATA_TOKEN）体现 → 升级时 HSP 原地替换、filesDir 走「须升级」，不产生残留。
  */
 
-/** JRE 数据根目录（filesDir 下，多版本并存）。 */
+/** JRE 数据根目录（filesDir 下）。 */
 export const JRES_ROOT: string = 'meow-jres';
 
-/** 内置 JRE id（= 安装目录名 = rawfile 名前缀）。 */
-export const JRE_ID_MEOW25: string = 'meow_jre25';
+/** 内置 JRE id（= 安装目录名 = rawfile 名前缀）；**版本无关**，勿带版本号。 */
+export const JRE_ID_MEOW: string = 'meow_jre';
 
 /**
  * [数据门] 随包 JRE 数据版本令牌（java.home 数据内容标识）。
  * 就绪判断要求解压目录内 `meow_jre_data` == 此值；改随包 JRE 数据时必须同步更新
  * （与 native `jre_launcher.h::kJreDataToken` 同值），否则 in-place 更新会「新 .so + 旧数据」混合。
+ * **JRE 版本升级即改此令牌**（id 不变）→ UI 显示「须升级 → 升级」。
  */
-export const JRE_DATA_TOKEN: string = '25.0.2+10-69-r2';
+export const JRE_DATA_TOKEN: string = '26.0.2.1+1-7-r1';
 
 /** JRE 数据令牌文件名（<installDir>/meow_jre_data）。 */
 export const JRE_DATA_TOKEN_FILE: string = 'meow_jre_data';
@@ -55,14 +59,14 @@ export const ASSET_HASH_PREFIX_LENGTH: number = 2;
 /** 下载中临时文件后缀（同目录下 .part，完成后 rename 为正式名）。 */
 export const DOWNLOAD_PART_SUFFIX: string = '.part';
 
-/** JRE HSP 模块名（打包契约，与 build-profile.json5 一致）。 */
-export const HSP_MEOWJRE25: string = 'meowjre25';
+/** JRE HSP 模块名（打包契约，与 build-profile.json5 一致）；**版本无关**。 */
+export const HSP_MEOWJRE: string = 'meowjre';
 
 /** HSP 内 native libs 子路径（打包契约）。 */
 export const HSP_LIBS_SUBPATH: string = 'libs/arm64';
 
-/** 内置 JRE 数据 rawfile 名（契约：须与 resources/rawfile 下文件同名）。 */
-export const RAWFILE_MEOW_JRE: string = 'meow_jre25.tar.gz';
+/** 内置 JRE 数据 rawfile 名（契约：须与 resources/rawfile 下文件同名）；**版本无关**。 */
+export const RAWFILE_MEOW_JRE: string = 'meow_jre.tar.gz';
 
 /** 启动支持 jar 载体 rawfile 名。 */
 export const RAWFILE_MEOWCRAFT_EXTRAS: string = 'meowcraft_extras.tar.gz';
@@ -77,13 +81,13 @@ export const RAWFILE_OSHI_MANIFEST: string = 'oshi-overrides/manifest.txt';
 export const MEOWCRAFT_EXTRAS_DONE: string = 'meowcraft_extras.done';
 
 /** <filesDir>/meow-jres/<id>（java.home 数据目录）。 */
-export function jreHomeDir(filesDir: string, id: string = JRE_ID_MEOW25): string {
+export function jreHomeDir(filesDir: string, id: string = JRE_ID_MEOW): string {
   return `${filesDir}/${JRES_ROOT}/${id}`;
 }
 
-/** <bundleCodeDir>/meowjre25/libs/arm64（JRE/桥 el1 native libs）。 */
+/** <bundleCodeDir>/meowjre/libs/arm64（JRE/桥 el1 native libs）。 */
 export function hspLibsDir(bundleCodeDir: string): string {
-  return `${bundleCodeDir}/${HSP_MEOWJRE25}/${HSP_LIBS_SUBPATH}`;
+  return `${bundleCodeDir}/${HSP_MEOWJRE}/${HSP_LIBS_SUBPATH}`;
 }
 
 /**

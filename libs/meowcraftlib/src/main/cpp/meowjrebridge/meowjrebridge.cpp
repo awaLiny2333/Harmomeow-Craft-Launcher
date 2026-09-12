@@ -1,12 +1,12 @@
 /*
- * meowjre25 HSP native bridge (source lives in the meowcraftlib HAR).
+ * meowjre HSP native bridge (source lives in the meowcraftlib HAR).
  *
- * Runs INSIDE the meowjre25 HSP so its native-lib namespace can dlopen the JRE
+ * Runs INSIDE the meowjre HSP so its native-lib namespace can dlopen the JRE
  * .so set that ships in the same HSP (entry's namespace cannot see them).
- * Entry calls us via `import('meowjre25')` -> libmeowjrebridge.so NAPI.
+ * Entry calls us via `import('meowjre')` -> libmeowjrebridge.so NAPI.
  *
  * Launch flow: dlopen <jreLibsDir>/libjli.so (JRE module el1) -> JLI_Launch with
- * OHOS_JAVA_HOME=<filesDir>/meow-jres/meow_jre25 (data unpacked by entry), OHOS_DL_DIR=<jreLibsDir>.
+ * OHOS_JAVA_HOME=<filesDir>/meow-jres/meow_jre (data unpacked by entry), OHOS_DL_DIR=<jreLibsDir>.
  *
  * 渲染后端：按 MC 版本二选一（单一事实源 = ArkTS `RendererPolicy`，经 launchJvm 传入）：
  *   - ≥1.17：系统桌面 OpenGL（libGLv4.so / openglv4，Mesa Zink 直通）；
@@ -51,7 +51,7 @@ typedef unsigned int jsize;
 
 namespace {
 
-/* Dir of this .so (meowjre25 libs dir) — where the JRE .so live too. */
+/* Dir of this .so (meowjre libs dir) — where the JRE .so live too. */
 std::string SelfDir() {
     Dl_info info;
     if (dladdr(reinterpret_cast<void*>(&SelfDir), &info) != 0 && info.dli_fname != nullptr) {
@@ -122,7 +122,7 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         javaArgs.push_back("java");
     }
     // args[2]=jreHome（java.home 数据目录）, args[3]=jreLibsDir（JRE 运行时 el1 libs）。
-    // 可选：缺省回退旧布局（filesDir/meow-jres/meow_jre25 + 本模块 SelfDir，仅兼容）。
+    // 可选：缺省回退旧布局（filesDir/meow-jres/meow_jre + 本模块 SelfDir，仅兼容）。
     auto getStr = [&](napi_value v, std::string& out) {
         if (v == nullptr) {
             return;
@@ -168,7 +168,7 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         std::string libsDir = SelfDir(); // meowcraftlib libs（meowcraftbridge 等自研 so）
         // java.home（数据目录）与 JRE 运行时 el1 libs（libjli/libjvm…）由调用方指定，
         // 桥与 JRE 版本解耦。缺省回退旧布局（兼容）。
-        std::string javaHome = jreHome.empty() ? filesDir + "/meow-jres/meow_jre25" : jreHome;
+        std::string javaHome = jreHome.empty() ? filesDir + "/meow-jres/meow_jre" : jreHome;
         std::string jreLibsDir = jreLibs.empty() ? libsDir : jreLibs;
         std::string libPath = javaHome + "/lib";
         std::string ldPath = libsDir + ":" + jreLibsDir + ":" + libPath;
@@ -372,7 +372,7 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
-// libmeowcraftbridge.so ships in the same meowjre25 libs dir. dlopen once,
+// libmeowcraftbridge.so ships in the same meowjre libs dir. dlopen once,
 // reused by setGameSurface / resizeGameSurface / requestGameWindowClose.
 void* MeowCraftBridgeLib() {
     static void* sMeowCraftBridgeLib = nullptr;

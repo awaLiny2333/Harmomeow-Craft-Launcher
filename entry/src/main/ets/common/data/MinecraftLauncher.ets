@@ -136,9 +136,9 @@ export interface LaunchOptions {
   classpath?: string;
   /** 沙箱可写运行目录（tmpdir/natives 解压；鸿蒙无 /tmp）。 */
   runDir?: string;
-  /** el1 可 dlopen 的 native libs 目录（meowjre25 HSP libs：JRE .so + LWJGL/JNA 组件）。 */
+  /** el1 可 dlopen 的 native libs 目录（meowjre HSP libs：JRE .so + LWJGL/JNA 组件）。 */
   nativeLibsDir?: string;
-  /** 自研桥 so 所在目录（当前与 nativeLibsDir 同：meowjre25 HSP libs）——JVM 侧
+  /** 自研桥 so 所在目录（当前与 nativeLibsDir 同：meowjre HSP libs）——JVM 侧
    *  System.loadLibrary 也需能在该目录找到 libmeowcraftbridge.so。 */
   craftLibsDir?: string;
   /** 自研桥模式：MeowClassLoader + MeowLauncher 入口（配合 clean-room lwjgl.jar）。 */
@@ -226,7 +226,7 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     argv.push(`-Djava.io.tmpdir=${opts.runDir}`);
     argv.push(`-Djna.tmpdir=${nativesDir}`);
   }
-  // el1 可 dlopen 区放 native .so：LWJGL/JNA 组件在 JRE 模块（meowjre25），自研桥
+  // el1 可 dlopen 区放 native .so：LWJGL/JNA 组件在 JRE 模块（meowjre），自研桥
   // (meowcraftbridge) 在 meowcraftlib；java.library.path 两者都要（meowcraftbridge 在前）。
   if (opts.nativeLibsDir !== undefined && opts.nativeLibsDir.length > 0) {
     const craft = opts.craftLibsDir !== undefined && opts.craftLibsDir.length > 0
