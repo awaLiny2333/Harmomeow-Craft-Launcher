@@ -90,6 +90,13 @@ export function offlineUuid(name: string): string {
   }
 }
 
+/** 把 epoch ms 格式化为本地时间「MM-DD HH:mm」（用于展示登录凭证有效期）。 */
+export function formatExpiry(notAfter: number): string {
+  const d = new Date(notAfter);
+  const p = (n: number): string => (n < 10 ? `0${n}` : `${n}`);
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 /**
  * 账户管理数据层（纯逻辑，不碰 UI）。
  * - 账户列表与选中项持久化在 Preferences（同一 STORE_NAME，键 KEY_ACCOUNTS / KEY_SELECTED_ACCOUNT）。
@@ -182,16 +189,6 @@ export class AccountsTools {
       this.save(list);
     }
     return changed;
-  }
-
-  /** 按 id 取账户。 */
-  getById(id: string): Account | null {
-    for (const a of this.list()) {
-      if (a.id === id) {
-        return a;
-      }
-    }
-    return null;
   }
 
   /** 由微软登录结果创建 microsoft 账户并落库；首个账户自动选中。 */

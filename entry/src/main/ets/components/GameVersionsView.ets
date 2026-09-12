@@ -9,18 +9,19 @@ import {
 import {
   SOURCE_MIRROR, SOURCE_OFFICIAL, TYPE_OTHER, TYPE_RELEASE, TYPE_SNAPSHOT
 } from '../common/constants/DownloadContract';
-import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES, WINDOW_DEFAULT_H, WINDOW_DEFAULT_W, WINDOW_DEFAULT_X, WINDOW_DEFAULT_Y } from '../common/constants/LaunchDefaults';
+import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES } from '../common/constants/LaunchDefaults';
 import { SettingsTools, RendererOverride } from '../common/data/SettingsTools';
 import {
   canWriteDirectory, PHASE_ASSETS, PHASE_FILES, RemoteVersion
 } from '../common/data/VersionInstaller';
 import { GameVersion, resolveGameRoot } from '../common/data/VersionScanner';
-import { AccountsTools, ACCOUNT_TYPE_MICROSOFT } from '../common/data/AccountsTools';
 import { deleteVersionDir } from '../common/data/VersionTools';
-import { GameLaunchParams } from '../common/state/GameLaunchParams';
+import {
+  launchInMainProcess, LAUNCH_OK, LAUNCH_ERR_NO_ACCOUNT, LAUNCH_ERR_MS_EXPIRED
+} from '../common/data/VersionLaunch';
 import { getInstallerState, InstallerState, INSTALL_ERR_INSTALL, INSTALL_ERR_MANIFEST, INSTALL_ERR_NO_WRITE } from '../common/state/InstallerState';
 import { getLauncherState, LauncherState } from '../common/state/LauncherState';
-import { windowHolder } from '../common/state/WindowHolder';
+import { AccountState, getAccountState } from '../common/state/AccountState';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'GameVersionsView';
@@ -55,6 +56,9 @@ export struct GameVersionsView {
   /** 安装器共享状态（与 InstallerState 同一实例，承载远程清单/单任务进度/错误）。 */
   @Local installer: InstallerState = getInstallerState();
 
+  /** 账户共享状态（与 AccountView 同一实例）：启动前需已选中账户。 */
+  @Local accountState: AccountState = getAccountState();
+
   /** "游戏中"轮询定时器（跨进程探测，UI 常驻时每 2s 刷新一次）。 */
   private pollTimer: number = -1;
 
@@ -66,6 +70,8 @@ export struct GameVersionsView {
   aboutToAppear(): void {
     this.state.refreshVersions();
     this.state.refreshJre(this.context().filesDir);
+    // 账户就绪态（启动门之一）：与 AccountView 共享同一 AccountState，这里兜底重读一次。
+    this.accountState.reload(this.context());
     // 隔离开关状态来自 Preferences（持久化），载入共享状态供 UI 展示。
     this.state.isolatedIds = new SettingsTools(this.context()).versionIsolationIds();
     // 逐版本渲染后端覆盖（持久化）载入，供编辑面板下拉展示。
@@ -123,7 +129,8 @@ export struct GameVersionsView {
         : $r('app.string.version_delete_message', v.id, v.id),
       primaryButton: {
         value: $r('app.string.common_cancel'),
-        action: () => {},
+        action: () => {
+        },
       },
       secondaryButton: {
         value: $r('app.string.common_delete'),
@@ -159,6 +166,9 @@ export struct GameVersionsView {
     }
     const settings = new SettingsTools(this.context());
     settings.clearVersion(v.id);
+    // 若"上次启动"正是这个版本，一并清理记录（否则"继续上次"会指向已删版本）。
+    settings.clearLastLaunchIf(this.state.selected, v.id);
+    this.state.refreshLastLaunch(this.context());
     this.state.isolatedIds = settings.versionIsolationIds();
     this.overrides = settings.rendererOverrides();
     if (this.editingId === v.id) {
@@ -229,41 +239,37 @@ export struct GameVersionsView {
     }
   }
 
+  /** 启动门：需已选中账户（与 JRE 就绪同级）。 */
+  private accountReady(): boolean {
+    return this.accountState.selectedId.length > 0;
+  }
+
   /**
    * 启动选中版本：由 jsonPath 反推 .minecraft 根 → 弹独立游戏窗口 → 窗口内起 JVM。
    * jsonPath 形如 <root>/versions/<id>/<id>.json。
    */
   async launch(v: GameVersion): Promise<void> {
-    const suffix = `/versions/${v.id}/${v.id}.json`;
-    const gameRoot = v.jsonPath.endsWith(suffix)
-      ? v.jsonPath.substring(0, v.jsonPath.length - suffix.length)
-      : '';
-    if (gameRoot.length === 0) {
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'launch abort: bad jsonPath %{public}s', v.jsonPath);
+    const out = await launchInMainProcess(this.context(), v);
+    if (out.code === LAUNCH_ERR_NO_ACCOUNT) {
+      this.getUIContext().showAlertDialog({ message: $r('app.string.versions_need_account') });
       return;
     }
-    // 微软账户：启动前确保 token 有效（过期→续期；续不动→提示重新登录，不硬启）。
-    const accounts = new AccountsTools(this.context());
-    const account = accounts.selected();
-    if (account !== null && account.type === ACCOUNT_TYPE_MICROSOFT) {
-      try {
-        await accounts.ensureMicrosoftFresh(account, false, true);
-      } catch (e) {
-        this.getUIContext().showAlertDialog({
-          title: $r('app.string.accounts_login_expired'),
-          message: (e as Error).message,
-        });
-        return;
-      }
+    if (out.code === LAUNCH_ERR_MS_EXPIRED) {
+      this.getUIContext().showAlertDialog({
+        title: $r('app.string.accounts_login_expired'),
+        message: out.detail,
+      });
+      return;
     }
+    if (out.code !== LAUNCH_OK) {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'launch aborted for %{public}s (code %{public}d)', v.id, out.code);
+      this.getUIContext().showAlertDialog({ message: $r('app.string.launch_failed') });
+      return;
+    }
+    // 记录"上次启动"，供"继续上次"按钮一键启动。
+    new SettingsTools(this.context()).setLastLaunch(this.state.selected, v.id, v.jsonPath);
+    this.state.refreshLastLaunch(this.context());
     hilog.info(LOG_DOMAIN, LOG_TAG, 'open game window for %{public}s', v.id);
-    const params: GameLaunchParams = {
-      gameRoot: gameRoot,
-      jsonPath: v.jsonPath,
-      versionId: v.id,
-    };
-    await windowHolder.openGameWindow(WINDOW_DEFAULT_X, WINDOW_DEFAULT_Y, WINDOW_DEFAULT_W,
-      WINDOW_DEFAULT_H, params);
   }
 
   /** 某版本是否已安装（依据当前已扫描到的版本列表）。 */
@@ -377,6 +383,9 @@ export struct GameVersionsView {
   async installRemote(remote: RemoteVersion): Promise<void> {
     const root = resolveGameRoot(this.state.selected);
     if (root.length === 0) {
+      // 兜底：解析不出目录时给出可见错误，而不是静默无反应。
+      this.installer.errorKind = INSTALL_ERR_INSTALL;
+      this.installer.errorDetail = '';
       return;
     }
     if (!canWriteDirectory(root)) {
@@ -412,6 +421,11 @@ export struct GameVersionsView {
             .opacity(OPACITY_SECONDARY)
             .width('100%');
         }
+        if (!this.accountReady()) {
+          Text($r('app.string.versions_need_account'))
+            .opacity(OPACITY_SECONDARY)
+            .width('100%');
+        }
         if (this.state.gameRunning) {
           Text($r('app.string.versions_game_running'))
             .opacity(OPACITY_SECONDARY)
@@ -420,10 +434,12 @@ export struct GameVersionsView {
         // 多列布局：版本卡片按断点自适应 1~4 列（宽窗口一行显示多个，提升空间利用率）。
         // 用 GridRow/GridCol（非滚动、高度自适应）而非 WaterFlow：本页在 Index 的外层 Scroll 内，
         // WaterFlow 自身是滚动容器，嵌套会与其抢手势/需固定高，故取栅格方案。
+        // 断点参照物必须用 ComponentSize（按本容器宽度）：宽屏时账户区左移为侧栏，主区变窄，
+        // 若按 WindowSize（窗口）算会误判为"宽"→ 列数偏多 → 卡片被压到省略号。
         GridRow({
           columns: 12,
           gutter: { x: LAYOUT_SPACE, y: LAYOUT_SPACE },
-          breakpoints: { value: ['520vp', '840vp', '1280vp'], reference: BreakpointsReference.WindowSize }
+          breakpoints: { value: ['520vp', '840vp', '1280vp'], reference: BreakpointsReference.ComponentSize }
         }) {
           Repeat<GameVersion>(this.state.versions)
             .each((obj: RepeatItem<GameVersion>) => {
@@ -451,9 +467,9 @@ export struct GameVersionsView {
                       .onClick(() => {
                         this.toggleEdit(obj.item.id);
                       });
-                    // 启动：JRE 未就绪或游戏已在运行（独立游戏进程）时禁用，避免空启动/重复开
+                    // 启动：JRE 未就绪 / 无账户 / 游戏已在运行时禁用，避免空启动/重复开
                     Button($r('app.string.common_launch'))
-                      .enabled(this.state.jreReady && !this.state.gameRunning)
+                      .enabled(this.state.jreReady && this.accountReady() && !this.state.gameRunning)
                       .onClick(() => {
                         this.launch(obj.item);
                       });
@@ -587,94 +603,94 @@ export struct GameVersionsView {
             .borderRadius(BORDER_RADIUS)
             .width('100%')
             .alignItems(HorizontalAlign.Start);
-              if (this.installer.manifestLoading) {
-                Text($r('app.string.download_loading'))
+            if (this.installer.manifestLoading) {
+              Text($r('app.string.download_loading'))
+                .opacity(OPACITY_SECONDARY);
+            } else if (this.installer.errorKind === INSTALL_ERR_MANIFEST) {
+              Text(this.errorText())
+                .opacity(OPACITY_SECONDARY);
+              Button($r('app.string.common_retry'))
+                .onClick(() => this.installer.refreshManifest());
+            } else if (!this.installer.manifestLoaded) {
+              Text($r('app.string.download_fetch_hint'))
+                .opacity(OPACITY_SECONDARY);
+            } else if (this.installer.visible.length === 0) {
+              Text($r('app.string.download_empty'))
+                .opacity(OPACITY_SECONDARY);
+            } else {
+              // 安装中 / 出错时的状态行
+              if (this.installer.installingId.length > 0) {
+                Text(this.phaseText())
                   .opacity(OPACITY_SECONDARY);
-              } else if (this.installer.errorKind === INSTALL_ERR_MANIFEST) {
+                Text($r('app.string.download_progress', this.installer.done, this.installer.total))
+                  .opacity(OPACITY_SECONDARY);
+                Text(this.installer.current)
+                  .opacity(OPACITY_SECONDARY)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis });
+                // 当前文件大小进度（服务端给了 Content-Length 才显示）
+                if (this.installer.fileTotal > 0) {
+                  Text($r('app.string.download_file_progress',
+                    this.fmtSize(this.installer.fileReceived),
+                    this.fmtSize(this.installer.fileTotal)))
+                    .opacity(OPACITY_SECONDARY);
+                }
+              } else if (this.installer.errorKind === INSTALL_ERR_INSTALL
+                || this.installer.errorKind === INSTALL_ERR_NO_WRITE) {
                 Text(this.errorText())
                   .opacity(OPACITY_SECONDARY);
-                Button($r('app.string.common_retry'))
-                  .onClick(() => this.installer.refreshManifest());
-              } else if (!this.installer.manifestLoaded) {
-                Text($r('app.string.download_fetch_hint'))
-                  .opacity(OPACITY_SECONDARY);
-              } else if (this.installer.visible.length === 0) {
-                Text($r('app.string.download_empty'))
-                  .opacity(OPACITY_SECONDARY);
-              } else {
-                // 安装中 / 出错时的状态行
-                if (this.installer.installingId.length > 0) {
-                  Text(this.phaseText())
-                    .opacity(OPACITY_SECONDARY);
-                  Text($r('app.string.download_progress', this.installer.done, this.installer.total))
-                    .opacity(OPACITY_SECONDARY);
-                  Text(this.installer.current)
+                if (this.installer.errorDetail.length > 0) {
+                  Text(this.installer.errorDetail)
                     .opacity(OPACITY_SECONDARY)
                     .maxLines(1)
                     .textOverflow({ overflow: TextOverflow.Ellipsis });
-                  // 当前文件大小进度（服务端给了 Content-Length 才显示）
-                  if (this.installer.fileTotal > 0) {
-                    Text($r('app.string.download_file_progress',
-                      this.fmtSize(this.installer.fileReceived),
-                      this.fmtSize(this.installer.fileTotal)))
-                      .opacity(OPACITY_SECONDARY);
-                  }
-                } else if (this.installer.errorKind === INSTALL_ERR_INSTALL
-                  || this.installer.errorKind === INSTALL_ERR_NO_WRITE) {
-                  Text(this.errorText())
-                    .opacity(OPACITY_SECONDARY);
-                  if (this.installer.errorDetail.length > 0) {
-                    Text(this.installer.errorDetail)
-                      .opacity(OPACITY_SECONDARY)
-                      .maxLines(1)
-                      .textOverflow({ overflow: TextOverflow.Ellipsis });
-                  }
                 }
-                // 远程版本可能有几百个：用 List + Repeat.virtualScroll 懒加载，只渲染可见区域，
-                // 避免一次性铺满整个界面（列表需定高，见 DOWNLOAD_LIST_HEIGHT）。
-                // 多列：List.lanes 按可用宽度自适应列数（单卡列宽 [MIN,MAX] vp），宽窗口一行显示多个。
-                List({ space: LAYOUT_SPACE }) {
-                  Repeat<RemoteVersion>(this.installer.visible)
-                    .each((obj: RepeatItem<RemoteVersion>) => {
-                      ListItem() {
-                        Row({ space: LAYOUT_SPACE }) {
-                          Column({ space: LAYOUT_SPACE_SMALL }) {
-                            Text(obj.item.id)
-                              .width('100%')
-                              .maxLines(1)
-                              .textOverflow({ overflow: TextOverflow.Ellipsis });
-                            // 副行：type · 发布日期（releaseTime 为完整 ISO 串，只取日期避免多列卡片里被截成省略号）
-                            Text(`${obj.item.type}${obj.item.releaseTime.length > 0 ? ' · ' + this.fmtReleaseDate(obj.item.releaseTime) : ''}`)
-                              .width('100%')
-                              .opacity(OPACITY_SECONDARY)
-                              .maxLines(1)
-                              .textOverflow({ overflow: TextOverflow.Ellipsis });
-                          }
-                          .layoutWeight(1)
-                          .alignItems(HorizontalAlign.Start);
-                          Button(this.isInstalled(obj.item.id)
-                            ? $r('app.string.download_installed')
-                            : $r('app.string.download_install'))
-                            .enabled(this.installer.installingId.length === 0
-                              && !this.state.gameRunning
-                              && !this.isInstalled(obj.item.id))
-                            .onClick(() => this.installRemote(obj.item));
-                        }
-                        .padding(LAYOUT_PADDING_SMALL)
-                        .backgroundColor($r('app.color.brand_bg'))
-                        .borderRadius(BORDER_RADIUS)
-                        .width('100%')
-                        .alignItems(VerticalAlign.Center);
-                      };
-                    })
-                    .key((v: RemoteVersion) => v.id)
-                    .virtualScroll();
-                }
-                // 自适应列数 + 列间距（行间距由 List 的 space 控制）；仍保持 Repeat.virtualScroll 懒加载
-                .lanes({ minLength: DOWNLOAD_CARD_MIN_W, maxLength: DOWNLOAD_CARD_MAX_W }, LAYOUT_SPACE)
-                .height(DOWNLOAD_LIST_HEIGHT)
-                .width('100%');
               }
+              // 远程版本可能有几百个：用 List + Repeat.virtualScroll 懒加载，只渲染可见区域，
+              // 避免一次性铺满整个界面（列表需定高，见 DOWNLOAD_LIST_HEIGHT）。
+              // 多列：List.lanes 按可用宽度自适应列数（单卡列宽 [MIN,MAX] vp），宽窗口一行显示多个。
+              List({ space: LAYOUT_SPACE }) {
+                Repeat<RemoteVersion>(this.installer.visible)
+                  .each((obj: RepeatItem<RemoteVersion>) => {
+                    ListItem() {
+                      Row({ space: LAYOUT_SPACE }) {
+                        Column({ space: LAYOUT_SPACE_SMALL }) {
+                          Text(obj.item.id)
+                            .width('100%')
+                            .maxLines(1)
+                            .textOverflow({ overflow: TextOverflow.Ellipsis });
+                          // 副行：type · 发布日期（releaseTime 为完整 ISO 串，只取日期避免多列卡片里被截成省略号）
+                          Text(`${obj.item.type}${obj.item.releaseTime.length > 0 ? ' · ' + this.fmtReleaseDate(obj.item.releaseTime) : ''}`)
+                            .width('100%')
+                            .opacity(OPACITY_SECONDARY)
+                            .maxLines(1)
+                            .textOverflow({ overflow: TextOverflow.Ellipsis });
+                        }
+                        .layoutWeight(1)
+                        .alignItems(HorizontalAlign.Start);
+                        Button(this.isInstalled(obj.item.id)
+                          ? $r('app.string.download_installed')
+                          : $r('app.string.download_install'))
+                          .enabled(this.installer.installingId.length === 0
+                            && !this.state.gameRunning
+                            && !this.isInstalled(obj.item.id))
+                          .onClick(() => this.installRemote(obj.item));
+                      }
+                      .padding(LAYOUT_PADDING_SMALL)
+                      .backgroundColor($r('app.color.brand_bg'))
+                      .borderRadius(BORDER_RADIUS)
+                      .width('100%')
+                      .alignItems(VerticalAlign.Center);
+                    };
+                  })
+                  .key((v: RemoteVersion) => v.id)
+                  .virtualScroll();
+              }
+              // 自适应列数 + 列间距（行间距由 List 的 space 控制）；仍保持 Repeat.virtualScroll 懒加载
+              .lanes({ minLength: DOWNLOAD_CARD_MIN_W, maxLength: DOWNLOAD_CARD_MAX_W }, LAYOUT_SPACE)
+              .height(DOWNLOAD_LIST_HEIGHT)
+              .width('100%');
+            }
 
           }
           .width('100%')

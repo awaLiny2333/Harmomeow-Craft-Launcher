@@ -12,7 +12,12 @@ import { fileIo, fileUri } from '@kit.CoreFileKit';
  * 由此产出的物理路径，不需要再次转换。
  */
 function userFileUriToPath(uri: string): string {
-  return new fileUri.FileUri(uri).path;
+  try {
+    return new fileUri.FileUri(uri).path;
+  } catch {
+    // 非法/空 URI：返回空串，调用方据此判无效（避免 new FileUri('') 抛异常冒泡）。
+    return '';
+  }
 }
 
 /**
@@ -23,7 +28,11 @@ function userFileUriToPath(uri: string): string {
  * jsonPath/releaseTime 供开发调试核对扫描来源。
  */
 export class GameVersion {
-  /** 版本 id，如 "1.20.1" / "1.20.4"；同时是版本目录名与 json 文件名。 */
+  /**
+   * 实例身份 = `versions/` 下的**目录名**（也是 json 文件名），如 "1.20.1" / "MyPack"。
+   * 注意：是目录名，**不是 json 内容里的 `id` 字段**——对齐 HMCL：目录名才是实例身份，
+   * 启动/删除/隔离等所有路径都从它派生，故目录名≠json id（重命名/整合包）也不会错。
+   */
   id: string;
 
   /** 版本类型：release / snapshot / old_beta / old_alpha 等。 */
@@ -52,18 +61,18 @@ export class GameVersion {
 }
 
 /**
- * 从版本 json 解析字段。
+ * 从版本 json 解析字段。`dirName` = `versions/` 下的目录名（实例身份）。
  * Minecraft 版本 json 结构：
  * { "id", "type", "mainClass", "releaseTime",
  *   "javaVersion": { "majorVersion": 17, ... }, ... }。
- * 解析失败或缺少 id 时返回 null（该版本目录被跳过）。
+ * json 里的 `id` 仅要求存在（把"任意 json"挡在外面），身份一律用 `dirName`；
+ * 解析失败/缺 id 时返回 null（该版本目录被跳过）。
  */
-function parseVersionJson(jsonPath: string): GameVersion | null {
+function parseVersionJson(dirName: string, jsonPath: string): GameVersion | null {
   try {
     const text = fileIo.readTextSync(jsonPath);
     const obj = JSON.parse(text) as GameVersionJson;
-    const id = obj.id ?? '';
-    if (id.length === 0) {
+    if ((obj.id ?? '').length === 0) {
       return null;
     }
     const type = obj.type ?? '';
@@ -71,7 +80,7 @@ function parseVersionJson(jsonPath: string): GameVersion | null {
     const javaVersion = obj.javaVersion?.majorVersion ?? 8;
     const releaseTime = obj.releaseTime ?? '';
     return new GameVersion(
-      id,
+      dirName,
       type.length > 0 ? type : 'unknown',
       jsonPath,
       mainClass,
@@ -96,25 +105,21 @@ interface GameJavaVersion {
 }
 
 /**
- * 扫描目录（可能为 .minecraft 父目录）下的已安装版本。
+ * 扫描选中目录（即游戏根 = .minecraft）下的已安装版本。
  *
- * 目录探测策略（兼容两种常见布局）：
- * 1. 若 <dir>/.minecraft/versions 存在，则把它当作游戏根目录（用户选了 .minecraft 的父目录）；
- * 2. 否则若 <dir>/versions 存在，则 <dir> 本身就是游戏根目录；
- * 3. 都不存在 → 返回空数组（不是有效游戏目录）。
+ * 语义：**用户选中的目录就是游戏根**（不识别"父目录"等其它布局）。
+ * 目录里没有 versions/ 时返回空数组（只是"还没装版本"，不是无效目录）。
  *
- * 对每个版本：遍历 versions/<v>/<v>.json 读取 id / type。
- * 跳过 "removed" 结尾的目录（历史启动器约定）。
+ * 对每个版本：遍历 versions/<v>/<v>.json；条目身份 = 目录名 `<v>`（见 GameVersion.id）。
+ * 跳过 "removed" 结尾的目录（历史启动器约定 / 删除残留）。
  *
  * @param dirUri Picker 选中的目录 URI（file://docs/...），需已授权。
  */
 export function scanVersions(dirUri: string): GameVersion[] {
-  const dirPath = userFileUriToPath(dirUri);
-  const rootPath = locateGameRoot(dirPath);
+  const rootPath = userFileUriToPath(dirUri);
   if (rootPath.length === 0) {
     return [];
   }
-
   const versionsPath = `${rootPath}/versions/`;
   let entries: string[] = [];
   try {
@@ -131,7 +136,7 @@ export function scanVersions(dirUri: string): GameVersion[] {
     try {
       const stat = fileIo.statSync(`${versionsPath}${name}`);
       if (stat.isDirectory()) {
-        const v = parseVersionJson(`${versionsPath}${name}/${name}.json`);
+        const v = parseVersionJson(name, `${versionsPath}${name}/${name}.json`);
         if (v) {
           result.push(v);
         }
@@ -189,34 +194,11 @@ export function compareVersionIds(a: string, b: string): number {
 }
 
 /**
- * 探测游戏根目录（含 versions 子目录的那一层）。
- * 返回空串表示无效目录。
- */
-function locateGameRoot(dirPath: string): string {
-  // 情形 1：dir 本身是 .minecraft（含 versions）
-  if (hasSubdir(dirPath, 'versions')) {
-    return dirPath;
-  }
-  // 情形 2：dir 是 .minecraft 的父目录
-  if (hasSubdir(`${dirPath}/.minecraft`, 'versions')) {
-    return `${dirPath}/.minecraft`;
-  }
-  return '';
-}
-
-/** 判断 dirPath 下是否存在名为 sub 的子目录。 */
-function hasSubdir(dirPath: string, sub: string): boolean {
-  try {
-    return fileIo.accessSync(`${dirPath}/${sub}`);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * 由目录 URI 解析出游戏根目录物理路径（含 versions 的那一层，可能是 <dir>/.minecraft）。
- * 供安装器把新版本写进与扫描一致的根目录；无效目录返回空串。
+ * 由目录 URI 解析出游戏根目录物理路径。
+ * 用户选中的目录**就是游戏根**（等价 .minecraft）；空目录同样有效，安装时创建标准结构。
+ * 非法/空 URI 返回空串（调用方据此判"无法解析"）。
+ * 供安装器把新版本写进与扫描一致的根目录。
  */
 export function resolveGameRoot(dirUri: string): string {
-  return locateGameRoot(userFileUriToPath(dirUri));
+  return userFileUriToPath(dirUri);
 }

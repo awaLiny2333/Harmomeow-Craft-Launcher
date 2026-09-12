@@ -68,7 +68,7 @@ struct GameWindow {
   /** 全屏请求轮询定时器（-1 = 未启动）。 */
   private fsTimer: number = -1;
 
-  /** 左下角 overlay：当前鼠标有效采样率（Hz）。 */
+  /** 右下角 overlay：当前鼠标有效采样率（Hz）。 */
   @Local mouseRate: number = 0;
   /** 高级选项：是否显示采样率 overlay（挂载时从 Preferences 读入）。 */
   @Local showInputRate: boolean = false;
@@ -349,7 +349,7 @@ struct GameWindow {
           return false;
         });
 
-      // 左下角：当前鼠标有效采样率（不拦截输入；由高级选项控制）。
+      // 右下角：当前鼠标有效采样率（不拦截输入；由高级选项控制）。
       if (this.showInputRate) {
         Column() {
           Text($r('app.string.game_input_rate', this.mouseRate))
@@ -360,8 +360,8 @@ struct GameWindow {
         .width('100%')
         .height('100%')
         .justifyContent(FlexAlign.End)
-        .alignItems(HorizontalAlign.Start)
-        .padding({ left: 12, bottom: 12 })
+        .alignItems(HorizontalAlign.End)
+        .padding({ right: 12, bottom: 12 })
         .hitTestBehavior(HitTestMode.None);
       }
     }

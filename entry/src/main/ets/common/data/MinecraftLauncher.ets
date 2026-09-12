@@ -150,6 +150,9 @@ export interface LaunchOptions {
    *  建议传 filesDir 下沙箱目录，避免外部目录写权限问题（账户自立门户）。
    *  注：目录已 meow 化（原 launcher-home）；Java 属性键（MEOWCRAFT_HOME / meowcraft.path.*）
    *  为 launcher.jar 读取的固定契约，不可改名。 */
+  /** 实例身份（versions 目录名，见 VersionScanner.GameVersion.id）；空 = 退回 json 的 id。
+   *  MeowLauncher 的 <version> 参数与 ${version_name} 用它，保证与目录名一致。 */
+  versionId?: string;
   meowHomeDir?: string;
   /** CPU 线程数覆盖（-XX:ActiveProcessorCount）；0/未设 = 自动（不传，JVM 探测）。 */
   activeProcessorCount?: number;
@@ -173,7 +176,9 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   if (json === null) {
     return [];
   }
-  const id = json.id ?? '';
+  // 实例身份 = versions 目录名（opts.versionId，对齐 HMCL）；无则退回 json 的 id。
+  const id = (opts.versionId !== undefined && opts.versionId.length > 0)
+    ? opts.versionId : (json.id ?? '');
   if (id.length === 0) {
     return [];
   }
@@ -184,7 +189,7 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   // classpath：给定则直接用，否则按 json 本地存在 jar 拼。
   const classpath = (opts.classpath !== undefined && opts.classpath.length > 0)
     ? opts.classpath
-    : assembleClasspath(opts.gameRoot, json);
+    : assembleClasspath(opts.gameRoot, json, id);
   // natives 目录：JNA/LWJGL native 解压目标（runDir 沙箱内可写优先）。
   const nativesDir = (opts.runDir !== undefined && opts.runDir.length > 0)
     ? `${opts.runDir}/${NATIVES_DIR}`
@@ -267,9 +272,10 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     argv.push(`-Dmeowcraft.path.minecraft=${opts.gameRoot}`);
     // 目录模型：MEOWCRAFT_HOME=homeDir（账户所在，dir=<home>+"/accounts"），
     // MEOWCRAFT_GAME_DIR=.minecraft。账户目录自立门户：传 filesDir 下沙箱目录最稳（外部目录可能不可写）。
+    // 账户 home：正常由 GameLauncher 恒传可写沙箱目录；缺省时退回游戏根（不再假设 .minecraft 父目录）。
     const homeDir = opts.meowHomeDir !== undefined && opts.meowHomeDir.length > 0
       ? opts.meowHomeDir
-      : gameRootParent(opts.gameRoot);
+      : opts.gameRoot;
     argv.push(`-DMEOWCRAFT_HOME=${homeDir}`);
     argv.push(`-DMEOWCRAFT_GAME_DIR=${opts.gameRoot}`);
     argv.push('-Djna.nosys=false');
@@ -445,7 +451,7 @@ function expand(raw: string, macros: LaunchMacros): string {
 
 /** 从已解析 json 收集本规则+存在的 jar（库 + 版本 jar）。
  *  org.lwjgl.* 排除：LWJGL 全家由 clean-room 合并 jar 替代（鸿蒙 musl .so + glfw 桥）。 */
-function collectFromJson(gameRoot: string, json: VersionJson): string[] {
+function collectFromJson(gameRoot: string, json: VersionJson, versionId: string): string[] {
   const parts: string[] = [];
   const libRoot = `${gameRoot}/libraries/`;
   for (const lib of json.libraries ?? []) {
@@ -468,7 +474,8 @@ function collectFromJson(gameRoot: string, json: VersionJson): string[] {
       parts.push(`${libRoot}${rel}`);
     }
   }
-  const id = json.id ?? '';
+  // 版本 jar 路径用实例身份（目录名），缺省退回 json id。
+  const id = versionId.length > 0 ? versionId : (json.id ?? '');
   const verJar = `${gameRoot}/versions/${id}/${id}.jar`;
   if (fileExists(verJar)) {
     parts.push(verJar);
@@ -477,8 +484,8 @@ function collectFromJson(gameRoot: string, json: VersionJson): string[] {
 }
 
 /** classpath：本地存在的声明库 jar + 版本 jar，冒号连接。 */
-export function assembleClasspath(gameRoot: string, json: VersionJson): string {
-  return collectFromJson(gameRoot, json).join(':');
+export function assembleClasspath(gameRoot: string, json: VersionJson, versionId: string): string {
+  return collectFromJson(gameRoot, json, versionId).join(':');
 }
 
 /** LWJGL 世代选择规则：声明的 lwjgl 版本 ≥ 门槛即选该世代。 */
@@ -538,12 +545,12 @@ export function lwjglGeneration(jsonPath: string): string {
  * 供启动器把它们平铺拷贝到沙箱目录后以 "<dir>/*" 通配作为 classpath——
  * 直接拼长 -cp（可达上万字符）在本 JLI 移植中会导致类加载失效。
  */
-export function collectJarSources(gameRoot: string, jsonPath: string): string[] {
+export function collectJarSources(gameRoot: string, jsonPath: string, versionId: string): string[] {
   const json = readJson(jsonPath);
   if (json === null) {
     return [];
   }
-  return collectFromJson(gameRoot, json);
+  return collectFromJson(gameRoot, json, versionId);
 }
 
 /**
@@ -577,19 +584,6 @@ function fileExists(path: string): boolean {
   } catch {
     return false;
   }
-}
-
-/**
- * .minecraft 的父目录（历史启动器 homeDir）：取 gameRoot 去掉末尾 "/.minecraft"。
- * 形如 <parent>/.minecraft -> <parent>；其它形态退回上级目录。
- */
-export function gameRootParent(gameRoot: string): string {
-  const norm = gameRoot.endsWith('/') ? gameRoot.substring(0, gameRoot.length - 1) : gameRoot;
-  if (norm.endsWith('/.minecraft')) {
-    return norm.substring(0, norm.length - '/.minecraft'.length);
-  }
-  const idx = norm.lastIndexOf('/');
-  return idx > 0 ? norm.substring(0, idx) : norm;
 }
 
 // 账户档案由 AccountsTools.writeAccountFile 生成（见 data/AccountsTools.ets）。

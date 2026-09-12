@@ -63,7 +63,7 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
   } catch (e) {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'extract meowcraft_extras fail: %{public}s', JSON.stringify(e));
   }
-  const sources = collectJarSources(gameRoot, jsonPath);
+  const sources = collectJarSources(gameRoot, jsonPath, versionId);
   let copied = 0;
   let checked = 0;
   for (const src of sources) {

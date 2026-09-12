@@ -46,7 +46,7 @@ export interface JreLibModule {
   bindNodeContent?: (content: object, sens: number) => number;
   /** 进入 grab：重置原生虚拟光标到中心并下发一次。 */
   meowGrabReset?: (cx: number, cy: number) => number;
-  /** 当前有效鼠标采样率（次/秒），供左下角 overlay 显示。 */
+  /** 当前有效鼠标采样率（次/秒），供右下角 overlay 显示。 */
   meowGetInputRate?: () => number;
   /** 取走一次全屏切换请求（MC glfwSetWindowMonitor 触发）；无则 request=0。 */
   takeFullscreenRequest?: () => FullscreenRequest;

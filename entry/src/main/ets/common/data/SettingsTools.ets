@@ -4,7 +4,7 @@ import { STORE_NAME, KEY_SHOW_INPUT_RATE, KEY_CPU_COUNT, KEY_MAX_HEAP_MB,
   KEY_VERSION_ISOLATION, KEY_SCROLL_SPEED, KEY_DOWNLOAD_SOURCE,
   KEY_VERSION_TYPE, KEY_RENDERER_OVERRIDES, SCROLL_SPEED_DEFAULT_PERCENT,
   KEY_RENDER_SCALE, RENDER_SCALE_DEFAULT, RENDER_SCALE_OPTIONS,
-  KEY_MS_CLIENT_ID } from '../constants/Constants';
+  KEY_MS_CLIENT_ID, KEY_LAST_LAUNCH } from '../constants/Constants';
 import { SOURCE_MIRROR, TYPE_RELEASE } from '../constants/DownloadContract';
 import { RENDERER_AUTO } from '../constants/LaunchDefaults';
 
@@ -12,6 +12,16 @@ import { RENDERER_AUTO } from '../constants/LaunchDefaults';
 export interface RendererOverride {
   id: string;
   backend: string;
+}
+
+/** 上次启动的游戏记录（"继续上次"按钮用）。 */
+export interface LastLaunch {
+  /** 游戏目录 URI（用于校验目录仍在列表里 / 移除时清理）。 */
+  dir: string;
+  /** 版本 id。 */
+  version: string;
+  /** 版本 json 的物理路径（无需再扫描即可直接启动）。 */
+  jsonPath: string;
 }
 
 /**
@@ -192,6 +202,71 @@ export class SettingsTools {
       this.store.flushSync();
     } catch {
       return;
+    }
+  }
+
+  // ---- 上次启动的游戏（"继续上次"按钮；删版本/移除目录时清理）----
+
+  /** 上次启动记录；无记录/解析失败均返回 null。 */
+  lastLaunch(): LastLaunch | null {
+    if (this.store === null) {
+      return null;
+    }
+    let raw = '';
+    try {
+      raw = this.store.getSync(KEY_LAST_LAUNCH, '') as string;
+    } catch {
+      return null;
+    }
+    if (raw.length === 0) {
+      return null;
+    }
+    try {
+      const rec = JSON.parse(raw) as LastLaunch;
+      const jsonPath = rec.jsonPath ?? '';
+      // 三个字段都要有：缺 jsonPath 的旧/坏记录视作"无记录"（否则按钮可点但静默失败）。
+      if (typeof rec.dir === 'string' && typeof rec.version === 'string'
+        && rec.dir.length > 0 && rec.version.length > 0 && jsonPath.length > 0) {
+        return { dir: rec.dir, version: rec.version, jsonPath: jsonPath };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 记录一次成功启动（下次可用"继续上次"一键启动）。 */
+  setLastLaunch(dir: string, version: string, jsonPath: string): void {
+    if (this.store === null || dir.length === 0 || version.length === 0) {
+      return;
+    }
+    const rec: LastLaunch = { dir: dir, version: version, jsonPath: jsonPath };
+    try {
+      this.store.putSync(KEY_LAST_LAUNCH, JSON.stringify(rec));
+      this.store.flushSync();
+    } catch {
+      return;
+    }
+  }
+
+  /** 清除"上次启动"记录。 */
+  clearLastLaunch(): void {
+    if (this.store === null) {
+      return;
+    }
+    try {
+      this.store.putSync(KEY_LAST_LAUNCH, '');
+      this.store.flushSync();
+    } catch {
+      return;
+    }
+  }
+
+  /** 若"上次启动"记录正是该 (目录, 版本)，清除之（删版本时用）。 */
+  clearLastLaunchIf(dir: string, version: string): void {
+    const rec = this.lastLaunch();
+    if (rec !== null && rec.dir === dir && rec.version === version) {
+      this.clearLastLaunch();
     }
   }
 

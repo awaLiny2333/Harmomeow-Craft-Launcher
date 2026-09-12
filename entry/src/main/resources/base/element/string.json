@@ -62,15 +62,15 @@
     },
     {
       "name": "common_edit",
-      "value": "编辑"
+      "value": "󰁳"
     },
     {
       "name": "common_done",
-      "value": "完成"
+      "value": "󰀓"
     },
     {
       "name": "common_launch",
-      "value": "启动"
+      "value": "󰂴"
     },
     {
       "name": "versions_title",
@@ -97,8 +97,20 @@
       "value": "JRE 数据须升级，无法启动：请先在下方 Java 环境区升级"
     },
     {
+      "name": "versions_need_account",
+      "value": "尚无账户，无法启动：请先在下方账户区添加并选择一个账户"
+    },
+    {
       "name": "versions_game_running",
       "value": "游戏运行中：请先关闭游戏窗口再启动"
+    },
+    {
+      "name": "launch_failed",
+      "value": "启动失败：版本路径无效或窗口打开失败，请重试"
+    },
+    {
+      "name": "launch_last",
+      "value": "继续上次：%s"
     },
     {
       "name": "version_isolation_label",
@@ -198,7 +210,7 @@
     },
     {
       "name": "advanced_show_input_rate_hint",
-      "value": "游戏窗口左下角显示当前鼠标有效采样率（Hz）"
+      "value": "游戏窗口右下角显示当前鼠标有效采样率（Hz）"
     },
     {
       "name": "advanced_cpu_count",
@@ -223,14 +235,6 @@
     {
       "name": "accounts_empty",
       "value": "尚未添加账户"
-    },
-    {
-      "name": "accounts_select",
-      "value": "选中"
-    },
-    {
-      "name": "accounts_selected",
-      "value": "当前"
     },
     {
       "name": "accounts_add_offline",
@@ -277,6 +281,10 @@
       "value": "登录失败：%s"
     },
     {
+      "name": "accounts_ms_no_client_id",
+      "value": "未配置 Microsoft client_id：请先在「高级选项」填写你自注册的 Azure 公有客户端 id"
+    },
+    {
       "name": "common_copy",
       "value": "复制"
     },
@@ -286,11 +294,11 @@
     },
     {
       "name": "accounts_logout",
-      "value": "退出登录"
+      "value": "退登"
     },
     {
       "name": "accounts_relogin",
-      "value": "重新登录"
+      "value": "重登"
     },
     {
       "name": "accounts_logged_out",
@@ -298,7 +306,19 @@
     },
     {
       "name": "accounts_login_expired",
-      "value": "微软登录已过期"
+      "value": "登录已过期"
+    },
+    {
+      "name": "accounts_status_valid_until",
+      "value": "登录凭证有效期至 %s"
+    },
+    {
+      "name": "accounts_status_expired",
+      "value": "登录凭证已过期，启动时会自动续期"
+    },
+    {
+      "name": "accounts_status_unknown",
+      "value": "登录凭证有效期未知"
     },
     {
       "name": "advanced_scroll_speed",

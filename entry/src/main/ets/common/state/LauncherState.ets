@@ -1,8 +1,11 @@
 import { AppStorageV2 } from '@kit.ArkUI';
+import { common } from '@kit.AbilityKit';
+import { fileIo } from '@kit.CoreFileKit';
 import { GameDir } from '../data/GameDirsTools';
 import { GameVersion, scanVersions } from '../data/VersionScanner';
 import { scanJavaEnv } from '../data/JavaEnvScanner';
 import { isGameProcessRunning } from '../data/GameProcessScanner';
+import { SettingsTools } from '../data/SettingsTools';
 
 /**
  * 启动器应用级共享状态（跨组件通过 AppStorageV2 共享同一实例）。
@@ -54,6 +57,11 @@ export class LauncherState {
   /** 已启用版本隔离的版本 id 列表（镜像 Preferences，见 SettingsTools.versionIsolationIds）。 */
   @Trace isolatedIds: string[] = [];
 
+  /** 上次启动的目录 URI / 版本 id / jsonPath（镜像 Preferences KEY_LAST_LAUNCH，供"继续上次"按钮）。 */
+  @Trace lastLaunchDir: string = '';
+  @Trace lastLaunchVersion: string = '';
+  @Trace lastLaunchJsonPath: string = '';
+
   /** 当前选中目录是否已授权（selected 在 activated 中）。 */
   isSelectedActivated(): boolean {
     return this.activated.includes(this.selected);
@@ -102,9 +110,53 @@ export class LauncherState {
     this.jreNeedsUpgrade = !ready && needsUpgrade;
   }
 
+  /**
+   * 读取并校验"上次启动"记录 → 运行时镜像（供"继续上次"按钮）。
+   * 校验：记录存在、且其目录仍在已记住的目录列表里（目录被移除 → 清除记录）。
+   * 版本被显式删除时由调用方 clearLastLaunchIf 清理。
+   */
+  refreshLastLaunch(ctx: common.Context): void {
+    const settings = new SettingsTools(ctx);
+    const rec = settings.lastLaunch();
+    if (rec === null) {
+      this.lastLaunchDir = '';
+      this.lastLaunchVersion = '';
+      this.lastLaunchJsonPath = '';
+      return;
+    }
+    if (!this.dirs.some((d) => d.uri === rec.dir)) {
+      settings.clearLastLaunch();
+      this.lastLaunchDir = '';
+      this.lastLaunchVersion = '';
+      this.lastLaunchJsonPath = '';
+      return;
+    }
+    // 该目录本会话已授权时，进一步校验版本 json 是否还在（防"外部删除版本后按钮残留"）。
+    // 未授权时无法安全判断，跳过以免误清（授权是异步的，见 GameDirsView.autoActivate 后再次刷新）。
+    if (this.activated.includes(rec.dir) && !jsonExists(rec.jsonPath)) {
+      settings.clearLastLaunch();
+      this.lastLaunchDir = '';
+      this.lastLaunchVersion = '';
+      this.lastLaunchJsonPath = '';
+      return;
+    }
+    this.lastLaunchDir = rec.dir;
+    this.lastLaunchVersion = rec.version;
+    this.lastLaunchJsonPath = rec.jsonPath;
+  }
+
   /** 探测游戏 Ability 进程是否存活（跨进程，免权限）。主窗定时/触发调用。 */
   async refreshGameRunning(): Promise<void> {
     this.gameRunning = await isGameProcessRunning();
+  }
+}
+
+/** 判断物理路径是否存在（校验"上次启动"的版本 json；需目录已授权）。 */
+function jsonExists(path: string): boolean {
+  try {
+    return fileIo.accessSync(path);
+  } catch {
+    return false;
   }
 }
 

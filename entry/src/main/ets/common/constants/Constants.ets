@@ -19,7 +19,7 @@ export const ROUTE_INDEX: string = 'pages/Index';
 export const STORE_NAME: string = 'meowcraft';
 export const KEY_DIRS: string = 'game_dirs';
 export const KEY_SELECTED: string = 'selected_dir';
-// 高级选项：是否在游戏窗口左下角显示鼠标采样率 overlay（bool）。
+// 高级选项：是否在游戏窗口右下角显示鼠标采样率 overlay（bool）。
 export const KEY_SHOW_INPUT_RATE: string = 'show_input_rate';
 // 高级选项：启动参数覆盖（0 / 空串 = 自动，用默认）。
 export const KEY_CPU_COUNT: string = 'cpu_count';
@@ -27,6 +27,8 @@ export const KEY_MAX_HEAP_MB: string = 'max_heap_mb';
 // 账户系统：账户列表（JSON 字符串数组）+ 当前选中账户 id。
 export const KEY_ACCOUNTS: string = 'accounts';
 export const KEY_SELECTED_ACCOUNT: string = 'selected_account';
+// 上次启动的游戏（JSON {dir,version,jsonPath}；"继续上次"按钮用；删版本/移除目录时清理）。
+export const KEY_LAST_LAUNCH: string = 'last_launch';
 // 微软登录：用户自填的 Azure 公有客户端 id（不预置；空 = 微软登录不可用）。
 export const KEY_MS_CLIENT_ID: string = 'ms_client_id';
 // 版本隔离：已启用隔离的版本 id 列表（JSON 字符串数组；逐版本开关，空数组 = 全部不隔离）。
@@ -52,6 +54,13 @@ export const LAYOUT_PADDING: number = 12;
 export const LAYOUT_PADDING_SMALL: number = 8;
 export const OPACITY_SECONDARY: number = 0.6;
 export const BORDER_RADIUS: number = 14;
+// 极细外边距（1vp）：修 TextInput layoutWeight(1) 的轻微布局抖动（账户区输入框用）。
+export const LAYOUT_MARGIN_HAIRLINE: number = 1;
+
+// 页面响应式断点：窗口宽度 ≥ 此值（vp）时，账户区左移为独立侧栏（形成左右分栏）。
+export const LAYOUT_WIDE_MIN_W: number = 640;
+// 宽屏分栏时账户侧栏宽度（vp）。
+export const LAYOUT_ACCOUNT_PANEL_W: number = 320;
 
 // 采样率 overlay 底色（半透明黑，保证游戏画面上可读）。
 export const OVERLAY_BG: string = '#80000000';

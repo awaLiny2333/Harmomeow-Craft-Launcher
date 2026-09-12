@@ -5,19 +5,20 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { buildLaunchArgv } from './MinecraftLauncher';
 import { startJvm } from '../state/JvmLauncher';
 import { stageClasspathDir } from './ClasspathStager';
-import { Account, AccountsTools, ACCOUNT_TYPE_OFFLINE, ACCOUNT_TYPE_MICROSOFT, offlineUuid } from './AccountsTools';
+import { Account, AccountsTools, ACCOUNT_TYPE_MICROSOFT } from './AccountsTools';
 import { SettingsTools } from './SettingsTools';
 import { MEOW_HOME_DIR, MC_RUN_DIR_PREFIX, NATIVES_DIR, jreHomeDir,
   hspLibsDir, versionDir } from '../constants/Paths';
-import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H, OFFLINE_USERNAME } from '../constants/LaunchDefaults';
+import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H } from '../constants/LaunchDefaults';
 import { rendererForVersion } from './RendererPolicy';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'GameLauncher';
 
 /**
- * 完整启动流程（与游戏窗 UI 解耦）：stage classpath → 预置账户 → 组装 argv → 启动 JVM。
+ * 完整启动流程（与游戏窗 UI 解耦）：stage classpath → 校验账户 → 组装 argv → 启动 JVM。
  * 调用方（GameWindow）负责先注入 surface；本函数只做"起 JVM"。
+ * 账户为必需前置：无选中账户直接拒绝（绝不静默造号），UI 层已按此门控启动按钮。
  */
 export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string, jsonPath: string,
   versionId: string, width: number, height: number): Promise<void> {
@@ -38,28 +39,26 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   const meowHome = `${ctx.filesDir}/${MEOW_HOME_DIR}`;
   // 高级选项覆盖（主进程写 Preferences，本进程读）：0/空 = 自动。
   const settings = new SettingsTools(ctx);
-  // 当前选中账户（无则兜底创建默认离线账户）；写入账户档案后把玩家名交给启动器（launcher 按名加载）。
+  // 必须已选中账户：无账号不允许启动（UI 已门控；此处兜底拒绝，绝不静默造号）。
   const accounts = new AccountsTools(ctx);
-  let account: Account | null = accounts.selected();
+  const account: Account | null = accounts.selected();
   if (account === null) {
-    account = accounts.add({
-      id: `account:${Date.now()}`,
-      type: ACCOUNT_TYPE_OFFLINE,
-      name: OFFLINE_USERNAME,
-      uuid: offlineUuid(OFFLINE_USERNAME),
-    });
+    hilog.warn(LOG_DOMAIN, LOG_TAG, 'launch abort: no account selected');
+    return;
   }
-  accounts.writeAccountFile(meowHome, account);
   let launchAccount: Account = account;
   if (account.type === ACCOUNT_TYPE_MICROSOFT) {
-    // 微软账户：启动前确保 token 新鲜（过期则用 refresh_token 续期）。
+    // 微软账户：启动前确保 token 新鲜（过期则用 refresh_token 续期）；
+    // 续不动 → 与主进程门控一致：中止启动，不拿坏 token 硬启。
     try {
       launchAccount = await accounts.ensureMicrosoftFresh(account);
-      accounts.writeAccountFile(meowHome, launchAccount);
     } catch (e) {
-      hilog.warn(LOG_DOMAIN, LOG_TAG, 'microsoft refresh failed: %{public}s', (e as Error).message);
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'launch abort: microsoft refresh failed: %{public}s',
+        (e as Error).message);
+      return;
     }
   }
+  accounts.writeAccountFile(meowHome, launchAccount);
   // 版本隔离（逐版本开关，跨进程从 Preferences 读）：隔离时游戏运行目录 = <gameRoot>/versions/<id>，
   // 存档/选项/日志/资源包落版本目录，与其它版本互不干扰；assets/libraries 仍是共享根（不随隔离变）。
   const isolated = settings.versionIsolated(versionId);
@@ -73,6 +72,7 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     gameRoot: gameRoot,
     gameDir: gameDir,
     jsonPath: jsonPath,
+    versionId: versionId,
     classpath: `${cpDir}/*`,
     runDir: runDir,
     nativeLibsDir: hspLibsDir(ctx.bundleCodeDir), // 自足 JRE 模块 el1（隔离）

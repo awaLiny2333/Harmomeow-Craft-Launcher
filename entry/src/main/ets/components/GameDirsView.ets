@@ -62,6 +62,8 @@ export struct GameDirsView {
       : (st.dirs.length > 0 ? st.dirs[0].uri : '');
     // 尝试激活已持久化的授权（重启后免再次 Picker）。
     this.autoActivate();
+    // 校验"上次启动"记录：其目录若已不在列表则清除（目录被移除等）。
+    st.refreshLastLaunch(this.context());
   }
 
   /**
@@ -124,6 +126,8 @@ export struct GameDirsView {
     }
     st.activated = next;
     st.refreshVersions();
+    // 授权完成后再次校验"上次启动"（此时才可安全判断版本 json 是否还在）。
+    st.refreshLastLaunch(this.context());
   }
 
   /**
@@ -142,6 +146,8 @@ export struct GameDirsView {
     if (this.editingUri === uri) {
       this.editingUri = '';
     }
+    // 目录被移除 → 清掉指向它的"上次启动"记录（refreshLastLaunch 校验目录是否仍在列表）。
+    st.refreshLastLaunch(this.context());
     // 撤销该目录的持久化授权（best-effort）。
     await revokeDirectory(uri);
   }
