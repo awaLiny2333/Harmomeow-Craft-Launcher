@@ -257,12 +257,13 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     // Tools.getMinecraftArgs 会读 Server_Ip 属性并 isBlank() 判空（历史启动器 JVMLauncher 同款）；
     // 缺属性则 getProperty 返回 null → NPE。空值可安全走"无服务器直连"分支。
     argv.push('-DServer_Ip=');
-    // LWJGL native 加载诊断——native 库加载失败时给出具体库名与原因。
-    // 注意（LWJGL2/legacy 必须关 util.Debug）：LWJGL2 的 LWJGLUtil.DEBUG 门控
-    // Display.swapBuffers 里的"交换前 glGetError 检查"（Display.java:616）。MC 自己从不检查
-    // GL 错误，而 gl4es 的固定管线模拟会留下良性 GL 错误 → 该调试开关会把噪声变成致命
-    // OpenGLException（实测 `Invalid operation (1282)`）。DebugLoader / opengl.Debug 保留
-    // （仍有库加载与 GL 能力诊断输出），它们不触发那次检查。
+    // LWJGL 调试开关：**默认不设（= 关）**。`org.lwjgl.util.Debug=true` 会开启 LWJGL 的
+    // "额外运行期检查（部分很贵）"并刷诊断输出（LWJGL 源码 Configuration.DEBUG 原文）；
+    // `DebugLoader` 依附于它；`org.lwjgl.opengl.Debug` 根本不是 LWJGL 属性（core/opengl 源码零命中，
+    // MC json 也不设）→ 历史死旗标，已一并移除。排障/A-B 时用高级选项「额外 JVM 参数」加
+    // `-Dorg.lwjgl.util.Debug=true` 即可覆盖（额外参数排在固定参数之前，不会被覆盖）。
+    // legacy 也必须保持关：LWJGL2 的 LWJGLUtil.DEBUG 门控 Display.swapBuffers 的"交换前 glGetError
+    // 检查"，会把 gl4es 的良性 GL 错误变成致命 OpenGLException（实测 `Invalid operation (1282)`）。
     const legacyLwjgl = isLegacyLwjgl(opts.jsonPath);
     if (legacyLwjgl) {
       // LWJGL2 的全屏尺寸来自"应用选定的 DisplayMode"（createWindow 里 window_width=mode.width；
@@ -286,9 +287,6 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
         hilog.info(LOG_DOMAIN, LOG_TAG, 'screen size query failed: %{public}s', JSON.stringify(e));
       }
     }
-    argv.push(`-Dorg.lwjgl.util.Debug=${legacyLwjgl ? 'false' : 'true'}`);
-    argv.push('-Dorg.lwjgl.util.DebugLoader=true');
-    argv.push('-Dorg.lwjgl.opengl.Debug=true');
   }
 
   // JVM 参数（规则过滤 + 宏替换；含 -cp ${classpath} → 真实 cp）。
