@@ -308,6 +308,57 @@ static void print_map(void) {
 
 /* ---- signal handling ----------------------------------------------------- */
 
+static void print_bt_frame(int idx, unsigned long a) {
+    char lbl[8];
+    lbl[0] = 'b';
+    lbl[1] = 't';
+    lbl[2] = '#';
+    char d[4];
+    int k = 0;
+    int n = idx;
+    if (n == 0) {
+        d[k++] = '0';
+    }
+    while (n > 0) {
+        d[k++] = (char)('0' + (n % 10));
+        n /= 10;
+    }
+    int j = 3;
+    while (k > 0) {
+        lbl[j++] = d[--k];
+    }
+    lbl[j] = '\0';
+    print_mapping_of(lbl, a);
+}
+
+/* Bounded frame-pointer walk from the *faulting* context (x29): the first
+ * return address is the caller of the crashing function. Best-effort: Mesa may
+ * omit frame pointers. Reads are confined to the faulting stack window. */
+static void walk_fp(unsigned long fp, unsigned long sp) {
+    unsigned long cur = fp;
+    unsigned long prev = 0;
+    for (int i = 0; i < 24; ++i) {
+        if (cur == 0 || (cur & 0x7UL) != 0) {
+            break;
+        }
+        if (cur < sp || (cur - sp) > 0x400000UL) {
+            break;
+        }
+        if (cur <= prev) {
+            break;
+        }
+        unsigned long *frame = (unsigned long *)cur;
+        unsigned long next = frame[0];
+        unsigned long ret = frame[1];
+        print_bt_frame(i, ret);
+        if (ret == 0) {
+            break;
+        }
+        prev = cur;
+        cur = next;
+    }
+}
+
 static void chain_to_prev(int idx, int signo, siginfo_t *si, void *uctx) {
     if (idx < 0 || idx > 2 || !g_prev_valid[idx]) {
         signal(signo, SIG_DFL);
@@ -431,6 +482,10 @@ static void handler(int signo, siginfo_t *si, void *uctx) {
             print_mapping_of("addr->", addr);
             print_mapping_of("pc  ->", pc);
             print_mapping_of("lr  ->", lr);
+            /* 受限 fp 链回溯：抓 caller（Mesa 常省 fp，尽力而为）。 */
+            if (fp != 0) {
+                walk_fp(fp, sp);
+            }
         }
     }
 
