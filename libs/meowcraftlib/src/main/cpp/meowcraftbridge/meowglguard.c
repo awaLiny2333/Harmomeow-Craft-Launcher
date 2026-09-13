@@ -35,6 +35,7 @@ typedef GlProc (*GetProcFn)(const char *);
 
 static void *g_realLib = NULL;
 static GetProcFn g_realGetProc = NULL;
+static unsigned long g_resolveCount = 0;
 
 __attribute__((constructor)) static void meow_gl_guard_init(void) {
     void *h = dlopen("libGLv4.so", RTLD_NOW | RTLD_GLOBAL);
@@ -54,14 +55,20 @@ __attribute__((constructor)) static void meow_gl_guard_init(void) {
     if (g_realGetProc == NULL) {
         g_realGetProc = (GetProcFn)dlsym(h, "eglGetProcAddress");
     }
+    /* Diagnostics: whether libGLv4 carries a resolver at all, and a probe of the
+     * dlsym path (the resolver is usually NULL on this platform). */
     OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
-                 "guard: libGLv4=%{public}p resolver=%{public}p", h, (void *)g_realGetProc);
+                 "guard: libGLv4=%{public}d resolver=%{public}p dlsym(glGetString)=%{public}p",
+                 (int)(h != NULL), (void *)g_realGetProc, dlsym(h, "glGetString"));
 }
 
 static GlProc meow_gl_guard_resolve(const char *name) {
     if (name == NULL) {
         return NULL;
     }
+    /* Faithful to LWJGL's pre-guard path: libGLv4's own resolver (absent today),
+     * then dlsym on the libGLv4 handle (which also searches its dependencies).
+     * NO dlsym(RTLD_DEFAULT): that would be a behavioural superset. */
     GlProc p = NULL;
     if (g_realGetProc != NULL) {
         p = g_realGetProc(name);
@@ -69,8 +76,16 @@ static GlProc meow_gl_guard_resolve(const char *name) {
     if (p == NULL && g_realLib != NULL) {
         p = (GlProc)dlsym(g_realLib, name);
     }
-    if (p == NULL) {
-        p = (GlProc)dlsym(RTLD_DEFAULT, name);
+    g_resolveCount++;
+    /* Proof that LWJGL routes every GL name through this guard; the B2 target is
+     * logged with its resolved address. */
+    if (strcmp(name, "glTexSubImage2D") == 0) {
+        OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
+                     "guard: glTexSubImage2D -> %{public}p (resolve #%{public}ld)",
+                     (void *)p, (long)g_resolveCount);
+    } else if (g_resolveCount == 1) {
+        OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
+                     "guard: first resolve '%{public}s' -> %{public}p", name, (void *)p);
     }
     return p;
 }
