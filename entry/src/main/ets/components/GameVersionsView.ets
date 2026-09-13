@@ -50,8 +50,16 @@ export struct GameVersionsView {
   /** 共享应用状态（与目录选择区同一实例）。 */
   @Local state: LauncherState = getLauncherState();
 
-  /** 当前展开"编辑"面板的版本 id（空串 = 全部收起；同一时刻只展开一行）。 */
+  /** 当前展开"编辑"面板的版本 id（空串 = 全部收起；同一时刻只展开一个）。 */
   @Local editingId: string = '';
+
+  /** 被编辑的版本对象（面板渲染在列表上方、列表之外，供其取字段；editingId 为空时为占位对象）。 */
+  @Local editing: GameVersion = new GameVersion('', '', '', '', 0, '', '', '', '');
+
+  /** 被编辑实例所属的游戏目录（打开时快照）：跨目录切换后仍指向原目录，标题据此标注、删除/相对路径据此刻定目标。 */
+  @Local editingDirUri: string = '';
+  @Local editingRoot: string = '';
+  @Local editingDirName: string = '';
 
   /** 是否展开"下载新版本"面板（由"下载/收起"按钮切换）。 */
   @Local showDownload: boolean = false;
@@ -115,9 +123,22 @@ export struct GameVersionsView {
       : $r('app.string.common_edit');
   }
 
-  /** 展开 / 收起某版本的编辑面板（同一时刻只展开一行）。 */
-  private toggleEdit(versionId: string): void {
-    this.editingId = this.editingId === versionId ? '' : versionId;
+  /**
+   * 展开 / 收起某版本的编辑面板（同一时刻只展开一个）。面板渲染在版本列表**上方**（列表之外），
+   * 故同时缓存被编辑的 GameVersion 对象。
+   */
+  private toggleEdit(v: GameVersion): void {
+    if (this.editingId === v.id) {
+      this.editingId = '';
+      return;
+    }
+    this.editingId = v.id;
+    this.editing = v;
+    // 快照"该实例所属的游戏目录"：面板跨目录切换后仍指向它（标题标注 + 删除/相对路径据此刻定目标）。
+    this.editingDirUri = this.state.selected;
+    this.editingRoot = resolveGameRoot(this.state.selected);
+    const dir = this.state.dirs.find((d) => d.uri === this.state.selected);
+    this.editingDirName = dir !== undefined ? dir.name : '';
   }
 
   /** 发行日期显示：releaseTime 为 ISO 串（如 2024-06-13T15:00:00+00:00），只取日期部分。 */
@@ -142,12 +163,19 @@ export struct GameVersionsView {
     return $r('app.string.version_type_unknown');
   }
 
+  /** 编辑面板标题：`编辑版本 - <游戏目录昵称> - <实例名>`（无目录昵称时省略中段）。 */
+  private editTitle(v: GameVersion): Resource {
+    return this.editingDirName.length > 0
+      ? $r('app.string.version_edit_title', this.editingDirName, v.id)
+      : $r('app.string.version_edit_title_nofolder', v.id);
+  }
+
   /**
    * JSON 路径显示：截去游戏根前缀，只显示游戏目录内的相对路径（如 `versions/<id>/<id>.json`）；
    * 不在根内（异常）时退回绝对路径。
    */
   private relJsonPath(v: GameVersion): string {
-    const root = resolveGameRoot(this.state.selected);
+    const root = this.editingRoot;
     const path = v.jsonPath;
     if (root.length > 0 && path.startsWith(root)) {
       let rel = path.substring(root.length);
@@ -203,7 +231,7 @@ export struct GameVersionsView {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'delete abort: game running');
       return;
     }
-    const root = resolveGameRoot(this.state.selected);
+    const root = this.editingRoot;
     if (root.length === 0) {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'delete abort: no game root');
       return;
@@ -218,7 +246,7 @@ export struct GameVersionsView {
     const settings = new SettingsTools(this.context());
     settings.clearVersion(v.id);
     // 若"上次启动"正是这个版本，一并清理记录（否则"继续上次"会指向已删版本）。
-    settings.clearLastLaunchIf(this.state.selected, v.id);
+    settings.clearLastLaunchIf(this.editingDirUri, v.id);
     this.state.refreshLastLaunch(this.context());
     this.state.isolatedIds = settings.versionIsolationIds();
     this.overrides = settings.rendererOverrides();
@@ -481,6 +509,100 @@ export struct GameVersionsView {
     this.state.refreshVersions();
   }
 
+  /**
+   * 版本「编辑」面板（渲染在版本列表**上方**、列表之外；同一时刻只展开一个）。
+   * 字段：版本类型 / JSON / 发行日期 / 渲染后端 / 版本隔离 / 删除版本。不含改名。
+   */
+  @Builder
+  editPanel() {
+    Column({ space: LAYOUT_SPACE_SMALL }) {
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text(this.editTitle(this.editing));
+          // 次要元信息合一行：版本类型 · 发行日期 · JSON 相对路径（JSON 可长 → 占余量 + 省略号）
+          Row({ space: LAYOUT_SPACE }) {
+            Text(this.versionTypeLabel(this.editing))
+              .opacity(OPACITY_SECONDARY);
+            if (this.editing.releaseTime.length > 0) {
+              Text(this.fmtReleaseDate(this.editing.releaseTime))
+                .opacity(OPACITY_SECONDARY);
+            }
+            Text(this.relJsonPath(this.editing))
+              .layoutWeight(1)
+              .opacity(OPACITY_SECONDARY);
+          }
+          .alignItems(VerticalAlign.Center);
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1);
+        Button($r('app.string.common_done'))
+          .onClick(() => {
+            this.editingId = '';
+          });
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      Divider().padding({ top: LAYOUT_SPACE_SMALL });
+
+      // 版本隔离（标题 + 说明放进一个 Column，与右侧开关并列）
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.version_isolation_label'));
+          Text($r('app.string.version_isolation_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+        Toggle({ type: ToggleType.Switch, isOn: this.state.isIsolated(this.editing.id) })
+          .onChange((isOn: boolean) => {
+            this.setIsolation(this.editing.id, isOn);
+          });
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      // 渲染后端（逐版本）：推荐 / OpenGLv4 / GL4ES（兼容）
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.version_renderer_label'));
+          Text($r('app.string.version_renderer_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+        Select(this.rendererOptions())
+          .width('auto')
+          .selected(this.rendererIndex(this.editing.id))
+          .value(this.rendererValue(this.editing.id))
+          .onSelect((index: number) => {
+            this.setRenderer(this.editing.id, index);
+          })
+          .selectedOptionBgColor($r('app.color.brand_bg'))
+          .selectedOptionFontColor($r('app.color.brand'));
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      Divider().padding({ top: LAYOUT_SPACE_SMALL, bottom: LAYOUT_SPACE_SMALL });
+
+      // 删除版本（危险操作，二次确认；游戏运行中禁用，避免删正在使用的实例）
+      Row() {
+        Button($r('app.string.version_delete'))
+          .backgroundColor($r('app.color.danger'))
+          .enabled(!this.state.gameRunning)
+          .onClick(() => this.confirmDelete(this.editing));
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.End);
+    }
+    .padding(LAYOUT_PADDING_SMALL)
+    .backgroundColor($r('app.color.brand_bg'))
+    .borderRadius(BORDER_RADIUS)
+    .width('100%')
+    .alignItems(HorizontalAlign.Start);
+  }
+
   build() {
     Column({ space: LAYOUT_SPACE }) {
       Text($r('app.string.versions_title'))
@@ -515,6 +637,10 @@ export struct GameVersionsView {
             .opacity(OPACITY_SECONDARY)
             .width('100%');
         }
+        // 版本「编辑」面板：渲染在版本列表**上方**（列表之外），同一时刻只展开一个。
+        if (this.editingId.length > 0) {
+          this.editPanel();
+        }
         // 多列布局：版本卡片按断点自适应 1~4 列（宽窗口一行显示多个，提升空间利用率）。
         // 用 GridRow/GridCol（非滚动、高度自适应）而非 WaterFlow：本页在 Index 的外层 Scroll 内，
         // WaterFlow 自身是滚动容器，嵌套会与其抢手势/需固定高，故取栅格方案。
@@ -537,19 +663,20 @@ export struct GameVersionsView {
                         .width('100%')
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis });
-                      // 副行：type · JRE 大版本（发行日期等次要元信息收进编辑面板，按"编辑"才显示）
-                      Text(`${obj.item.type} · JRE ${obj.item.javaVersion}`)
-                        .width('100%')
-                        .opacity(OPACITY_SECONDARY)
-                        .maxLines(1)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis });
+                      // 副行：游戏类型（原版 / Fabric / 未知…） · JRE 大版本
+                      Row({ space: LAYOUT_SPACE_SMALL }) {
+                        Text(this.versionTypeLabel(obj.item));
+                        Text($r('app.string.versions_jre_suffix', obj.item.javaVersion));
+                      }
+                      .width('100%')
+                      .opacity(OPACITY_SECONDARY);
                     }
                     .layoutWeight(1)
                     .alignItems(HorizontalAlign.Start);
                     // 行内操作：编辑 / 完成（展开该版本的编辑面板）
                     Button(this.editLabel(obj.item.id))
                       .onClick(() => {
-                        this.toggleEdit(obj.item.id);
+                        this.toggleEdit(obj.item);
                       });
                     // 启动：JRE 未就绪 / 无账户 / 游戏已在运行时禁用，避免空启动/重复开
                     Button($r('app.string.common_launch'))
@@ -560,71 +687,7 @@ export struct GameVersionsView {
                   }
                   .width('100%')
                   .alignItems(VerticalAlign.Center);
-                  // 编辑/配置面板（展开态）：发行日期 + 完整 json 路径 + 版本隔离开关。
-                  // 隔离开启后该版本的存档/选项/日志落 <root>/versions/<id>，与其它版本互不干扰。
-                  if (this.editingId === obj.item.id) {
-                    Divider().padding({ top: LAYOUT_PADDING_SMALL, bottom: LAYOUT_PADDING_SMALL });
-                    // 版本类型：原版 / Fabric / Legacy Fabric / 未知（有继承/补丁但识别不出加载器）
-                    Row({ space: LAYOUT_SPACE }) {
-                      Text($r('app.string.version_type_label'));
-                      Text(this.versionTypeLabel(obj.item))
-                        .opacity(OPACITY_SECONDARY);
-                    }
-                    .width('100%');
-                    // 发行日期（次要元信息，原在主行副行，移入配置区按"编辑"才显示）
-                    if (obj.item.releaseTime.length > 0) {
-                      Row({ space: LAYOUT_SPACE }) {
-                        Text($r('app.string.version_release_label'));
-                        Text(this.fmtReleaseDate(obj.item.releaseTime))
-                          .opacity(OPACITY_SECONDARY);
-                      }
-                      .width('100%');
-                    }
-                    // json 路径（开发调试用；带小标签，与"发行日期"同款式）：显示游戏目录内的相对路径
-                    Row({ space: LAYOUT_SPACE }) {
-                      Text($r('app.string.version_json_label'));
-                      Text(this.relJsonPath(obj.item))
-                        .layoutWeight(1)
-                        .opacity(OPACITY_SECONDARY);
-                    }
-                    .width('100%')
-                    .alignItems(VerticalAlign.Top);
-                    // 渲染后端（逐版本）：推荐 / OpenGLv4 / GL4ES（兼容）
-                    Row({ space: LAYOUT_SPACE }) {
-                      Text($r('app.string.version_renderer_label'))
-                        .layoutWeight(1);
-                      Select(this.rendererOptions())
-                        .selected(this.rendererIndex(obj.item.id))
-                        .value(this.rendererValue(obj.item.id))
-                        .onSelect((index: number) => {
-                          this.setRenderer(obj.item.id, index);
-                        })
-                        .selectedOptionBgColor($r('app.color.brand_bg'))
-                        .selectedOptionFontColor($r('app.color.brand'))
-                        .layoutWeight(1);
-                    }
-                    .width('100%')
-                    .alignItems(VerticalAlign.Center);
-                    Row({ space: LAYOUT_SPACE }) {
-                      Text($r('app.string.version_isolation_label'))
-                        .layoutWeight(1);
-                      Toggle({ type: ToggleType.Switch, isOn: this.state.isIsolated(obj.item.id) })
-                        .onChange((isOn: boolean) => {
-                          this.setIsolation(obj.item.id, isOn);
-                        });
-                    }
-                    .width('100%')
-                    .alignItems(VerticalAlign.Center);
-                    // 删除版本（危险操作，二次确认；游戏运行中禁用，避免删正在使用的实例）
-                    Row() {
-                      Button($r('app.string.version_delete'))
-                        .backgroundColor($r('app.color.danger'))
-                        .enabled(!this.state.gameRunning)
-                        .onClick(() => this.confirmDelete(obj.item));
-                    }
-                    .width('100%')
-                    .justifyContent(FlexAlign.End);
-                  }
+                  // 编辑面板已移至版本列表上方（见同文件的 editPanel @Builder），卡片内不再内联展开。
                 }
                 .padding(LAYOUT_PADDING_SMALL)
                 .backgroundColor($r('app.color.brand_bg'))
@@ -700,8 +763,10 @@ export struct GameVersionsView {
                 Text($r('app.string.download_instance_for', this.installTargetId))
                   .opacity(OPACITY_SECONDARY);
                 Row({ space: LAYOUT_SPACE }) {
-                  TextInput({ text: this.installName,
-                    placeholder: $r('app.string.download_instance_placeholder') })
+                  TextInput({
+                    text: this.installName,
+                    placeholder: $r('app.string.download_instance_placeholder')
+                  })
                     .layoutWeight(1)
                     .onChange((v: string) => {
                       this.installName = v;

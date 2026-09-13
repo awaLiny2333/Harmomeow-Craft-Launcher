@@ -89,6 +89,10 @@
       "value": "未找到已安装的版本"
     },
     {
+      "name": "versions_jre_suffix",
+      "value": "· JRE %d"
+    },
+    {
       "name": "versions_jre_not_ready",
       "value": "JRE 未就绪，无法启动：请先在下方 Java 环境区解压"
     },
@@ -110,11 +114,15 @@
     },
     {
       "name": "launch_last",
-      "value": "继续上次：%s"
+      "value": "继续玩：%s"
     },
     {
       "name": "version_isolation_label",
       "value": "启用版本隔离"
+    },
+    {
+      "name": "version_isolation_hint",
+      "value": "存档 / 选项 / 日志独立存储，版本不打架，新安装默认开启"
     },
     {
       "name": "version_release_label",
@@ -127,6 +135,14 @@
     {
       "name": "version_type_label",
       "value": "版本类型"
+    },
+    {
+      "name": "version_edit_title",
+      "value": "编辑版本 - %s - %s"
+    },
+    {
+      "name": "version_edit_title_nofolder",
+      "value": "编辑版本 - %s"
     },
     {
       "name": "version_type_vanilla",
@@ -147,6 +163,10 @@
     {
       "name": "version_renderer_label",
       "value": "渲染后端"
+    },
+    {
+      "name": "version_renderer_hint",
+      "value": "推荐 = 自动（≥1.17 GL / ≤1.16 GL4ES）"
     },
     {
       "name": "version_delete",
@@ -178,7 +198,7 @@
     },
     {
       "name": "renderer_gl4es",
-      "value": "GL4ES（兼容）"
+      "value": "GL4ES（旧版本兼容）"
     },
     {
       "name": "java_env_title",
