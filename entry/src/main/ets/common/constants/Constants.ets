@@ -48,6 +48,12 @@ export const KEY_RENDER_SCALE: string = 'render_scale';
 export const RENDER_SCALE_DEFAULT: number = 1;
 export const RENDER_SCALE_OPTIONS: number[] = [1, 1.5, 2, 3, 4];
 
+/** 额外渲染环境变量（**实验/调优**）：`K=V`，换行或 `;` 分隔；启动前 setenv（可覆盖内置默认，如 GALLIUM_THREAD/ZINK_*）。 */
+export const KEY_RENDER_ENV: string = 'render_env';
+
+/** 额外 JVM 参数（**实验/调优**）：空格/换行分隔，原样追加到 argv。例：`-XX:+UnlockDiagnosticVMOptions -XX:-ImplicitNullChecks`。 */
+export const KEY_JVM_ARGS: string = 'jvm_args';
+
 // 布局：通用间距与透明度（单位 vp，透明度 0~1）。
 // 统一的布局常量保证各组件间距视觉一致，弱化次要文字用 OPACITY_SECONDARY 而不是改字号。
 export const LAYOUT_SPACE: number = 8;

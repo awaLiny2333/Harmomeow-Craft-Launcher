@@ -88,6 +88,7 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     playerName: launchAccount.name,
     cpuChip: cpuChip,
     rendererLib: renderer.lib,
+    jvmArgs: settings.jvmArgs(),
   });
   if (argv.length === 0) {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'launch abort: empty argv for %{public}s', versionId);
@@ -97,7 +98,8 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   const fullCmd = [java, ...argv].join(' ');
   hilog.info(LOG_DOMAIN, LOG_TAG, 'CMD: %{public}s', fullCmd.substring(0, 3000));
   hilog.info(LOG_DOMAIN, LOG_TAG, 'CMD_TAIL: %{public}s', fullCmd.substring(fullCmd.length - 800));
-  await startJvm(ctx, [java, ...argv], renderer.lib, renderer.env, renderer.glProfile);
+  await startJvm(ctx, [java, ...argv], renderer.lib, renderer.env, renderer.glProfile,
+    settings.renderEnv());
 }
 
 /** 读取设备 CPU 芯片型号（deviceInfo.chipType，API 21+）；失败/空返回空串。 */

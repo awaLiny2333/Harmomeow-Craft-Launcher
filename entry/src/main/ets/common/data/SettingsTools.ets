@@ -4,7 +4,7 @@ import { STORE_NAME, KEY_SHOW_INPUT_RATE, KEY_CPU_COUNT, KEY_MAX_HEAP_MB,
   KEY_VERSION_ISOLATION, KEY_SCROLL_SPEED, KEY_DOWNLOAD_SOURCE,
   KEY_FABRIC_SOURCE, KEY_VERSION_TYPE, KEY_RENDERER_OVERRIDES, SCROLL_SPEED_DEFAULT_PERCENT,
   KEY_RENDER_SCALE, RENDER_SCALE_DEFAULT, RENDER_SCALE_OPTIONS,
-  KEY_MS_CLIENT_ID, KEY_LAST_LAUNCH } from '../constants/Constants';
+  KEY_RENDER_ENV, KEY_JVM_ARGS, KEY_MS_CLIENT_ID, KEY_LAST_LAUNCH } from '../constants/Constants';
 import { SOURCE_MIRROR, TYPE_RELEASE } from '../constants/DownloadContract';
 import { RENDERER_AUTO } from '../constants/LaunchDefaults';
 
@@ -199,6 +199,54 @@ export class SettingsTools {
     }
     try {
       this.store.putSync(KEY_MS_CLIENT_ID, v);
+      this.store.flushSync();
+    } catch {
+      return;
+    }
+  }
+
+  /** 额外渲染环境变量（实验；`K=V`，换行/`;` 分隔）。空 = 不改。 */
+  renderEnv(): string {
+    if (this.store === null) {
+      return '';
+    }
+    try {
+      return this.store.getSync(KEY_RENDER_ENV, '') as string;
+    } catch {
+      return '';
+    }
+  }
+
+  setRenderEnv(v: string): void {
+    if (this.store === null) {
+      return;
+    }
+    try {
+      this.store.putSync(KEY_RENDER_ENV, v);
+      this.store.flushSync();
+    } catch {
+      return;
+    }
+  }
+
+  /** 额外 JVM 参数（实验；空格/换行分隔）。空 = 不传。 */
+  jvmArgs(): string {
+    if (this.store === null) {
+      return '';
+    }
+    try {
+      return this.store.getSync(KEY_JVM_ARGS, '') as string;
+    } catch {
+      return '';
+    }
+  }
+
+  setJvmArgs(v: string): void {
+    if (this.store === null) {
+      return;
+    }
+    try {
+      this.store.putSync(KEY_JVM_ARGS, v);
       this.store.flushSync();
     } catch {
       return;

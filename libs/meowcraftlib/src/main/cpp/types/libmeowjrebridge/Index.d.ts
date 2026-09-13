@@ -11,9 +11,12 @@
  * @param jreLibsDir JRE module el1 libs dir (contains libjli.so/libjvm.so; OHOS_DL_DIR).
  * @param rendererLib renderer .so to pre-dlopen (RTLD_GLOBAL), e.g. "libGLv4.so".
  * @param rendererEnv MEOWCRAFT_RENDERER value, e.g. "openglv4".
+ * @param glProfile MEOWCRAFT_GL_PROFILE value ("core" | "compat").
+ * @param extraRenderEnv extra render env overrides, "K=V" lines (or ';'-separated); applied last,
+ *   before the renderer is pre-dlopen (Mesa reads env at screen init). Empty = none.
  */
 export const launchJvm: (filesDir: string, args: string[], jreHome: string, jreLibsDir: string,
-  rendererLib: string, rendererEnv: string, glProfile: string) => void;
+  rendererLib: string, rendererEnv: string, glProfile: string, extraRenderEnv: string) => void;
 
 /**
  * Hand the XComponent surfaceId to our own libmeowcraftbridge.so so it creates

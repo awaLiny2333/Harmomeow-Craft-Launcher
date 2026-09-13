@@ -113,6 +113,8 @@ export interface LaunchOptions {
   /** 渲染后端库名（按 MC 版本选，见 RendererPolicy）；空 = 默认桌面 GL（RENDERER_LIB）。
    *  必须与 GameLauncher 传给 startJvm 的 rendererLib 一致（meowjrebridge 启动前会自检）。 */
   rendererLib?: string;
+  /** 额外 JVM 参数（实验/调优）：空格/换行分隔，原样追加（放在固定参数之前，允许被覆盖）。 */
+  jvmArgs?: string;
 }
 
 /**
@@ -162,6 +164,13 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   // 设备真实 CPU 芯片型号（ArkTS deviceInfo.chipType 读入；鸿蒙沙箱读不到 /proc/cpuinfo）。
   if (opts.cpuChip !== undefined && opts.cpuChip.length > 0) {
     argv.push(`-Dmeow.cpu.chip=${opts.cpuChip}`);
+  }
+  // 额外 JVM 参数（高级选项/实验）：空格/换行分隔，原样追加（放固定参数之前，允许被后续覆盖）。
+  if (opts.jvmArgs !== undefined && opts.jvmArgs.length > 0) {
+    const extraArgs = opts.jvmArgs.split('\n').join(' ').split(' ').filter((s: string) => s.length > 0);
+    for (const a of extraArgs) {
+      argv.push(a);
+    }
   }
   // 最大堆覆盖（高级选项）；0/未设 = 不传，用 JVM 默认。
   if (opts.maxHeapMb !== undefined && opts.maxHeapMb > 0) {

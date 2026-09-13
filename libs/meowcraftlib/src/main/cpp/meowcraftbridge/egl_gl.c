@@ -377,11 +377,38 @@ static EGLSurface egl_build_surface(void) {
     return surface;
 }
 
+/* glthread（GALLIUM_THREAD=1）下，销毁/重建 EGL surface 前必须把 Mesa threaded-context
+ * 的队列**排空**，否则驱动侧可能仍引用旧 surface → use-after-free。
+ * 实机 2026-09-13：开 glthread 后在加载屏随机 SIGSEGV(ACCERR) 被杀，且恰好发生在一次
+ * surface 重建之后。关闭 glthread 时本函数是 no-op（不给常规路径加 glFinish 同步）。 */
+static int g_tcChecked = 0;
+static int g_tcOn = 0;
+static void (*g_glFinish)(void) = NULL;
+static void meow_drain_tc(void) {
+    if (!g_tcChecked) {
+        const char *v = getenv("GALLIUM_THREAD");
+        g_tcOn = (v != NULL && v[0] != '\0' && !(v[0] == '0' && v[1] == '\0'));
+        if (g_tcOn) {
+            g_glFinish = (void (*)(void))eglGetProcAddress("glFinish");
+            if (g_glFinish == NULL) {
+                g_glFinish = (void (*)(void))dlsym(RTLD_DEFAULT, "glFinish");
+            }
+            MEOWLOGI("glthread on -> drain before surface ops (glFinish=%{public}p)",
+                     (void *)g_glFinish);
+        }
+        g_tcChecked = 1;
+    }
+    if (g_tcOn && g_glFinish != NULL) {
+        g_glFinish();
+    }
+}
+
 /* Detach and destroy the current surface, if any. */
 static void egl_drop_surface(void) {
     if (g_egl.surface == EGL_NO_SURFACE) {
         return;
     }
+    meow_drain_tc();
     eglMakeCurrent(g_egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     eglDestroySurface(g_egl.display, g_egl.surface);
     g_egl.surface = EGL_NO_SURFACE;

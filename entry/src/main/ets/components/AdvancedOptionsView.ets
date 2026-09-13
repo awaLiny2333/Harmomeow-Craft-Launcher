@@ -27,6 +27,10 @@ export struct AdvancedOptionsView {
   @Local scaleIndex: number = 0;
   /** 微软登录 client_id（用户自填，不预置；空 = 不可用）。 */
   @Local msClientIdText: string = '';
+  /** 额外渲染环境变量（实验；空 = 不改）。 */
+  @Local renderEnvText: string = '';
+  /** 额外 JVM 参数（实验；空 = 不改）。 */
+  @Local jvmArgsText: string = '';
   /** native 探测到的本机核数（仅展示参考）。 */
   @Local detectedCpus: number = 0;
 
@@ -49,6 +53,8 @@ export struct AdvancedOptionsView {
     const si = RENDER_SCALE_OPTIONS.indexOf(s.renderScale());
     this.scaleIndex = si >= 0 ? si : 0;
     this.msClientIdText = s.msClientId();
+    this.renderEnvText = s.renderEnv();
+    this.jvmArgsText = s.jvmArgs();
     try {
       this.detectedCpus = native.getCpuCount();
     } catch (e) {
@@ -221,6 +227,50 @@ export struct AdvancedOptionsView {
           })
           .onSubmit(() => {
             this.settings?.setMsClientId(this.msClientIdText.trim());
+          });
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      // 额外渲染环境变量（实验/调优；K=V，换行或 ; 分隔；空 = 不改）
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.advanced_render_env'));
+          Text($r('app.string.advanced_render_env_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+
+        TextInput({ text: this.renderEnvText })
+          .layoutWeight(1)
+          .onChange((v: string) => {
+            this.renderEnvText = v;
+          })
+          .onSubmit(() => {
+            this.settings?.setRenderEnv(this.renderEnvText.trim());
+          });
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      // 额外 JVM 参数（实验/调优；空格或换行分隔；空 = 不传）
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.advanced_jvm_args'));
+          Text($r('app.string.advanced_jvm_args_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+
+        TextInput({ text: this.jvmArgsText })
+          .layoutWeight(1)
+          .onChange((v: string) => {
+            this.jvmArgsText = v;
+          })
+          .onSubmit(() => {
+            this.settings?.setJvmArgs(this.jvmArgsText.trim());
           });
       }
       .width('100%')

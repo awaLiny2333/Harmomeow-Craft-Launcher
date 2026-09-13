@@ -385,6 +385,22 @@
       "value": "1x（关闭）"
     },
     {
+      "name": "advanced_render_env",
+      "value": "额外渲染环境变量（实验）"
+    },
+    {
+      "name": "advanced_render_env_hint",
+      "value": "K=V，换行或 ; 分隔，启动前注入（可覆盖默认）。例：GALLIUM_THREAD=1；留空 = 不改。改动下次开游戏生效"
+    },
+    {
+      "name": "advanced_jvm_args",
+      "value": "额外 JVM 参数（实验）"
+    },
+    {
+      "name": "advanced_jvm_args_hint",
+      "value": "空格或换行分隔，原样追加到启动参数。例：-XX:+UnlockDiagnosticVMOptions -XX:-ImplicitNullChecks；留空 = 不传。改动下次开游戏生效"
+    },
+    {
       "name": "advanced_ms_client_id",
       "value": "微软 client_id"
     },

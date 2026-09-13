@@ -21,6 +21,8 @@
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <pthread.h>
+#include <signal.h>
 #include <string>
 #include <thread>
 #include <vector>
@@ -160,11 +162,18 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
     if (glProfile.empty()) {
         glProfile = "core";
     }
+    // 额外渲染 env（实验/调优）：ArkTS 传 "K=V"（换行或 ';' 分隔）；在 JLI 前、预 dlopen 渲染器前
+    // setenv（Mesa 在 screen init 时读环境），可覆盖内置默认（GALLIUM_THREAD / ZINK_* / vblank_mode…）。
+    std::string extraRenderEnv;
+    if (argc >= 8) {
+        getStr(args[7], extraRenderEnv);
+    }
 
     // JLI_Launch 会阻塞到 JVM 退出，且内部可能 exit() 带走整个进程：
     // 必须在独立线程跑；任何局部 std::thread 都不能在 joinable 时析构
     // （否则 ~thread -> terminate -> SIGABRT）。全部用 detach 线程。
-    std::thread([filesDir, javaArgs, jreHome, jreLibs, rendererSo, rendererEnv, glProfile]() mutable {
+    std::thread([filesDir, javaArgs, jreHome, jreLibs, rendererSo, rendererEnv, glProfile,
+                 extraRenderEnv]() mutable {
         std::string libsDir = SelfDir(); // meowcraftlib libs（meowcraftbridge 等自研 so）
         // java.home（数据目录）与 JRE 运行时 el1 libs（libjli/libjvm…）由调用方指定，
         // 桥与 JRE 版本解耦。缺省回退旧布局（兼容）。
@@ -218,7 +227,36 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         // 映射 IMMEDIATE，否则 MAILBOX），并去掉 threaded-context 中转线程。
         // 必须在预 dlopen libGLv4 之前设置（Mesa 在 screen init 时读 env）。
         setenv("vblank_mode", "0", 1);
+        // ⚠️ 保持 0：threaded-context(glthread) 在本平台（Zink over Vulkan / Maleoon 916 / Mesa 25.0.1）
+        // 会在加载屏随机炸——实机 2026-09-13 多轮 A/B 复现：那本可被 HotSpot 恢复的 JIT 隐式空指针
+        // 故障在 glthread 下无法恢复 → 信号链反复重入 → 进程被杀。确有显著帧数收益，但要先消掉该故障
+        // （见高级选项「额外 JVM 参数」的实验，如 -XX:-ImplicitNullChecks）。
         setenv("GALLIUM_THREAD", "0", 1);
+        // 额外渲染 env（实验/调优）：最后应用，覆盖以上默认；**必须在预 dlopen 渲染器之前**
+        // （Mesa 在 screen init 时读 env）。格式 "K=V"，换行/';' 分隔，逐个 setenv。
+        if (!extraRenderEnv.empty()) {
+            std::string cur;
+            for (size_t i = 0; i <= extraRenderEnv.size(); ++i) {
+                char c = (i < extraRenderEnv.size()) ? extraRenderEnv[i] : '\n';
+                if (c == '\n' || c == '\r' || c == ';') {
+                    size_t eq = cur.find('=');
+                    if (eq != std::string::npos && eq > 0) {
+                        std::string k = cur.substr(0, eq);
+                        std::string v = cur.substr(eq + 1);
+                        while (!k.empty() && (k.back() == ' ' || k.back() == '\t')) k.pop_back();
+                        while (!k.empty() && (k.front() == ' ' || k.front() == '\t')) k.erase(k.begin());
+                        if (!k.empty()) {
+                            setenv(k.c_str(), v.c_str(), 1);
+                            OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
+                                         "extra render env: %{public}s=%{public}s", k.c_str(), v.c_str());
+                        }
+                    }
+                    cur.clear();
+                } else {
+                    cur.push_back(c);
+                }
+            }
+        }
         OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
                      "env set: MEOWCRAFT_RENDERER=%{public}s so=%{public}s NGG=%{public}s",
                      rendererEnv.c_str(), rendererSo.c_str(), (cacheDir + "/").c_str());

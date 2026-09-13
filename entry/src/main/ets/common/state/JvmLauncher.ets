@@ -24,7 +24,7 @@ export interface FullscreenRequest {
 
 export interface JreLibModule {
   launchJvm: (filesDir: string, args: string[], jreHome: string, jreLibsDir: string,
-    rendererLib: string, rendererEnv: string, glProfile: string) => void;
+    rendererLib: string, rendererEnv: string, glProfile: string, extraRenderEnv: string) => void;
   /** 自研 meowcraftbridge：surface 就绪时把 surfaceId 给它（写 env+0 窗口环）。 */
   setGameSurface?: (surfaceId: number, w: number, h: number) => boolean;
   /** 自研 meowcraftbridge：resize 通知（同 sid 只标尺寸，render 线程 apply）。 */
@@ -63,7 +63,7 @@ let jvmStarted = false;
  * 动态 import 后把参数交给 native 桥（pipe 捕获输出上抛 hilog）。
  */
 export async function startJvm(uiContext: common.UIAbilityContext, argv: string[],
-  rendererLib: string, rendererEnv: string, glProfile: string): Promise<boolean> {
+  rendererLib: string, rendererEnv: string, glProfile: string, renderEnv: string): Promise<boolean> {
   if (jvmStarted) {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'JVM already started in this process, skip');
     return false;
@@ -76,7 +76,7 @@ export async function startJvm(uiContext: common.UIAbilityContext, argv: string[
     hilog.info(LOG_DOMAIN, LOG_TAG, 'launching, argv0=%{public}s argn=%{public}d jre=%{public}s',
       argv.length > 0 ? argv[0] : '', argv.length, jreLibsDir);
     craft.launchJvm(uiContext.filesDir, argv, jreHome, jreLibsDir, rendererLib, rendererEnv,
-      glProfile);
+      glProfile, renderEnv);
     return true;
   } catch (e) {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'meowjre launch error: %{public}s', JSON.stringify(e));
