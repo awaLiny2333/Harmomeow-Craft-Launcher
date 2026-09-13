@@ -23,7 +23,6 @@
 #include "meowbt.h"
 
 #include <link.h>
-#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -120,6 +119,10 @@ static void set_name(MapEntry *m, const char *s) {
         return;
     }
     size_t n = strlen(s);
+    /* /proc/self/maps lines end with '\n' (kept by fgets); strip it. */
+    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' ' || s[n - 1] == '\t')) {
+        --n;
+    }
     if (n >= MAP_NAME_MAX) {
         n = MAP_NAME_MAX - 1;
     }
@@ -347,6 +350,13 @@ static void walk_fp(unsigned long fp, unsigned long sp) {
         if (cur <= prev) {
             break;
         }
+        /* Read only through frame pointers that live in a readable mapping: a
+         * nested fault inside this handler would force SIG_DFL and bypass the
+         * JVM's recovery, so mis-validated FPs must be rejected. */
+        const MapEntry *fm = find_map(cur);
+        if (fm == NULL || fm->perms[0] != 'r' || cur + 16 > fm->end) {
+            break;
+        }
         unsigned long *frame = (unsigned long *)cur;
         unsigned long next = frame[0];
         unsigned long ret = frame[1];
@@ -450,7 +460,9 @@ static void handler(int signo, siginfo_t *si, void *uctx) {
                 g_seen_n++;
             }
             char tname[32] = {0};
-            (void)pthread_getname_np(pthread_self(), tname, sizeof(tname));
+            /* syscall(prctl, PR_GET_NAME) is async-signal-safe; pthread_getname_np
+             * is not (it takes the thread-list lock and may deadlock here). */
+            (void)syscall(SYS_prctl, 16 /* PR_GET_NAME */, tname);
 
             char *p = g_buf;
             p = put_str(p, "[meowbt] FAULT#");

@@ -123,6 +123,21 @@ static void meow_gl_TexSubImage2D(unsigned int target, int level, int xoff, int 
     }
 }
 
+/* Exported so the bridge can verify (before JLI_Launch) that the guard is armed
+ * and, if not, force GALLIUM_THREAD=0 rather than leave glthread unprotected. */
+int meow_glguard_armed(void) {
+    if (g_realTexSubImage2D == NULL) {
+        return 0;
+    }
+    if (g_syncMode == SYNC_NONE) {
+        return 1; /* the operator explicitly asked for no sync */
+    }
+    if (g_syncMode == SYNC_FINISH) {
+        return g_glFinish != NULL ? 1 : 0;
+    }
+    return g_glFlush != NULL ? 1 : 0;
+}
+
 __attribute__((constructor)) static void meow_gl_guard_init(void) {
     void *h = dlopen("libGLv4.so", RTLD_NOW | RTLD_GLOBAL);
     if (h == NULL) {
@@ -159,6 +174,17 @@ __attribute__((constructor)) static void meow_gl_guard_init(void) {
                  "guard: libGLv4=%{public}d resolver=%{public}p glthread=%{public}d sync=%{public}d (texsub=%{public}p finish=%{public}p flush=%{public}p)",
                  (int)(h != NULL), (void *)g_realGetProc, g_glthread, g_syncMode,
                  (void *)g_realTexSubImage2D, (void *)g_glFinish, (void *)g_glFlush);
+    /* Fail-safe: if glthread is on but this guard cannot protect glTexSubImage2D
+     * (missing real symbol / missing sync entry point), do not leave the platform
+     * in the unprotected configuration that reintroduces the Mesa UAF. This runs
+     * when the bridge pre-dlopen()s us, i.e. after it set the env and before
+     * Mesa screen init, so the override is effective. */
+    if (g_glthread && !meow_glguard_armed()) {
+        setenv("GALLIUM_THREAD", "0", 1);
+        OH_LOG_Print(LOG_APP, LOG_WARN, LOG_DOMAIN, LOG_TAG,
+                     "guard: NOT armed (texsub=%{public}p finish=%{public}p flush=%{public}p) -> forced GALLIUM_THREAD=0",
+                     (void *)g_realTexSubImage2D, (void *)g_glFinish, (void *)g_glFlush);
+    }
 }
 
 static GlProc meow_gl_guard_resolve(const char *name) {

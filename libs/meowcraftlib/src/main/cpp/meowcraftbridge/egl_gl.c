@@ -441,8 +441,8 @@ static void meow_gl_info_once(void) {
     GetIntegervFn getIntegerv = (GetIntegervFn)eglGetProcAddress("glGetIntegerv");
     GetStringiFn getStringi = (GetStringiFn)eglGetProcAddress("glGetStringi");
     if (getString == NULL || getIntegerv == NULL || getStringi == NULL) {
-        MEOWLOGW("glinfo: procs missing (gs=%p gi=%p gsi=%p)", (void *)getString,
-                 (void *)getIntegerv, (void *)getStringi);
+        MEOWLOGW("glinfo: procs missing (gs=%{public}p gi=%{public}p gsi=%{public}p)",
+                 (void *)getString, (void *)getIntegerv, (void *)getStringi);
         return;
     }
     MEOWLOGI("glinfo: GL_VERSION=%{public}s GL_RENDERER=%{public}s",

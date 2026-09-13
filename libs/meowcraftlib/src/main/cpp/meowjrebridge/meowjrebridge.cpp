@@ -229,10 +229,11 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         // 映射 IMMEDIATE，否则 MAILBOX），并去掉 threaded-context 中转线程。
         // 必须在预 dlopen libGLv4 之前设置（Mesa 在 screen init 时读 env）。
         setenv("vblank_mode", "0", 1);
-        // ⚠️ 保持 0：threaded-context(glthread) 在本平台（Zink over Vulkan / Maleoon 916 / Mesa 25.0.1）
-        // 会在加载屏随机炸——实机 2026-09-13 多轮 A/B 复现：那本可被 HotSpot 恢复的 JIT 隐式空指针
-        // 故障在 glthread 下无法恢复 → 信号链反复重入 → 进程被杀。确有显著帧数收益，但要先消掉该故障
-        // （见高级选项「额外 JVM 参数」的实验，如 -XX:-ImplicitNullChecks）。
+        // GALLIUM_THREAD 基值 = 0（**关**）。要用 glthread 由**上层**覆盖（高级选项「线程化渲染」
+        // 默认开 → launcher 拼 `GALLIUM_THREAD=1`，仅现代路径）。本平台 glthread 会触发 Mesa
+        // `tc_texture_subdata` 的 UAF，由随包 **GL guard**（libmeowglguard.so）对 `glTexSubImage2D`
+        // 加后置同步兜底修复；**下方 pre-dlopen 后有失效安全**（guard 未武装则强制回 0）。
+        // 详见 notes 20-design/glthread-B方案-GL-guard.md。
         setenv("GALLIUM_THREAD", "0", 1);
         // 额外渲染 env（实验/调优）：最后应用，覆盖以上默认；**必须在预 dlopen 渲染器之前**
         // （Mesa 在 screen init 时读 env）。格式 "K=V"，换行/';' 分隔，逐个 setenv。
@@ -245,8 +246,11 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
                     if (eq != std::string::npos && eq > 0) {
                         std::string k = cur.substr(0, eq);
                         std::string v = cur.substr(eq + 1);
+                        // key 与 value 都去首尾空白（与注释一致；中间空白保留）。
                         while (!k.empty() && (k.back() == ' ' || k.back() == '\t')) k.pop_back();
                         while (!k.empty() && (k.front() == ' ' || k.front() == '\t')) k.erase(k.begin());
+                        while (!v.empty() && (v.back() == ' ' || v.back() == '\t')) v.pop_back();
+                        while (!v.empty() && (v.front() == ' ' || v.front() == '\t')) v.erase(v.begin());
                         if (!k.empty()) {
                             setenv(k.c_str(), v.c_str(), 1);
                             OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
@@ -283,6 +287,25 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         } else {
             OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
                          "pre-dlopen %{public}s ok", rendererSo.c_str());
+        }
+
+        // 失效安全：现代路径（openglv4）且 glthread 为开时，**只有"已武装的 GL guard"**才安全。
+        // 若渲染器不是 guard（未加载 / 回滚 / 缺件），或 guard 报告未武装 → 强制 GALLIUM_THREAD=0，
+        // 避免在无保护配置下复现 Mesa glthread 的 UAF。
+        // （用户刻意 `MEOW_GUARD_SYNC=none` 做对照时 armed() 返回 1，不阻止。）
+        if (rendererEnv == "openglv4") {
+            const char* gt = getenv("GALLIUM_THREAD");
+            bool glthreadOn = (gt != nullptr && gt[0] != '\0' && !(gt[0] == '0' && gt[1] == '\0'));
+            int (*armed)(void) = nullptr;
+            if (rlib != nullptr) {
+                armed = reinterpret_cast<int (*)(void)>(dlsym(rlib, "meow_glguard_armed"));
+            }
+            if (glthreadOn && (armed == nullptr || armed() == 0)) {
+                setenv("GALLIUM_THREAD", "0", 1);
+                OH_LOG_Print(LOG_APP, LOG_WARN, LOG_DOMAIN, LOG_TAG,
+                             "glthread requested but GL guard not armed (so=%{public}s) -> forced GALLIUM_THREAD=0",
+                             rendererSo.c_str());
+            }
         }
 
         // JVM stdout/stderr 直接 pipe 到 hilog：不落盘。两个 reader 线程各阻塞

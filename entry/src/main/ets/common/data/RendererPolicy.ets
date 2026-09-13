@@ -8,7 +8,8 @@ import { RENDERER_LIB, RENDERER_ENV, RENDERER_LIB_GL4ES,
  * - **≤1.16**：MC 用固定管线 GL → 走 **gl4es**（自编，桌面 GL→原生 GLES 翻译层）。
  *   gl4es 在 GLES context 上仿真固定管线，绕开系统 `libGLv4.so`（Mesa Zink）compat 路径的
  *   渲染错乱。此路径下 `glProfile` 无意义（桥走 GLES 分支），仍传 `compat` 以保持桌面回落行为。
- * - **≥1.17**：MC 用 core-profile 渲染器 → 走系统桌面 GL `libGLv4.so`（Zink），`glProfile=core`。
+ * - **≥1.17**：MC 用 core-profile 渲染器 → 走 **GL guard**（`libmeowglguard.so`，透传到系统桌面 GL
+ *   `libGLv4.so`/Zink；guard 对 `glTexSubImage2D` 加后置同步以规避 Mesa glthread UAF），`glProfile=core`。
  *
  * ⚠️ 传入的 `mcVersion` 必须是**版本 json 的内部 `id`**（真正的 MC 版本号，如 `1.16.5`/`1.21.10`/`26.1.2`），
  * **不是实例名/目录名**——实例名可被玩家任意取（对齐 HMCL），用它判版本会选错后端/profile。
