@@ -3,23 +3,21 @@
  *
  * Why: GALLIUM_THREAD=1 (Mesa glthread) crashes ~50% of runs inside the Huawei
  * Vulkan driver's pipeline-cache path (see notes 20-design/性能优化-实验台与
- * glthread负项.md). The driver is a closed blob, so the only way to pin the
- * faulting call/thread from our side is to catch the signal ourselves.
+ * glthread负项.md). The driver is a closed blob, so we catch the signal and
+ * report the interrupted context, resolved against the process memory map.
  *
- * Design notes:
+ * Facts learned the hard way:
  *   - backtrace() inside the handler only unwinds the *handler's* stack (it does
- *     not cross the signal frame), so it is useless here. Instead we report the
- *     interrupted context registers (from ucontext) and resolve the interesting
- *     addresses against a module table captured at install time.
- *   - The module table is built once via dl_iterate_phdr() at install, so the
- *     signal handler never calls into the dynamic loader (avoids deadlocks if the
- *     fault happened while the loader lock was held).
+ *     not cross the signal frame) -> useless; report ucontext registers instead.
+ *   - dl_iterate_phdr() misses the app's module-namespace libraries (libgallium,
+ *     libhvgr, libjvm, ...), so resolve against /proc/self/maps instead (the full
+ *     mapping set, including anonymous regions).
  *   - Install from a thread that runs after the JVM is up (bridge render thread):
  *     HotSpot replaces SIGSEGV during startup, so installing earlier is undone.
  *     We chain to the previously installed handler, so crash semantics are
  *     unchanged.
- *   - Only non-null-ish faults are dumped: HotSpot uses SIGSEGV for implicit
- *     null checks (addresses near 0), which are benign and frequent.
+ *   - Only non-null-ish faults are dumped (HotSpot's implicit-null-check SIGSEGVs
+ *     are benign and frequent).
  *   - Output goes to stderr, which the JVM launcher redirected into a pipe that
  *     is pumped to hilog.
  */
@@ -29,6 +27,7 @@
 
 #include <link.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -38,17 +37,17 @@
 /* Faults below this are HotSpot's implicit-null-check range: benign. */
 #define BT_BENIGN_MAX 0x10000UL
 
-#define MOD_MAX 320
-#define MOD_NAME_MAX 112
+#define MAP_MAX 1200
+#define MAP_NAME_MAX 72
 
 typedef struct {
-    unsigned long base;
+    unsigned long start;
     unsigned long end;
-    char name[MOD_NAME_MAX];
-} ModEntry;
+    char name[MAP_NAME_MAX];
+} MapEntry;
 
-static ModEntry g_mods[MOD_MAX];
-static int g_modc = 0;
+static MapEntry g_maps[MAP_MAX];
+static int g_mapc = 0;
 
 static struct sigaction g_prev[3]; /* 0 = SEGV, 1 = BUS, 2 = ABRT */
 static int g_prev_valid[3];
@@ -110,42 +109,24 @@ static void write_buf(const char *b, int len) {
     }
 }
 
-/* Resolve an address against the cached module table (no loader lock). */
-static const ModEntry *find_mod(unsigned long a) {
-    for (int i = 0; i < g_modc; ++i) {
-        if (a >= g_mods[i].base && a < g_mods[i].end) {
-            return &g_mods[i];
-        }
-    }
-    return NULL;
-}
-
-static void print_resolved(const char *label, unsigned long a) {
-    if (a == 0) {
+static void set_name(MapEntry *m, const char *s) {
+    m->name[0] = '\0';
+    if (s == NULL || s[0] == '\0') {
         return;
     }
-    char *p = g_buf;
-    p = put_str(p, "[meowbt]   ");
-    p = put_str(p, label);
-    p = put_str(p, "=");
-    p = put_hex(p, a);
-    const ModEntry *m = find_mod(a);
-    if (m != NULL) {
-        p = put_str(p, " ");
-        p = put_str(p, m->name[0] != '\0' ? m->name : "?");
-        p = put_str(p, "+");
-        p = put_hex(p, a - m->base);
-    } else {
-        p = put_str(p, " <anon/unmapped>");
+    size_t n = strlen(s);
+    if (n >= MAP_NAME_MAX) {
+        n = MAP_NAME_MAX - 1;
     }
-    p = put_str(p, "\n");
-    write_buf(g_buf, (int)(p - g_buf));
+    memcpy(m->name, s, n);
+    m->name[n] = '\0';
 }
 
+/* Read /proc/self/maps into g_maps; fall back to dl_iterate_phdr if unavailable. */
 static int phdr_cb(struct dl_phdr_info *info, size_t size, void *data) {
     (void)size;
     (void)data;
-    if (g_modc >= MOD_MAX) {
+    if (g_mapc >= MAP_MAX) {
         return 1;
     }
     unsigned long lo = ~0UL;
@@ -167,33 +148,87 @@ static int phdr_cb(struct dl_phdr_info *info, size_t size, void *data) {
     if (hi <= lo) {
         return 0;
     }
-    g_mods[g_modc].base = lo;
-    g_mods[g_modc].end = hi;
+    g_maps[g_mapc].start = lo;
+    g_maps[g_mapc].end = hi;
     const char *nm = info->dlpi_name;
     const char *bn = (nm != NULL) ? strrchr(nm, '/') : NULL;
-    bn = (bn != NULL) ? bn + 1 : nm;
-    g_mods[g_modc].name[0] = '\0';
-    if (bn != NULL && bn[0] != '\0') {
-        size_t n = strlen(bn);
-        if (n >= MOD_NAME_MAX) {
-            n = MOD_NAME_MAX - 1;
-        }
-        memcpy(g_mods[g_modc].name, bn, n);
-        g_mods[g_modc].name[n] = '\0';
-    }
-    g_modc++;
+    set_name(&g_maps[g_mapc], (bn != NULL) ? bn + 1 : (nm != NULL ? nm : "?"));
+    g_mapc++;
     return 0;
 }
 
-static void dump_module_map(void) {
-    for (int i = 0; i < g_modc; ++i) {
-        char *p = g_buf;
-        p = put_str(p, "[meowbt] mod ");
-        p = put_hex(p, g_mods[i].base);
-        p = put_str(p, "-");
-        p = put_hex(p, g_mods[i].end);
+static void load_map(void) {
+    g_mapc = 0;
+    FILE *fp = fopen("/proc/self/maps", "r");
+    if (fp != NULL) {
+        char line[512];
+        while (g_mapc < MAP_MAX && fgets(line, sizeof(line), fp) != NULL) {
+            unsigned long s = 0;
+            unsigned long e = 0;
+            char perms[8] = {0};
+            int off = 0;
+            if (sscanf(line, "%lx-%lx %7s %*s %*s %*s %n", &s, &e, perms, &off) < 3) {
+                continue;
+            }
+            g_maps[g_mapc].start = s;
+            g_maps[g_mapc].end = e;
+            const char *path = line + off;
+            if (path[0] != '\0') {
+                const char *bn = strrchr(path, '/');
+                set_name(&g_maps[g_mapc], (bn != NULL) ? bn + 1 : path);
+            } else if (strchr(perms, 'x') != NULL) {
+                set_name(&g_maps[g_mapc], "<anon-exec>");
+            } else {
+                set_name(&g_maps[g_mapc], "<anon>");
+            }
+            g_mapc++;
+        }
+        fclose(fp);
+    } else {
+        dl_iterate_phdr(phdr_cb, NULL);
+    }
+}
+
+static const MapEntry *find_map(unsigned long a) {
+    for (int i = 0; i < g_mapc; ++i) {
+        if (a >= g_maps[i].start && a < g_maps[i].end) {
+            return &g_maps[i];
+        }
+    }
+    return NULL;
+}
+
+static void print_resolved(const char *label, unsigned long a) {
+    if (a == 0) {
+        return;
+    }
+    char *p = g_buf;
+    p = put_str(p, "[meowbt]   ");
+    p = put_str(p, label);
+    p = put_str(p, "=");
+    p = put_hex(p, a);
+    const MapEntry *m = find_map(a);
+    if (m != NULL) {
         p = put_str(p, " ");
-        p = put_str(p, g_mods[i].name[0] != '\0' ? g_mods[i].name : "?");
+        p = put_str(p, (m->name[0] != '\0') ? m->name : "?");
+        p = put_str(p, "+");
+        p = put_hex(p, a - m->start);
+    } else {
+        p = put_str(p, " <UNMAPPED>");
+    }
+    p = put_str(p, "\n");
+    write_buf(g_buf, (int)(p - g_buf));
+}
+
+static void print_map(void) {
+    for (int i = 0; i < g_mapc; ++i) {
+        char *p = g_buf;
+        p = put_str(p, "[meowbt] map ");
+        p = put_hex(p, g_maps[i].start);
+        p = put_str(p, "-");
+        p = put_hex(p, g_maps[i].end);
+        p = put_str(p, " ");
+        p = put_str(p, (g_maps[i].name[0] != '\0') ? g_maps[i].name : "?");
         p = put_str(p, "\n");
         write_buf(g_buf, (int)(p - g_buf));
     }
@@ -301,12 +336,10 @@ void meow_bt_install_once(void) {
     }
     g_installed = 1;
 
-    /* Module table first (loader calls are safe here, not in the handler). */
-    g_modc = 0;
-    dl_iterate_phdr(phdr_cb, NULL);
-    const char *hdr = "[meowbt] installed (SEGV/BUS/ABRT); module map follows\n";
+    load_map();
+    const char *hdr = "[meowbt] installed (SEGV/BUS/ABRT); maps follow\n";
     write_buf(hdr, (int)strlen(hdr));
-    dump_module_map();
+    print_map();
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
