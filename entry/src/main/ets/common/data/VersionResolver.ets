@@ -73,6 +73,8 @@ export interface VersionArtifact {
 /** 依赖库 downloads 信息。 */
 export interface VersionLibraryDownloads {
   artifact?: VersionArtifact;
+  /** natives 分类器 jar（1.13–1.18 的原生包走这里，而非 name 后缀）。 */
+  classifiers?: Record<string, VersionArtifact>;
 }
 
 /** 依赖库。 */
@@ -81,6 +83,8 @@ export interface VersionLibrary {
   url?: string;
   rules?: VersionRule[];
   downloads?: VersionLibraryDownloads;
+  /** 原生包映射（os → 分类器键）；带 natives 的条目与同名普通条目是**两条不同的库**。 */
+  natives?: Record<string, string>;
 }
 
 /** Java 版本要求。 */
@@ -228,6 +232,13 @@ export function resolveVersion(gameRoot: string, jsonPath: string): ResolvedVers
     const eff = resolveEffective(gameRoot, jsonPath, new Set<string>());
     if (eff === null) {
       return null;
+    }
+    // 库去重（同 `group:artifact` 留最高版本；分类器变体保留）——对齐 HMCL uniqueLibraries。
+    // 必需：Fabric 与 vanilla 各带一份 ASM（如 9.6 / 9.10.1），而 Fabric Knot 的 verifyClasspath
+    // 要求 classpath 上 ASM **恰好一份**，否则启动即崩（duplicate ASM classes found）。
+    const deduped = dedupLibraries(eff.json.libraries);
+    if (deduped !== eff.json.libraries) {
+      eff.json.libraries = deduped;
     }
     return new ResolvedVersion(eff.form, eff.mcVersion, eff.loader, eff.clientJarId, eff.json);
   } catch {
@@ -477,4 +488,167 @@ export function detectLoader(json: VersionJson): string {
     return '';
   }
   return legacy ? LOADER_LEGACY_FABRIC : LOADER_FABRIC;
+}
+
+// ---- 库去重（对齐 HMCL uniqueLibraries）----
+
+/** 库描述符的 `group:artifact`（不含 version / classifier / @ext）。 */
+function artifactKey(name: string): string {
+  const at = name.indexOf('@');
+  const core = at >= 0 ? name.substring(0, at) : name;
+  const parts = core.split(':');
+  return parts.length >= 3 ? `${parts[0]}:${parts[1]}` : '';
+}
+
+/** 库描述符的 version 段。 */
+function artifactVersion(name: string): string {
+  const at = name.indexOf('@');
+  const core = at >= 0 ? name.substring(0, at) : name;
+  const parts = core.split(':');
+  return parts.length >= 3 ? parts[2] : '';
+}
+
+function allDigits(s: string): boolean {
+  if (s.length === 0) {
+    return false;
+  }
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 48 || c > 57) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** 去掉 `+` 之后的 build metadata：按 Maven/semver，build metadata **不参与**优先级比较。 */
+function versionCore(v: string): string {
+  const idx = v.indexOf('+');
+  return idx < 0 ? v : v.substring(0, idx);
+}
+
+/**
+ * 把版本串切成"数字段 / 非数字段"交替的片段序列（小写化 → 大小写无关）。
+ * 例：`1.0.0-RC2` → `['1','.','0','.','0','-','rc','2']`。
+ */
+function versionTokens(v: string): string[] {
+  const s = versionCore(v).toLowerCase();
+  const out: string[] = [];
+  let cur = '';
+  let curIsDigit = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s.charAt(i);
+    const isDigit = ch >= '0' && ch <= '9';
+    if (cur.length > 0 && isDigit !== curIsDigit) {
+      out.push(cur);
+      cur = '';
+    }
+    cur += ch;
+    curIsDigit = isDigit;
+  }
+  if (cur.length > 0) {
+    out.push(cur);
+  }
+  return out;
+}
+
+/**
+ * 版本比较（**确定性、无 locale 依赖**）：数字段按数值、其它段按码点，逐段比较；前者为前缀时短者为小。
+ * 例：`9.10.1 > 9.6`、`1.0.0-RC10 > 1.0.0-RC2`、`9.7.1+build == 9.7.1`。
+ */
+function compareArtifactVersions(a: string, b: string): number {
+  const ta = versionTokens(a);
+  const tb = versionTokens(b);
+  const n = Math.min(ta.length, tb.length);
+  for (let i = 0; i < n; i++) {
+    const xa = ta[i];
+    const xb = tb[i];
+    if (allDigits(xa) && allDigits(xb)) {
+      const na = parseInt(xa, 10);
+      const nb = parseInt(xb, 10);
+      if (na !== nb) {
+        return na < nb ? -1 : 1;
+      }
+    } else if (xa !== xb) {
+      return xa < xb ? -1 : 1;
+    }
+  }
+  return ta.length - tb.length;
+}
+
+/** 两条库的 `rules` 是否等价（都为空即等价）——去重时据此保留平台变体。 */
+function sameRules(a?: VersionRule[], b?: VersionRule[]): boolean {
+  const sa = a === undefined ? '' : JSON.stringify(a);
+  const sb = b === undefined ? '' : JSON.stringify(b);
+  return sa === sb;
+}
+
+/**
+ * 两条库是否携带**相同的原生载荷**（natives 映射 + downloads.classifiers 键集）。
+ *
+ * 为什么必须比：Mojang 1.12–1.18 的清单里，同一个 `group:artifact:version` 会出现**两条同名条目**
+ * ——一条是普通 jar，另一条只多出 `natives` / `downloads.classifiers`（原生包）。二者 `name` 完全相同，
+ * 只按 name/version 判等会把原生包当重复合并掉（实测：1.13.2 的**全部 LWJGL 3.1.6 natives**、
+ * 1.12.2 的 `text2speech` 原生包都会丢）→ 本机缺 `natives-linux` 直接启动失败。
+ * HMCL 的 `Library.equals` 把 `isNative()` 计入相等判定，正是为了避免这一点。
+ */
+function sameNative(a: VersionLibrary, b: VersionLibrary): boolean {
+  const natA = a.natives === undefined ? '' : Object.keys(a.natives).sort().join(',');
+  const natB = b.natives === undefined ? '' : Object.keys(b.natives).sort().join(',');
+  if (natA !== natB) {
+    return false;
+  }
+  const clsA = a.downloads?.classifiers === undefined
+    ? '' : Object.keys(a.downloads.classifiers).sort().join(',');
+  const clsB = b.downloads?.classifiers === undefined
+    ? '' : Object.keys(b.downloads.classifiers).sort().join(',');
+  return clsA === clsB;
+}
+
+/**
+ * 同 `group:artifact` 去重：留**最高版本**（位置保持首次出现）；同版本且描述符不同（如 classifier 变体）都保留。
+ * 无变化时返回**原数组**（vanilla 通常无重复 → 零改动）。
+ */
+function dedupLibraries(libs?: VersionLibrary[]): VersionLibrary[] | undefined {
+  if (libs === undefined || libs.length === 0) {
+    return libs;
+  }
+  const out: VersionLibrary[] = [];
+  const indexOfKey: Map<string, number> = new Map<string, number>();
+  let changed = false;
+  for (const lib of libs) {
+    const key = artifactKey(lib.name ?? '');
+    if (key.length === 0) {
+      out.push(lib);
+      continue;
+    }
+    const at = indexOfKey.get(key);
+    if (at === undefined) {
+      indexOfKey.set(key, out.length);
+      out.push(lib);
+      continue;
+    }
+    const existing = out[at];
+    // 规则不同的平台变体、或原生载荷不同的同名条目（普通包 vs natives 包）：都保留。
+    // 对齐 HMCL：只有"完整描述符"（含 `rules` / `isNative`）相同者才互斥去重。
+    if (!sameRules(lib.rules, existing.rules) || !sameNative(lib, existing)) {
+      out.push(lib);
+      continue;
+    }
+    const cmp = compareArtifactVersions(artifactVersion(lib.name ?? ''),
+      artifactVersion(existing.name ?? ''));
+    if (cmp > 0) {
+      out[at] = lib;
+      changed = true;
+    } else if (cmp === 0) {
+      if ((lib.name ?? '') !== (existing.name ?? '')) {
+        out.push(lib); // 同版本、不同描述符（分类器等变体）：保留
+      } else {
+        changed = true; // 完全重复
+      }
+    } else {
+      changed = true; // 低版本：丢弃
+    }
+  }
+  return changed ? out : libs;
 }

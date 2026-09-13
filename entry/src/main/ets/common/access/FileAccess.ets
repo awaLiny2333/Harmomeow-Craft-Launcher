@@ -1,4 +1,4 @@
-import { common } from '@kit.AbilityKit';
+import { common, OpenLinkOptions } from '@kit.AbilityKit';
 import { picker, fileShare } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -156,5 +156,45 @@ export async function isDirectoryPersisted(uri: string): Promise<boolean> {
     logPolicyError('checkPersistentPermission fail',
       error as BusinessError<Array<fileShare.PolicyErrorResult>>);
     return false;
+  }
+}
+
+// ---- 在系统文件管理器中打开目录 ----
+
+/**
+ * 在**系统文件管理器**里打开某个目录（如 `versions/<id>/`）。
+ *
+ * 机制（官方 FAQ「如何跳转到系统文件管理App界面」+ `@ohos.app.ability.OpenLinkOptions`）：
+ * `openLink('filemanager://openDirectory', { parameters: { fileUri } })`。
+ *
+ * ⚠️ `uri` 必须是**用户文件 URI**（`file://docs/storage/Users/...`，即 Picker 返回的形式）：
+ * 文件管理器是另一个应用，只认这个命名空间。`fileUri.getUriFromPath(物理路径)` 得到的是
+ * **应用沙箱 URI**（`file://<bundleName>/...`，见 fileuri 文档构造示例），不属于公共空间 → 打不开。
+ * 故目标 URI 一律由「已授权的目录 URI + 相对子路径」拼出（见 Paths.versionDirUri）。
+ *
+ * best-effort：失败仅记日志，不阻塞 UI。
+ */
+export function showInFiles(uri: string, context: common.UIAbilityContext): void {
+  if (uri.length === 0) {
+    hilog.warn(LOG_DOMAIN, LOG_TAG, 'showInFiles: empty uri');
+    return;
+  }
+  const options: OpenLinkOptions = {
+    parameters: {
+      'fileUri': uri
+    }
+  };
+  try {
+    context.openLink('filemanager://openDirectory', options)
+      .then(() => {
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'openLink filemanager ok');
+      })
+      .catch((err: BusinessError) => {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'openLink fail: %{public}d %{public}s',
+          err.code, err.message);
+      });
+  } catch (error) {
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'openLink throw: %{public}s',
+      (error as BusinessError).message);
   }
 }

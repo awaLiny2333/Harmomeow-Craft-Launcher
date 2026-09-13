@@ -1,6 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { authorizeDirectory } from '../common/access/FileAccess';
+import { authorizeDirectory, showInFiles } from '../common/access/FileAccess';
 import {
   BORDER_RADIUS,
   DOWNLOAD_CARD_MAX_W, DOWNLOAD_CARD_MIN_W, DOWNLOAD_LIST_HEIGHT,
@@ -13,14 +13,16 @@ import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES } from '../common/const
 import { LOADER_FABRIC, LOADER_LEGACY_FABRIC, VERSION_FORM_VANILLA } from '../common/data/VersionResolver';
 import { SettingsTools, RendererOverride } from '../common/data/SettingsTools';
 import {
-  canWriteDirectory, isValidInstanceName, PHASE_ASSETS, PHASE_FILES, RemoteVersion, versionDirExists
+  canWriteDirectory, isValidInstanceName, PHASE_FILES, PHASE_ASSETS, RemoteVersion,
+  versionDirExists
 } from '../common/data/VersionInstaller';
 import { GameVersion, resolveGameRoot } from '../common/data/VersionScanner';
+import { versionDirUri } from '../common/constants/Paths';
 import { deleteVersionDir } from '../common/data/VersionTools';
 import {
   launchInMainProcess, LAUNCH_OK, LAUNCH_ERR_NO_ACCOUNT, LAUNCH_ERR_MS_EXPIRED
 } from '../common/data/VersionLaunch';
-import { getInstallerState, InstallerState, INSTALL_ERR_INSTALL, INSTALL_ERR_MANIFEST, INSTALL_ERR_NO_WRITE } from '../common/state/InstallerState';
+import { getInstallerState, InstallerState, INSTALL_ERR_INSTALL, INSTALL_ERR_LOADER, INSTALL_ERR_MANIFEST, INSTALL_ERR_NO_WRITE, INSTALL_ERR_NONE, LOADER_KIND_FABRIC, LOADER_KIND_VANILLA } from '../common/state/InstallerState';
 import { getLauncherState, LauncherState } from '../common/state/LauncherState';
 import { AccountState, getAccountState } from '../common/state/AccountState';
 
@@ -101,6 +103,8 @@ export struct GameVersionsView {
     this.overrides = new SettingsTools(this.context()).rendererOverrides();
     // 下载源（持久化）：默认镜像，海外可切官方。
     this.installer.source = new SettingsTools(this.context()).downloadSource();
+    // mod loader 下载源（**独立于版本源**）：持久化载入。
+    this.installer.fabricSource = new SettingsTools(this.context()).fabricSource();
     // 版本类型过滤（持久化）：默认正式版。
     this.installer.setVersionType(new SettingsTools(this.context()).versionType());
     this.state.refreshGameRunning();
@@ -429,6 +433,101 @@ export struct GameVersionsView {
     this.installer.setVersionType(t);
   }
 
+  // ---- mod loader 选择（原版 / Fabric）----
+
+  /** 加载器 Select 选项（原版 / Fabric）。 */
+  private loaderOptions(): SelectOption[] {
+    return [
+      { value: $r('app.string.loader_vanilla') },
+      { value: $r('app.string.loader_fabric') },
+    ];
+  }
+
+  private loaderIndex(): number {
+    return this.installer.loaderKind === LOADER_KIND_FABRIC ? 1 : 0;
+  }
+
+  private loaderValue(): Resource {
+    return this.loaderIndex() === 1 ? $r('app.string.loader_fabric') : $r('app.string.loader_vanilla');
+  }
+
+  /** 切换 mod loader 种类；切到 Fabric 时拉取该游戏版本的 loader 列表（未拉过才拉）。 */
+  private setLoaderKind(index: number): void {
+    const kind = index === 1 ? LOADER_KIND_FABRIC : LOADER_KIND_VANILLA;
+    this.installer.loaderKind = kind;
+    if (kind === LOADER_KIND_FABRIC && this.installer.fabricLoadersGame !== this.installTargetId) {
+      this.installer.refreshFabricLoaders(this.installTargetId);
+    }
+  }
+
+  /** 切换 mod loader 下载源（独立于版本源）：持久化 + 清列表 + 重拉。 */
+  private setFabricSource(index: number): void {
+    const src = index === 1 ? SOURCE_OFFICIAL : SOURCE_MIRROR;
+    new SettingsTools(this.context()).setFabricSource(src);
+    this.installer.setFabricSource(src);
+    this.installer.refreshFabricLoaders(this.installTargetId);
+  }
+
+  // 注：源/版本文案按 **loader 维度**组织（资源名以 loader 结尾），便于日后新增 loader。
+  /** 该 loader 的下载源下拉项（镜像 / 官方；官方文案按 loader 区分，Fabric=官方（FabricMC））。 */
+  private loaderSourceOptions(): SelectOption[] {
+    return [
+      { value: $r('app.string.loader_source_mirror') },
+      { value: $r('app.string.loader_source_official_fabric') },
+    ];
+  }
+
+  private loaderSourceIndex(): number {
+    return this.installer.fabricSource === SOURCE_OFFICIAL ? 1 : 0;
+  }
+
+  private loaderSourceValue(): Resource {
+    return this.loaderSourceIndex() === 1
+      ? $r('app.string.loader_source_official_fabric')
+      : $r('app.string.loader_source_mirror');
+  }
+
+  /** loader 版本下拉项（全部版本进一个下拉，省空间）。 */
+  private loaderVersionOptions(): SelectOption[] {
+    const out: SelectOption[] = [];
+    for (const l of this.installer.fabricLoaders) {
+      out.push({ value: l.version });
+    }
+    return out;
+  }
+
+  private loaderVersionIndex(): number {
+    const list = this.installer.fabricLoaders;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].version === this.installer.fabricLoader) {
+        return i;
+      }
+    }
+    return 0;
+  }
+
+  /** 选择某 loader 版本（按下拉索引）。 */
+  private selectFabricLoaderByIndex(index: number): void {
+    const list = this.installer.fabricLoaders;
+    if (index >= 0 && index < list.length) {
+      this.installer.fabricLoader = list[index].version;
+    }
+  }
+
+  /** 「确认安装」是否可点：空闲 + 未运行 + 名合法 + （Fabric 时）已选 loader 版本。 */
+  private canConfirmInstall(): boolean {
+    if (this.installer.installingId.length > 0 || this.state.gameRunning) {
+      return false;
+    }
+    if (this.instanceNameErrorKind() !== NAME_OK) {
+      return false;
+    }
+    if (this.installer.loaderKind === LOADER_KIND_FABRIC && this.installer.fabricLoader.length === 0) {
+      return false;
+    }
+    return true;
+  }
+
   /** 字节数格式化（进度显示用；动态数据，非 UI 文案）。 */
   private fmtSize(bytes: number): string {
     if (bytes <= 0) {
@@ -450,6 +549,12 @@ export struct GameVersionsView {
     this.installTargetRef = remote;
     this.installTargetId = remote.id;
     this.installName = remote.id;
+    // 每次打开重置为原版；Fabric 源持久化，loader 列表按需重拉。
+    // resetFabricLoaders 同时作废在途请求，避免上一个版本的在途响应污染本面板。
+    this.installer.loaderKind = LOADER_KIND_VANILLA;
+    this.installer.resetFabricLoaders();
+    this.installer.errorKind = INSTALL_ERR_NONE;
+    this.installer.errorDetail = '';
   }
 
   /** 关闭"设置实例名"安装面板。 */
@@ -474,12 +579,17 @@ export struct GameVersionsView {
   /** 确认安装：名称合法且不冲突、游戏未运行才真正安装（否则禁止）。 */
   private async confirmInstall(): Promise<void> {
     const remote = this.installTargetRef;
-    if (remote === null || this.state.gameRunning || this.instanceNameErrorKind() !== NAME_OK) {
+    if (remote === null || !this.canConfirmInstall()) {
       return;
     }
+    const fabric = this.installer.loaderKind === LOADER_KIND_FABRIC;
     const name = this.installName.trim();
     this.closeInstallPanel();
-    await this.installRemote(remote, name);
+    if (fabric) {
+      await this.installFabricRemote(remote, name);
+    } else {
+      await this.installRemote(remote, name);
+    }
   }
 
   /**
@@ -502,6 +612,31 @@ export struct GameVersionsView {
     const ok = await this.installer.install(root, remote, instanceName);
     if (ok) {
       // 与 HMCL 一致（enableIsolation）：新装实例默认开启版本隔离（游戏数据落 versions/<id>/）。
+      const settings = new SettingsTools(this.context());
+      settings.setVersionIsolation(instanceName, true);
+      this.state.isolatedIds = settings.versionIsolationIds();
+    }
+    this.state.refreshVersions();
+  }
+
+  /**
+   * 安装 Fabric 实例（**单实例、HMCL 补丁式**）：版本资产按版本源、Fabric 资产按 loader 源（独立）。
+   * 安装前同样校验目录写权限；成功后默认开启隔离并刷新列表。
+   */
+  async installFabricRemote(remote: RemoteVersion, instanceName: string): Promise<void> {
+    const root = resolveGameRoot(this.state.selected);
+    if (root.length === 0) {
+      this.installer.errorKind = INSTALL_ERR_INSTALL;
+      this.installer.errorDetail = '';
+      return;
+    }
+    if (!canWriteDirectory(root)) {
+      this.installer.errorKind = INSTALL_ERR_NO_WRITE;
+      this.installer.errorDetail = '';
+      return;
+    }
+    const ok = await this.installer.installFabric(root, remote, instanceName);
+    if (ok) {
       const settings = new SettingsTools(this.context());
       settings.setVersionIsolation(instanceName, true);
       this.state.isolatedIds = settings.versionIsolationIds();
@@ -586,15 +721,20 @@ export struct GameVersionsView {
 
       Divider().padding({ top: LAYOUT_SPACE_SMALL, bottom: LAYOUT_SPACE_SMALL });
 
-      // 删除版本（危险操作，二次确认；游戏运行中禁用，避免删正在使用的实例）
-      Row() {
+      // 操作行：左「打开文件夹」（在系统文件管理器中打开该实例目录） / 右「删除版本」（危险）
+      Row({ space: LAYOUT_SPACE }) {
+        Button($r('app.string.version_open_folder'))
+          .onClick(() => {
+            // 目标目录用「已授权目录 URI + 相对子路径」拼出（文件管理器认 URI 命名空间）。
+            showInFiles(versionDirUri(this.editingDirUri, this.editing.id), this.context());
+          });
         Button($r('app.string.version_delete'))
           .backgroundColor($r('app.color.danger'))
           .enabled(!this.state.gameRunning)
           .onClick(() => this.confirmDelete(this.editing));
       }
       .width('100%')
-      .justifyContent(FlexAlign.End);
+      .justifyContent(FlexAlign.SpaceBetween);
     }
     .padding(LAYOUT_PADDING_SMALL)
     .backgroundColor($r('app.color.brand_bg'))
@@ -759,9 +899,23 @@ export struct GameVersionsView {
             .alignItems(HorizontalAlign.Start);
             // 「设置实例名」安装面板（对齐 HMCL：安装时给实例起名，名称即 versions/<名> 目录名）
             if (this.installTargetId.length > 0) {
-              Column({ space: LAYOUT_SPACE_SMALL }) {
-                Text($r('app.string.download_instance_for', this.installTargetId))
-                  .opacity(OPACITY_SECONDARY);
+              Column({ space: LAYOUT_SPACE }) {
+                // Confirm & Cancel
+                Row({ space: LAYOUT_SPACE }) {
+                  Column({ space: LAYOUT_SPACE_SMALL }) {
+                    Text($r('app.string.download_instance_settings'));
+                    Text($r('app.string.download_instance_for', this.installTargetId))
+                      .opacity(OPACITY_SECONDARY);
+                  }
+                  .alignItems(HorizontalAlign.Start)
+                  .layoutWeight(1);
+                  Button($r('app.string.download_confirm_install'))
+                    .enabled(this.canConfirmInstall())
+                    .onClick(() => this.confirmInstall());
+                  Button($r('app.string.common_cancel'))
+                    .onClick(() => this.closeInstallPanel());
+                }
+                .width('100%');
                 Row({ space: LAYOUT_SPACE }) {
                   TextInput({
                     text: this.installName,
@@ -772,13 +926,17 @@ export struct GameVersionsView {
                       this.installName = v;
                     })
                     .onSubmit(() => this.confirmInstall());
-                  Button($r('app.string.download_confirm_install'))
-                    .enabled(this.installer.installingId.length === 0
-                      && !this.state.gameRunning
-                      && this.instanceNameErrorKind() === NAME_OK)
-                    .onClick(() => this.confirmInstall());
-                  Button($r('app.string.common_cancel'))
-                    .onClick(() => this.closeInstallPanel());
+                  // mod loader 选择（原版 / Fabric）
+                  Select(this.loaderOptions())
+                    .width('auto')
+                    .selected(this.loaderIndex())
+                    .value(this.loaderValue())
+                    .onSelect((index: number) => {
+                      this.setLoaderKind(index);
+                    })
+                    .selectedOptionBgColor($r('app.color.brand_bg'))
+                    .selectedOptionFontColor($r('app.color.brand'))
+                    .enabled(this.installer.installingId.length === 0);
                 }
                 .width('100%')
                 .alignItems(VerticalAlign.Center);
@@ -790,6 +948,71 @@ export struct GameVersionsView {
                   Text($r('app.string.download_instance_name_conflict'))
                     .opacity(OPACITY_SECONDARY)
                     .width('100%');
+                }
+                // Fabric：loader 子面板（该 loader 的下载源 + loader 版本，均收进下拉省空间）
+                if (this.installer.loaderKind === LOADER_KIND_FABRIC) {
+                  Row({ space: LAYOUT_SPACE }) {
+                    Column({ space: LAYOUT_SPACE_SMALL }) {
+                      Text($r('app.string.loader_source_label'));
+                      Text($r('app.string.loader_source_hint'))
+                        .opacity(OPACITY_SECONDARY);
+                    }
+                    .layoutWeight(1)
+                    .alignItems(HorizontalAlign.Start);
+                    Select(this.loaderSourceOptions())
+                      .width('auto')
+                      .selected(this.loaderSourceIndex())
+                      .value(this.loaderSourceValue())
+                      .onSelect((index: number) => {
+                        this.setFabricSource(index);
+                      })
+                      .selectedOptionBgColor($r('app.color.brand_bg'))
+                      .selectedOptionFontColor($r('app.color.brand'))
+                      .enabled(this.installer.installingId.length === 0);
+                  }
+                  .width('100%')
+                  .alignItems(VerticalAlign.Center);
+                  if (this.installer.fabricLoadersLoading) {
+                    Text($r('app.string.loader_loading'))
+                      .opacity(OPACITY_SECONDARY)
+                      .width('100%');
+                  } else if (this.installer.errorKind === INSTALL_ERR_LOADER) {
+                    Text($r('app.string.loader_error'))
+                      .opacity(OPACITY_SECONDARY)
+                      .width('100%');
+                    Button($r('app.string.common_retry'))
+                      .onClick(() => this.installer.refreshFabricLoaders(this.installTargetId));
+                  } else if (!this.installer.fabricLoadersLoaded) {
+                    Text($r('app.string.loader_fetch_hint'))
+                      .opacity(OPACITY_SECONDARY)
+                      .width('100%');
+                  } else if (this.installer.fabricLoaders.length === 0) {
+                    Text($r('app.string.loader_empty'))
+                      .opacity(OPACITY_SECONDARY)
+                      .width('100%');
+                  } else {
+                    Row({ space: LAYOUT_SPACE }) {
+                      Column({ space: LAYOUT_SPACE_SMALL }) {
+                        Text($r('app.string.loader_version_label'));
+                        Text($r('app.string.loader_version_hint'))
+                          .opacity(OPACITY_SECONDARY);
+                      }
+                      .layoutWeight(1)
+                      .alignItems(HorizontalAlign.Start);
+                      Select(this.loaderVersionOptions())
+                        .width('auto')
+                        .selected(this.loaderVersionIndex())
+                        .value(this.installer.fabricLoader)
+                        .onSelect((index: number) => {
+                          this.selectFabricLoaderByIndex(index);
+                        })
+                        .selectedOptionBgColor($r('app.color.brand_bg'))
+                        .selectedOptionFontColor($r('app.color.brand'))
+                        .enabled(this.installer.installingId.length === 0);
+                    }
+                    .width('100%')
+                    .alignItems(VerticalAlign.Center);
+                  }
                 }
               }
               .padding(LAYOUT_PADDING_SMALL)

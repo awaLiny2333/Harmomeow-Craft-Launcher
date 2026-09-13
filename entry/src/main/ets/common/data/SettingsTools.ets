@@ -2,7 +2,7 @@ import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { STORE_NAME, KEY_SHOW_INPUT_RATE, KEY_CPU_COUNT, KEY_MAX_HEAP_MB,
   KEY_VERSION_ISOLATION, KEY_SCROLL_SPEED, KEY_DOWNLOAD_SOURCE,
-  KEY_VERSION_TYPE, KEY_RENDERER_OVERRIDES, SCROLL_SPEED_DEFAULT_PERCENT,
+  KEY_FABRIC_SOURCE, KEY_VERSION_TYPE, KEY_RENDERER_OVERRIDES, SCROLL_SPEED_DEFAULT_PERCENT,
   KEY_RENDER_SCALE, RENDER_SCALE_DEFAULT, RENDER_SCALE_OPTIONS,
   KEY_MS_CLIENT_ID, KEY_LAST_LAUNCH } from '../constants/Constants';
 import { SOURCE_MIRROR, TYPE_RELEASE } from '../constants/DownloadContract';
@@ -291,6 +291,33 @@ export class SettingsTools {
     }
     try {
       this.store.putSync(KEY_DOWNLOAD_SOURCE, source);
+      this.store.flushSync();
+    } catch {
+      return;
+    }
+  }
+
+  // ---- mod loader 下载源（**与版本源独立**；目前仅 Fabric）----
+
+  /** loader 下载源；未设置 → 镜像（SOURCE_MIRROR）。 */
+  fabricSource(): string {
+    if (this.store === null) {
+      return SOURCE_MIRROR;
+    }
+    try {
+      const v = this.store.getSync(KEY_FABRIC_SOURCE, SOURCE_MIRROR) as string;
+      return v.length > 0 ? v : SOURCE_MIRROR;
+    } catch {
+      return SOURCE_MIRROR;
+    }
+  }
+
+  setFabricSource(source: string): void {
+    if (this.store === null) {
+      return;
+    }
+    try {
+      this.store.putSync(KEY_FABRIC_SOURCE, source);
       this.store.flushSync();
     } catch {
       return;

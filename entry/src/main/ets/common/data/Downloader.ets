@@ -31,8 +31,11 @@ function removeQuietly(path: string): void {
 /**
  * 拉取文本（版本清单 / 版本 json / 资源索引）。
  * 依次尝试候选地址；全部失败则抛错（错误信息含最后一次失败原因）。
+ *
+ * @param alsoAccept 额外"也算成功"的状态码（如以 4xx + 空数组表达"无结果"的端点）；
+ *                   不传时行为与只认 2xx 完全一致。
  */
-export async function fetchText(candidates: string[]): Promise<string> {
+export async function fetchText(candidates: string[], alsoAccept?: number[]): Promise<string> {
   let lastError = 'no candidate';
   for (const url of candidates) {
     const request = http.createHttp();
@@ -47,7 +50,9 @@ export async function fetchText(candidates: string[]): Promise<string> {
       const code = resp.responseCode;
       const result = resp.result;
       request.destroy();
-      if (code >= HTTP_STATUS_MIN && code < HTTP_STATUS_MAX && typeof result === 'string') {
+      const ok = (code >= HTTP_STATUS_MIN && code < HTTP_STATUS_MAX)
+        || (alsoAccept !== undefined && alsoAccept.includes(code));
+      if (ok && typeof result === 'string') {
         return result;
       }
       lastError = `HTTP ${code}`;

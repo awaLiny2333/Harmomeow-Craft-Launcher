@@ -1,7 +1,8 @@
 import { fileIo } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { DEFAULT_LIBRARY_URL, DOWNLOAD_CONCURRENCY, ENV_OS_ARCH, ENV_OS_BITS, ENV_OS_NAME,
-  LEGACY_INDEX_URL_PREFIX, MOJANG_RESOURCES, fileCandidates,
+  FABRIC_MAVEN, HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_NOT_FOUND, LEGACY_INDEX_URL_PREFIX,
+  MOJANG_RESOURCES, fabricLaunchMetaCandidates, fabricLoaderListCandidates, fileCandidates,
   manifestCandidates } from '../constants/DownloadContract';
 import { ASSET_HASH_PREFIX_LENGTH, assetObjectPath, assetsIndexesDir, librariesDir,
   versionDir, versionJarPath, versionJsonPath } from '../constants/Paths';
@@ -68,6 +69,22 @@ interface VersionJson {
   assetIndex?: AssetIndexInfoJson;
   assets?: string;
   libraries?: LibraryJson[];
+  // ---- 以下字段供 Fabric 安装（顶层扁平化）读写；原版 installVersion 不读它们 ----
+  mainClass?: string;
+  minecraftArguments?: string;
+  arguments?: ArgumentsJson;
+  javaVersion?: JavaVersionJson;
+  type?: string;
+  time?: string;
+  releaseTime?: string;
+  minimumLauncherVersion?: number;
+  jar?: string;
+  root?: boolean;
+  patches?: PatchJson[];
+  // 以下三项在 HMCL 折叠补丁时需要（`GameInstancePatch.fromManifest` 会取用它）→ 一并塞进 game patch
+  complianceLevel?: number;
+  compatibilityRules?: RuleJson[];
+  logging?: Record<string, LoggingEntryJson>;
 }
 
 interface DownloadsJson {
@@ -79,6 +96,13 @@ interface FileInfoJson {
   sha1?: string;
   size?: number;
   path?: string;
+}
+
+/** log4j 日志配置的一项（`logging.<client|server>`）；原样透传，不做解释。 */
+interface LoggingEntryJson {
+  argument?: string;
+  file?: FileInfoJson;
+  type?: string;
 }
 
 interface AssetIndexInfoJson {
@@ -121,6 +145,87 @@ interface AssetIndexJson {
 interface AssetObjectJson {
   hash?: string;
   size?: number;
+}
+
+// ---- Fabric 安装所需的扩展结构 ----
+
+/** 参数项：字符串或带 rules 的对象（与版本 json 的 arguments 一致）。 */
+type ArgumentEntry = string | RuleArgJson;
+
+interface RuleArgJson {
+  rules?: RuleJson[];
+  value?: string | string[];
+}
+
+interface ArgumentsJson {
+  game?: ArgumentEntry[];
+  jvm?: ArgumentEntry[];
+}
+
+interface JavaVersionJson {
+  component?: string;
+  majorVersion?: number;
+}
+
+/** 补丁层（HMCL 补丁式：`patches[]` 的一项）。 */
+interface PatchJson {
+  id?: string;
+  version?: string;
+  priority?: number;
+  mainClass?: string;
+  minecraftArguments?: string;
+  arguments?: ArgumentsJson;
+  libraries?: LibraryJson[];
+  assets?: string;
+  assetIndex?: AssetIndexInfoJson;
+  downloads?: DownloadsJson;
+  javaVersion?: JavaVersionJson;
+  type?: string;
+  time?: string;
+  releaseTime?: string;
+  minimumLauncherVersion?: number;
+  // HMCL `GameInstancePatch` 会折叠这三项；缺了它们，HMCL 读我们装的实例会丢 log4j 配置/合规级别
+  complianceLevel?: number;
+  compatibilityRules?: RuleJson[];
+  logging?: Record<string, LoggingEntryJson>;
+}
+
+/** Fabric loader 版本（列表项；UI 选择用）。 */
+export interface FabricLoaderVersion {
+  version: string;
+  stable: boolean;
+}
+
+/** Fabric meta 里的一个 maven 坐标项。 */
+interface FabricArtifact {
+  maven?: string;
+  version?: string;
+  stable?: boolean;
+}
+
+interface FabricMainClass {
+  client?: string;
+  server?: string;
+}
+
+interface FabricLibraries {
+  common?: LibraryJson[];
+  server?: LibraryJson[];
+  client?: LibraryJson[];
+  development?: LibraryJson[];
+}
+
+interface FabricLauncherMeta {
+  /** 可能是字符串，或 `{client,server}` 对象（现代 meta 为对象）。 */
+  mainClass?: string | FabricMainClass;
+  libraries?: FabricLibraries;
+}
+
+/** `/v2/versions/loader/<game>[/<loader>]` 返回项。 */
+interface FabricMeta {
+  loader?: FabricArtifact;
+  intermediary?: FabricArtifact;
+  launcherMeta?: FabricLauncherMeta;
 }
 
 // ---- 规则求值（对齐 HMCL CompatibilityRule）----
@@ -566,4 +671,217 @@ export async function installVersion(gameRoot: string, remote: RemoteVersion, so
   // 最后写版本清单：扫描器只认这个文件，保证不出现"半装被识别"的版本
   onPhase(PHASE_WRITE);
   writeText(versionJsonPath(gameRoot, instanceName), versionJsonText);
+}
+
+// ---- Fabric 安装（单实例，HMCL 补丁式）----
+
+/** 从 launcherMeta 取 mainClass（对象取 client；字符串直用）。 */
+function fabricMainClass(meta: FabricMeta): string {
+  const mc = meta.launcherMeta?.mainClass;
+  if (typeof mc === 'string') {
+    return mc;
+  }
+  return mc?.client ?? '';
+}
+
+/** 补 url：Fabric 元数据的产物一律托管在自家 maven（缺 url 时不能落到 Mojang 库仓）。 */
+function withFabricUrl(lib: LibraryJson): LibraryJson {
+  if ((lib.url ?? '').length === 0) {
+    lib.url = FABRIC_MAVEN;
+  }
+  return lib;
+}
+
+/** fabric 库 = launcherMeta.libraries.common + server，再追加 intermediary / loader 两条（url=maven.fabricmc.net）。 */
+function fabricLibraries(meta: FabricMeta): LibraryJson[] {
+  const out: LibraryJson[] = [];
+  const libs = meta.launcherMeta?.libraries;
+  if (libs !== undefined) {
+    for (const l of libs.common ?? []) {
+      out.push(withFabricUrl(l));
+    }
+    for (const l of libs.server ?? []) {
+      out.push(withFabricUrl(l));
+    }
+  }
+  const inter = meta.intermediary?.maven ?? '';
+  if (inter.length > 0) {
+    out.push({ name: inter, url: FABRIC_MAVEN });
+  }
+  const loader = meta.loader?.maven ?? '';
+  if (loader.length > 0) {
+    out.push({ name: loader, url: FABRIC_MAVEN });
+  }
+  return out;
+}
+
+function concatLibs(a?: LibraryJson[], b?: LibraryJson[]): LibraryJson[] | undefined {
+  if (a === undefined && b === undefined) {
+    return undefined;
+  }
+  const out: LibraryJson[] = [];
+  for (const x of a ?? []) {
+    out.push(x);
+  }
+  for (const x of b ?? []) {
+    out.push(x);
+  }
+  return out;
+}
+
+/**
+ * 组装 HMCL 补丁式单实例清单：**顶层扁平化**（Java 端 form② 读顶层）+ **`patches[game,fabric]`**（ArkTS 端折叠）。
+ * `vanilla` 解析对象被复用/就地改写——未声明字段（logging/time…）随 `JSON.stringify` 原样保留。
+ * 注意：gamePatch 必须在改写 vanilla 之前构造（否则会拿到被覆盖后的值）。
+ */
+function composeFabricManifest(vanilla: VersionJson, instanceName: string, gameVersion: string,
+  loaderVersion: string, mainClass: string, fabricDeps: LibraryJson[]): VersionJson {
+  const gamePatch: PatchJson = {
+    id: 'game',
+    version: gameVersion,
+    priority: 0,
+    mainClass: vanilla.mainClass,
+    minecraftArguments: vanilla.minecraftArguments,
+    arguments: vanilla.arguments,
+    libraries: vanilla.libraries,
+    assets: vanilla.assets,
+    assetIndex: vanilla.assetIndex,
+    downloads: vanilla.downloads,
+    javaVersion: vanilla.javaVersion,
+    type: vanilla.type,
+    time: vanilla.time,
+    releaseTime: vanilla.releaseTime,
+    minimumLauncherVersion: vanilla.minimumLauncherVersion,
+    complianceLevel: vanilla.complianceLevel,
+    compatibilityRules: vanilla.compatibilityRules,
+    logging: vanilla.logging
+  };
+  const fabricPatch: PatchJson = {
+    id: 'fabric',
+    version: loaderVersion,
+    priority: 30000,
+    mainClass: mainClass,
+    libraries: fabricDeps
+  };
+  vanilla.id = instanceName;
+  vanilla.jar = instanceName;
+  vanilla.root = true;
+  vanilla.mainClass = mainClass;
+  vanilla.libraries = concatLibs(vanilla.libraries, fabricDeps);
+  vanilla.patches = [gamePatch, fabricPatch];
+  return vanilla;
+}
+
+/**
+ * 拉取某游戏版本可用的 Fabric loader 版本列表（按 **loader 自己的下载源** `source`）。
+ * 端点 `…/v2/versions/loader/<game>`（已按新版在前返回）。
+ */
+export async function fetchFabricLoaders(gameVersion: string, source: string): Promise<FabricLoaderVersion[]> {
+  // Fabric meta 对**不支持**的游戏版本返回 `400` + `[]`（而非 404）：按"无可用版本"处理，不当作拉取失败。
+  const text = await fetchText(fabricLoaderListCandidates(gameVersion, source),
+    [HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_NOT_FOUND]);
+  // 元数据数组可能含 null / 缺字段项（外部 JSON 原样信任）：逐项判空，缺 loader 版本号的跳过。
+  const list = JSON.parse(text) as (FabricMeta | null)[];
+  const out: FabricLoaderVersion[] = [];
+  if (!Array.isArray(list)) {
+    return out;
+  }
+  for (const entry of list) {
+    if (entry === null) {
+      continue;
+    }
+    const version = entry.loader?.version ?? '';
+    if (version.length === 0) {
+      continue;
+    }
+    out.push({ version: version, stable: entry.loader?.stable === true });
+  }
+  return out;
+}
+
+/**
+ * 安装 Fabric 实例（**单实例、HMCL 补丁式**）：`versions/<名>/<名>.json` = 顶层扁平化 + `patches[game,fabric]`。
+ * vanilla 资产按 `versionSource`（版本源）；Fabric 元数据/库按 `loaderSource`（**loader 自己的源**，独立）。
+ */
+export async function installFabricVersion(gameRoot: string, gameRemote: RemoteVersion,
+  loaderVersion: string, instanceName: string, versionSource: string, loaderSource: string,
+  onPhase: (phase: number) => void,
+  onCount: (done: number, total: number) => void,
+  onCurrent: (label: string) => void,
+  onFileProgress: (received: number, total: number) => void): Promise<void> {
+  if (!isValidInstanceName(instanceName)) {
+    throw new Error('invalid instance name');
+  }
+  if (loaderVersion.length === 0) {
+    throw new Error('fabric loader version missing');
+  }
+
+  // 1) vanilla 清单（版本源）
+  onPhase(PHASE_FILES);
+  const vanillaText = await fetchText(fileCandidates(gameRemote.url, versionSource));
+  const vanilla = JSON.parse(vanillaText) as VersionJson;
+  const vanillaId = vanilla.id ?? '';
+  const gameVersion = vanillaId.length > 0 ? vanillaId : gameRemote.id;
+
+  // 2) Fabric 元数据（loader 源）
+  const metaText = await fetchText(fabricLaunchMetaCandidates(gameVersion, loaderVersion, loaderSource));
+  const meta = JSON.parse(metaText) as FabricMeta;
+  const mainClass = fabricMainClass(meta);
+  if (mainClass.length === 0) {
+    throw new Error('fabric mainClass missing');
+  }
+  const fabricDeps = fabricLibraries(meta);
+
+  // 3) vanilla 文件：client jar（落 <名>.jar）+ 原版库 + 资源索引（版本源）
+  const files: DownloadItem[] = [];
+  const client = vanilla.downloads?.client;
+  if (client !== undefined) {
+    const url = client.url ?? '';
+    if (url.length > 0) {
+      files.push(newItem(`${instanceName}.jar`, [url], versionJarPath(gameRoot, instanceName),
+        client.sha1 ?? '', client.size ?? 0));
+    }
+  }
+  for (const lib of vanilla.libraries ?? []) {
+    const item = libraryItem(gameRoot, lib);
+    if (item !== null) {
+      files.push(item);
+    }
+  }
+  const indexItem = assetIndexItem(gameRoot, vanilla.assets ?? '', vanilla.assetIndex);
+  if (indexItem !== null) {
+    files.push(indexItem);
+  }
+  await runDownloads(files, versionSource, onCount, onCurrent, onFileProgress);
+
+  // 4) 资源对象（依赖已下好的索引；版本源）
+  const assetId = (vanilla.assetIndex?.id ?? '').length > 0
+    ? (vanilla.assetIndex?.id ?? '')
+    : (vanilla.assets ?? '');
+  if (indexItem !== null && assetId.length > 0) {
+    onPhase(PHASE_ASSETS);
+    let index: AssetIndexJson = {};
+    try {
+      index = JSON.parse(fileIo.readTextSync(`${assetsIndexesDir(gameRoot)}/${assetId}.json`)) as AssetIndexJson;
+    } catch {
+      index = {};
+    }
+    await runDownloads(assetObjectItems(gameRoot, index), versionSource, onCount, onCurrent, onFileProgress);
+  }
+
+  // 5) Fabric 库（loader 源；maven.fabricmc.net → 镜像/官方）
+  onPhase(PHASE_FILES);
+  const fabricItems: DownloadItem[] = [];
+  for (const lib of fabricDeps) {
+    const item = libraryItem(gameRoot, lib);
+    if (item !== null) {
+      fabricItems.push(item);
+    }
+  }
+  await runDownloads(fabricItems, loaderSource, onCount, onCurrent, onFileProgress);
+
+  // 6) 写清单：顶层扁平化 + patches[game,fabric]
+  onPhase(PHASE_WRITE);
+  const composed = composeFabricManifest(vanilla, instanceName, gameVersion, loaderVersion, mainClass, fabricDeps);
+  writeText(versionJsonPath(gameRoot, instanceName), JSON.stringify(composed));
 }

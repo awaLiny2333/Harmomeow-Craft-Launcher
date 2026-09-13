@@ -52,6 +52,14 @@ export const DOWNLOAD_CONCURRENCY: number = 6;
 export const HTTP_STATUS_MIN: number = 200;
 export const HTTP_STATUS_MAX: number = 300;
 
+/**
+ * 可被当作"有效空结果"的 4xx 码。
+ * 用途：Fabric meta 对**不支持**的游戏版本返回 `400` + 空数组 `[]`（而非 404）——
+ * 语义是"该版本没有可用 loader"，不是"请求失败"，不应显示为拉取错误。
+ */
+export const HTTP_STATUS_BAD_REQUEST: number = 400;
+export const HTTP_STATUS_NOT_FOUND: number = 404;
+
 /** 连接 / 读取超时（毫秒）。 */
 export const HTTP_CONNECT_TIMEOUT: number = 30000;
 export const HTTP_READ_TIMEOUT: number = 120000;
@@ -67,13 +75,21 @@ export interface UrlRewrite {
   to: string;
 }
 
-/** BMCLAPI 前缀替换表（仅覆盖原版所需 host）。 */
+/** Fabric meta 根（loader 列表 / 安装元数据）；无尾斜杠，拼接 `/v2/...`。 */
+export const FABRIC_META_ROOT: string = 'https://meta.fabricmc.net';
+
+/** Fabric Maven 仓库（loader/intermediary/asm 等）；带尾斜杠，与库 `url` 字段一致。 */
+export const FABRIC_MAVEN: string = 'https://maven.fabricmc.net/';
+
+/** BMCLAPI 前缀替换表（原版 host + Fabric meta/maven；路径对齐 HMCL）。 */
 export const BMCLAPI_REWRITES: UrlRewrite[] = [
   { from: MOJANG_PISTON_META, to: BMCLAPI_ROOT },
   { from: MOJANG_PISTON_DATA, to: BMCLAPI_ROOT },
   { from: MOJANG_LAUNCHERMETA, to: BMCLAPI_ROOT },
   { from: MOJANG_LIBRARIES, to: `${BMCLAPI_ROOT}/libraries/` },
   { from: MOJANG_RESOURCES, to: `${BMCLAPI_ROOT}/assets` },
+  { from: FABRIC_META_ROOT, to: `${BMCLAPI_ROOT}/fabric-meta` },
+  { from: FABRIC_MAVEN, to: `${BMCLAPI_ROOT}/maven/` },
 ];
 
 /**
@@ -110,6 +126,16 @@ export function manifestCandidates(source: string): string[] {
 /** 单个文件（client jar / 库 / 资源）的候选地址（按下载源）。 */
 export function fileCandidates(url: string, source: string): string[] {
   return source === SOURCE_OFFICIAL ? [url] : candidatesFor(url);
+}
+
+/** Fabric loader 列表地址（按游戏版本）；走下载源。 */
+export function fabricLoaderListCandidates(gameVersion: string, source: string): string[] {
+  return fileCandidates(`${FABRIC_META_ROOT}/v2/versions/loader/${gameVersion}`, source);
+}
+
+/** Fabric 单点安装元数据地址（按 游戏版本 + loader 版本）；走下载源。 */
+export function fabricLaunchMetaCandidates(gameVersion: string, loaderVersion: string, source: string): string[] {
+  return fileCandidates(`${FABRIC_META_ROOT}/v2/versions/loader/${gameVersion}/${loaderVersion}`, source);
 }
 
 // ---- 版本类型过滤（清单里 type 字段）----

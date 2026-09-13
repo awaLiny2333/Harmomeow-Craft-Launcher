@@ -39,6 +39,8 @@ export const KEY_RENDERER_OVERRIDES: string = 'renderer_overrides';
 export const KEY_SCROLL_SPEED: string = 'scroll_speed';
 // 版本下载源（'mirror' / 'official'；下载面板写、安装时读）。
 export const KEY_DOWNLOAD_SOURCE: string = 'download_source';
+// mod loader 下载源（'mirror' / 'official'；**与版本源独立**；目前仅 Fabric）。
+export const KEY_FABRIC_SOURCE: string = 'fabric_source';
 // 版本类型过滤（'release' / 'snapshot' / 'other'；下载面板写、安装时读）。
 export const KEY_VERSION_TYPE: string = 'version_type';
 // 显示缩放：渲染分辨率 = 窗口 / N（N=1 关闭）。UI 层用 1/N 布局 + .scale(N) 放大回满窗。
@@ -54,6 +56,7 @@ export const LAYOUT_PADDING: number = 12;
 export const LAYOUT_PADDING_SMALL: number = 8;
 export const OPACITY_SECONDARY: number = 0.6;
 export const BORDER_RADIUS: number = 14;
+export const BORDER_RADIUS_SMALL: number = 8;
 // 极细外边距（1vp）：修 TextInput layoutWeight(1) 的轻微布局抖动（账户区输入框用）。
 export const LAYOUT_MARGIN_HAIRLINE: number = 1;
 

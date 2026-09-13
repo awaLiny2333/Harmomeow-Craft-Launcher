@@ -1,8 +1,15 @@
 import { AppStorageV2 } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { RemoteVersion, fetchManifest, installVersion, removeIncompleteInstance } from '../data/VersionInstaller';
+import { RemoteVersion, fetchManifest, installVersion, removeIncompleteInstance,
+  fetchFabricLoaders, installFabricVersion, FabricLoaderVersion } from '../data/VersionInstaller';
 import { SOURCE_MIRROR, TYPE_OTHER, TYPE_RELEASE,
   TYPE_SNAPSHOT } from '../constants/DownloadContract';
+
+/** 安装的 mod loader 种类（原版 / Fabric；后续可扩展）。 */
+export const LOADER_KIND_VANILLA: string = 'vanilla';
+export const LOADER_KIND_FABRIC: string = 'fabric';
+/** 安装错误码：loader 列表拉取失败 / 未选 loader 版本。 */
+export const INSTALL_ERR_LOADER: number = 4;
 
 /**
  * 安装器应用级共享状态（跨组件通过 AppStorageV2 共享同一实例）。
@@ -52,6 +59,26 @@ export class InstallerState {
 
   /** 版本类型过滤（release / snapshot / other），由下载面板设置。 */
   @Trace versionType: string = TYPE_RELEASE;
+
+  /** 安装的 mod loader 种类（原版 / Fabric）；由"设置实例名"面板设置。 */
+  @Trace loaderKind: string = LOADER_KIND_VANILLA;
+
+  /** Fabric 下载源（**与版本源 this.source 独立**；镜像/官方）。 */
+  @Trace fabricSource: string = SOURCE_MIRROR;
+
+  /** Fabric loader 版本列表与选中项（UI 展示/选择用）。 */
+  @Trace fabricLoaders: FabricLoaderVersion[] = [];
+  @Trace fabricLoader: string = '';
+  @Trace fabricLoadersLoading: boolean = false;
+  @Trace fabricLoadersLoaded: boolean = false;
+  /** 已按哪个游戏版本拉过 loader 列表（换游戏版本 → 需重拉）。 */
+  @Trace fabricLoadersGame: string = '';
+
+  /**
+   * loader 列表请求序号（非观察态）：每次请求/作废都自增；响应只在仍是"最新序号"时才写入，
+   * 避免「切源 / 换游戏版本 / 重开安装面板后，旧的在途响应覆盖新状态」的竞态。
+   */
+  private fabricLoaderSeq: number = 0;
 
   /** 过滤后的可见版本列表（Repeat 渲染用；manifest 为原始全量）。 */
   @Trace visible: RemoteVersion[] = [];
@@ -113,6 +140,119 @@ export class InstallerState {
         });
     } catch (error) {
       // 失败收尾：清掉半装残留（缺 <名>.json 才清，绝不碰完整实例），避免"扫描不到又占名"的僵尸目录。
+      removeIncompleteInstance(gameRoot, instanceName);
+      const err = error as BusinessError;
+      this.errorKind = INSTALL_ERR_INSTALL;
+      this.errorDetail = err.message ?? '';
+      ok = false;
+    }
+    this.installingId = '';
+    return ok;
+  }
+
+  /**
+   * 作废在途的 loader 列表请求并清空列表（切源 / 换游戏版本 / 重开安装面板时调用）。
+   * 自增序号让旧请求的响应落地时被判为过期 → 直接丢弃，避免陈旧数据覆盖新状态。
+   */
+  resetFabricLoaders(): void {
+    this.fabricLoaderSeq++;
+    this.fabricLoadersLoading = false;
+    this.fabricLoaders = [];
+    this.fabricLoadersLoaded = false;
+    this.fabricLoadersGame = '';
+    this.fabricLoader = '';
+  }
+
+  /** 设置 Fabric 下载源；作废在途请求并清空列表（下次按新源重拉）。 */
+  setFabricSource(source: string): void {
+    if (source === this.fabricSource) {
+      return;
+    }
+    this.fabricSource = source;
+    this.resetFabricLoaders();
+  }
+
+  /** 拉取某游戏版本的 Fabric loader 列表（按 loader 源）；成功后默认选最新。 */
+  async refreshFabricLoaders(gameVersion: string): Promise<void> {
+    if (gameVersion.length === 0) {
+      return;
+    }
+    const seq = ++this.fabricLoaderSeq;
+    // 先取当次源：await 期间源可能被改，结果只在序号仍最新时才采用。
+    const source = this.fabricSource;
+    this.fabricLoadersLoading = true;
+    this.errorKind = INSTALL_ERR_NONE;
+    this.errorDetail = '';
+    try {
+      const list = await fetchFabricLoaders(gameVersion, source);
+      if (seq !== this.fabricLoaderSeq) {
+        return;
+      }
+      this.fabricLoaders = list;
+      this.fabricLoadersLoaded = true;
+      this.fabricLoadersGame = gameVersion;
+      this.fabricLoader = list.length > 0 ? list[0].version : '';
+    } catch (error) {
+      if (seq !== this.fabricLoaderSeq) {
+        return;
+      }
+      const err = error as BusinessError;
+      this.errorKind = INSTALL_ERR_LOADER;
+      this.errorDetail = err.message ?? '';
+      this.fabricLoaders = [];
+      this.fabricLoadersLoaded = false;
+      this.fabricLoadersGame = '';
+      this.fabricLoader = '';
+    } finally {
+      if (seq === this.fabricLoaderSeq) {
+        this.fabricLoadersLoading = false;
+      }
+    }
+  }
+
+  /**
+   * 安装 Fabric 实例（**单实例、HMCL 补丁式**）：vanilla 资产按 `this.source`（版本源），
+   * Fabric 元数据/库按 `this.fabricSource`（loader 源）。返回是否成功。
+   */
+  async installFabric(gameRoot: string, remote: RemoteVersion, instanceName: string): Promise<boolean> {
+    if (this.installingId.length > 0) {
+      return false;
+    }
+    // 硬门：所选 loader 版本必须与本次要装的游戏版本匹配（列表可能因切源/换版本而陈旧）。
+    if (this.fabricLoader.length === 0 || this.fabricLoadersGame !== remote.id) {
+      this.errorKind = INSTALL_ERR_LOADER;
+      this.errorDetail = '';
+      return false;
+    }
+    this.installingId = remote.id;
+    this.errorKind = INSTALL_ERR_NONE;
+    this.errorDetail = '';
+    this.phase = 0;
+    this.done = 0;
+    this.total = 0;
+    this.current = '';
+    this.fileReceived = 0;
+    this.fileTotal = 0;
+    let ok = true;
+    try {
+      await installFabricVersion(gameRoot, remote, this.fabricLoader, instanceName,
+        this.source, this.fabricSource,
+        (phase: number) => {
+          this.phase = phase;
+        },
+        (done: number, total: number) => {
+          this.done = done;
+          this.total = total;
+        },
+        (label: string) => {
+          this.current = label;
+        },
+        (received: number, total: number) => {
+          this.fileReceived = received;
+          this.fileTotal = total;
+        });
+    } catch (error) {
+      // 失败收尾：清掉半装残留（缺 <名>.json 才清，绝不碰完整实例）。
       removeIncompleteInstance(gameRoot, instanceName);
       const err = error as BusinessError;
       this.errorKind = INSTALL_ERR_INSTALL;

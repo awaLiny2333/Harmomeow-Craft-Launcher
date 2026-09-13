@@ -99,6 +99,16 @@ export function versionDir(gameRoot: string, versionId: string): string {
   return `${gameRoot}/${MC_VERSIONS_DIR}/${versionId}`;
 }
 
+/**
+ * `<gameRootUri>/versions/<versionId>`（实例目录的**用户文件 URI**形式）。
+ * 与 versionDir 同一布局，但作用于 Picker 返回的目录 URI（`file://docs/...`）命名空间：
+ * 供 `openLink` 在系统文件管理器中打开实例目录（文件管理器是另一个应用，只认该命名空间；
+ * 物理路径拼不出能被它解析的 URI）。
+ */
+export function versionDirUri(gameRootUri: string, versionId: string): string {
+  return `${gameRootUri}/${MC_VERSIONS_DIR}/${versionId}`;
+}
+
 /** `<gameRoot>/versions/<id>/<id>.json`（版本清单文件）。 */
 export function versionJsonPath(gameRoot: string, versionId: string): string {
   return `${versionDir(gameRoot, versionId)}/${versionId}.json`;
