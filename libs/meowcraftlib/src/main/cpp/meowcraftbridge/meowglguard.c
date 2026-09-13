@@ -46,7 +46,12 @@ static void *g_realLib = NULL;
 static GetProcFn g_realGetProc = NULL;
 static FnTexSubImage2D g_realTexSubImage2D = NULL;
 static FnVoid g_glFinish = NULL;
+static FnVoid g_glFlush = NULL;
 static int g_glthread = 0;
+/* Post-call sync strength when glthread is on (env MEOW_GUARD_SYNC):
+ * 0 = none (control), 1 = glFlush (default; drain the TC queue without waiting
+ * for the GPU), 2 = glFinish (known-good, but stalls). */
+static int g_syncMode = 1;
 static unsigned long g_resolveCount = 0;
 static unsigned long g_wrapCount = 0;
 
@@ -74,11 +79,23 @@ __attribute__((constructor)) static void meow_gl_guard_init(void) {
     }
     g_realTexSubImage2D = (FnTexSubImage2D)dlsym(h, "glTexSubImage2D");
     g_glFinish = (FnVoid)dlsym(h, "glFinish");
+    g_glFlush = (FnVoid)dlsym(h, "glFlush");
     g_glthread = env_truthy(getenv("GALLIUM_THREAD"));
+    {
+        const char *sm = getenv("MEOW_GUARD_SYNC");
+        if (sm != NULL && strcmp(sm, "none") == 0) {
+            g_syncMode = 0;
+        } else if (sm != NULL && strcmp(sm, "finish") == 0) {
+            g_syncMode = 2;
+        } else {
+            g_syncMode = 1;
+        }
+    }
     OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
-                 "guard: libGLv4=%{public}d resolver=%{public}p glGetString=%{public}p texsub=%{public}p finish=%{public}p glthread=%{public}d",
+                 "guard: libGLv4=%{public}d resolver=%{public}p glGetString=%{public}p texsub=%{public}p finish=%{public}p flush=%{public}p glthread=%{public}d sync=%{public}d",
                  (int)(h != NULL), (void *)g_realGetProc, dlsym(h, "glGetString"),
-                 (void *)g_realTexSubImage2D, (void *)g_glFinish, g_glthread);
+                 (void *)g_realTexSubImage2D, (void *)g_glFinish, (void *)g_glFlush, g_glthread,
+                 g_syncMode);
 }
 
 /* B2a wrapper for glTexSubImage2D: real call, then flush the threaded-context
@@ -89,8 +106,12 @@ static void meow_gl_TexSubImage2D(unsigned int target, int level, int xoff, int 
         g_realTexSubImage2D(target, level, xoff, yoff, w, h, format, type, pixels);
     }
     g_wrapCount++;
-    if (g_glthread && g_glFinish != NULL) {
-        g_glFinish();
+    if (g_glthread) {
+        if (g_syncMode == 2 && g_glFinish != NULL) {
+            g_glFinish();
+        } else if (g_syncMode == 1 && g_glFlush != NULL) {
+            g_glFlush();
+        }
     }
     if (g_wrapCount <= 3 || (g_wrapCount % 2000) == 0) {
         OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
