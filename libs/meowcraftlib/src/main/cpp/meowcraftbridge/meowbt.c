@@ -37,7 +37,7 @@
 /* Faults below this are HotSpot's implicit-null-check range: benign. */
 #define BT_BENIGN_MAX 0x10000UL
 
-#define MAP_MAX 1200
+#define MAP_MAX 16384
 #define MAP_NAME_MAX 72
 
 typedef struct {
@@ -221,14 +221,65 @@ static void print_resolved(const char *label, unsigned long a) {
 }
 
 static void print_map(void) {
+    char *q = g_buf;
+    q = put_str(q, "[meowbt] mapcount=");
+    q = put_dec(q, g_mapc);
+    q = put_str(q, "\n");
+    write_buf(g_buf, (int)(q - g_buf));
+
+    /* Aggregate by name (file-backed + anon-exec) to keep the log compact. */
+    enum { UNIQ_MAX = 768 };
+    static char names[UNIQ_MAX][MAP_NAME_MAX];
+    static unsigned long nstart[UNIQ_MAX];
+    static unsigned long nend[UNIQ_MAX];
+    int nc = 0;
+
     for (int i = 0; i < g_mapc; ++i) {
+        const char *nm = g_maps[i].name;
+        if (nm[0] == '\0') {
+            continue;
+        }
+        if (nm[0] == '<' && strcmp(nm, "<anon-exec>") != 0) {
+            continue; /* skip plain anon/data regions */
+        }
+        int idx = -1;
+        for (int j = 0; j < nc; ++j) {
+            if (strcmp(names[j], nm) == 0) {
+                idx = j;
+                break;
+            }
+        }
+        if (idx < 0) {
+            if (nc >= UNIQ_MAX) {
+                continue;
+            }
+            idx = nc++;
+            size_t nl = strlen(nm);
+            if (nl >= MAP_NAME_MAX) {
+                nl = MAP_NAME_MAX - 1;
+            }
+            memcpy(names[idx], nm, nl);
+            names[idx][nl] = '\0';
+            nstart[idx] = g_maps[i].start;
+            nend[idx] = g_maps[i].end;
+        } else {
+            if (g_maps[i].start < nstart[idx]) {
+                nstart[idx] = g_maps[i].start;
+            }
+            if (g_maps[i].end > nend[idx]) {
+                nend[idx] = g_maps[i].end;
+            }
+        }
+    }
+
+    for (int j = 0; j < nc; ++j) {
         char *p = g_buf;
-        p = put_str(p, "[meowbt] map ");
-        p = put_hex(p, g_maps[i].start);
+        p = put_str(p, "[meowbt] mod ");
+        p = put_hex(p, nstart[j]);
         p = put_str(p, "-");
-        p = put_hex(p, g_maps[i].end);
+        p = put_hex(p, nend[j]);
         p = put_str(p, " ");
-        p = put_str(p, (g_maps[i].name[0] != '\0') ? g_maps[i].name : "?");
+        p = put_str(p, names[j]);
         p = put_str(p, "\n");
         write_buf(g_buf, (int)(p - g_buf));
     }
