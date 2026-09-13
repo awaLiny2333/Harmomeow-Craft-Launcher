@@ -32,3 +32,11 @@ target_include_directories(meowcraftbridge PRIVATE
 
 target_link_libraries(meowcraftbridge PUBLIC
     libhilog_ndk.z.so libnative_window.so libnative_window_manager.so libohinput.so libEGL.so)
+
+# GL guard：作为 LWJGL 的 OpenGL 库（-Dorg.lwjgl.opengl.libname）。B1 = 纯透传到真 libGLv4；
+# 后续阶段在此给少数"客户端内存入口"补同步拷贝，规避 Mesa glthread 的 UAF。
+add_library(meowglguard SHARED
+    meowcraftbridge/meowglguard.c)
+
+target_link_libraries(meowglguard PUBLIC
+    libhilog_ndk.z.so)

@@ -29,8 +29,12 @@ export const OFFLINE_TOKEN: string = '0';
 export const ACCOUNTS_DIR: string = 'accounts';
 
 // ---- 渲染后端（与 native meowjrebridge.cpp / egl_gl.c 的 env 取值同源） ----
-// 现代版（≥1.17）：系统桌面 GL `libGLv4.so`（Mesa Zink），env `openglv4`。
-export const RENDERER_LIB: string = 'libGLv4.so';
+// 现代版（≥1.17）：**GL guard**（`libmeowglguard.so`，B1 纯透传）→ 内部转发到系统桌面 GL
+// `libGLv4.so`（Mesa Zink），env `openglv4`。guard 是后续给少数"客户端内存入口"补同步拷贝、
+// 规避 Mesa glthread UAF 的落点（见 notes 20-design/glthread-B方案-GL-guard.md）。
+// **回滚 = 把 RENDERER_LIB 改回 RENDERER_LIB_REAL_GL**。
+export const RENDERER_LIB: string = 'libmeowglguard.so';
+export const RENDERER_LIB_REAL_GL: string = 'libGLv4.so';
 export const RENDERER_ENV: string = 'openglv4';
 // 老版（≤1.16，固定管线）：自编 gl4es（桌面 GL→GLES 翻译层），env `gl4es`。
 // gl4es 跑在原生 GLES 上，由桥建 GLES context，绕开 Zink 的 compat 固定管线缺陷。
