@@ -44,6 +44,11 @@ Harmomeow Craft Launcher 面向**鸿蒙（HarmonyOS）PC**：不依赖 Android �
 - **逐版本「版本隔离」**开关：存档 / 选项 / 日志落版本目录，与其它版本互不干扰（与 HMCL / PCL 同构，所以 `.minecraft` 目录互相兼容！）。
 - 逐版本**渲染后端**选择（根据版本推荐 / 桌面 OpenGL / GL4ES(兼容)）。
 
+**Mod loader（模组加载器）**
+- **安装 Fabric**：在原版版本旁选 **Fabric** 并挑 loader 版本（列表实时取自 FabricMC 元数据 —— Fabric 官方提供 loader 的游戏版本都能装）。Fabric 元数据 / 库取自 FabricMC、**支持 BMCLAPI 镜像**；且 **mod loader 下载源与游戏下载源相互独立**。
+- 实例写盘为 **HMCL 补丁式单实例布局**（顶层扁平化 + `patches[]`），因此 `.minecraft` 目录与 **HMCL 互通** —— HMCL 能读本启动器装的实例，本启动器也能启动 HMCL 装的 Fabric 实例。
+- 两种清单形态（`inheritsFrom` 与 HMCL `patches`）都能读取；版本卡片会显示识别出的类型：**原版 / Fabric / Legacy Fabric / 未知**。
+
 **账户**
 - **离线账户**：多账户、UUID 等信息即时展示。
 - **微软正版登录**：OAuth2 **设备码流程**（登录 / 自动续期 / 手动刷新 / 退出登录）；需要自己准备有效的微软 Azure client id（AppID）。
@@ -65,6 +70,7 @@ Harmomeow Craft Launcher 面向**鸿蒙（HarmonyOS）PC**：不依赖 Android �
 - **1.16.5 首屏无文字** 这个真的不知道为什么了，非常诡异。
 - 平台 `libGLv4` 为 **Mesa Zink**（GL-on-Vulkan），偶发 20–70ms 尖刺，非应用层可解。
 - 更老（1.4.x / 1.5.x）未验证，**不在**支持窗口。
+- **我们只安装并支持 Fabric**。其它启动器装的实例（**Forge / NeoForge / Quilt / …**）会显示为「未知」，不保证能启动。
 
 ## 获取与安装
 

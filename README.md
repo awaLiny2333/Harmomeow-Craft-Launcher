@@ -44,6 +44,11 @@ Harmomeow Craft Launcher targets **HarmonyOS PCs**. It does not rely on an Andro
 - Per-version **"version isolation"** toggle: saves / options / logs live inside the version folder, isolated from other versions (same model as HMCL / PCL — so `.minecraft` folders are mutually compatible!).
 - Per-version **rendering backend** selection (Recommended by version / Desktop OpenGL / GL4ES (compatible)).
 
+**Mod loaders**
+- **Install Fabric**: next to a vanilla version, pick **Fabric** and a loader version (the list is fetched live from FabricMC metadata — any game version Fabric publishes loaders for). Fabric metadata / libraries come from FabricMC with the **BMCLAPI mirror supported**, and the **mod-loader download source is independent of the game download source**.
+- Instances are written in the **HMCL patch-style single-instance layout** (top-level flatten + `patches[]`), so `.minecraft` folders stay **interoperable with HMCL** — HMCL can read instances installed here, and this launcher can launch HMCL-installed Fabric instances.
+- Both profile shapes (`inheritsFrom` and HMCL `patches`) are read; each version card shows the detected type: **Vanilla / Fabric / Legacy Fabric / Unknown**.
+
 **Accounts**
 - **Offline accounts**: multiple accounts; UUID and other info shown instantly.
 - **Microsoft (premium) sign-in**: OAuth2 **device-code flow** (sign in / auto-refresh / manual refresh / sign out); you must supply your own valid Microsoft Azure client id (AppID).
@@ -65,6 +70,7 @@ Harmomeow Craft Launcher targets **HarmonyOS PCs**. It does not rely on an Andro
 - **1.16.5 first screen has no text** — honestly no idea why, very bizarre.
 - The platform `libGLv4` is **Mesa Zink** (GL-on-Vulkan); occasional 20–70 ms spikes, not solvable at the app layer.
 - Older versions (1.4.x / 1.5.x) are unverified and **outside** the support window.
+- **Fabric is the only loader we install and support.** Instances installed by other launchers (**Forge / NeoForge / Quilt / …**) are shown as “Unknown”, with no promise that they launch.
 
 ## Getting & installing
 
