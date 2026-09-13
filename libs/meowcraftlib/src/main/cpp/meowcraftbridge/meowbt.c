@@ -43,6 +43,7 @@
 typedef struct {
     unsigned long start;
     unsigned long end;
+    char perms[5];
     char name[MAP_NAME_MAX];
 } MapEntry;
 
@@ -150,6 +151,8 @@ static int phdr_cb(struct dl_phdr_info *info, size_t size, void *data) {
     }
     g_maps[g_mapc].start = lo;
     g_maps[g_mapc].end = hi;
+    memcpy(g_maps[g_mapc].perms, "r-xp", 4);
+    g_maps[g_mapc].perms[4] = '\0';
     const char *nm = info->dlpi_name;
     const char *bn = (nm != NULL) ? strrchr(nm, '/') : NULL;
     set_name(&g_maps[g_mapc], (bn != NULL) ? bn + 1 : (nm != NULL ? nm : "?"));
@@ -172,6 +175,8 @@ static void load_map(void) {
             }
             g_maps[g_mapc].start = s;
             g_maps[g_mapc].end = e;
+            memcpy(g_maps[g_mapc].perms, perms, 4);
+            g_maps[g_mapc].perms[4] = '\0';
             const char *path = line + off;
             if (path[0] != '\0') {
                 const char *bn = strrchr(path, '/');
@@ -213,6 +218,11 @@ static void print_resolved(const char *label, unsigned long a) {
         p = put_str(p, (m->name[0] != '\0') ? m->name : "?");
         p = put_str(p, "+");
         p = put_hex(p, a - m->start);
+        p = put_str(p, " [");
+        p = put_str(p, m->perms);
+        p = put_str(p, " size=");
+        p = put_hex(p, m->end - m->start);
+        p = put_str(p, "]");
     } else {
         p = put_str(p, " <UNMAPPED>");
     }
@@ -280,6 +290,26 @@ static void print_map(void) {
         p = put_hex(p, nend[j]);
         p = put_str(p, " ");
         p = put_str(p, names[j]);
+        p = put_str(p, "\n");
+        write_buf(g_buf, (int)(p - g_buf));
+    }
+
+    /* Raw anonymous-executable regions: size/perms distinguish a JVM code cache
+     * (one huge block) from libffi trampolines (many tiny blocks) or driver
+     * generated code. */
+    for (int i = 0; i < g_mapc; ++i) {
+        if (strcmp(g_maps[i].name, "<anon-exec>") != 0) {
+            continue;
+        }
+        char *p = g_buf;
+        p = put_str(p, "[meowbt] exec ");
+        p = put_hex(p, g_maps[i].start);
+        p = put_str(p, "-");
+        p = put_hex(p, g_maps[i].end);
+        p = put_str(p, " ");
+        p = put_str(p, g_maps[i].perms);
+        p = put_str(p, " size=");
+        p = put_hex(p, g_maps[i].end - g_maps[i].start);
         p = put_str(p, "\n");
         write_buf(g_buf, (int)(p - g_buf));
     }
