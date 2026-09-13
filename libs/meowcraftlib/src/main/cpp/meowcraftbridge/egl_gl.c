@@ -31,6 +31,7 @@
 #include "meowlog.h"
 #include "meowcraftbridge_environ.h"
 #include "meowqos.h"
+#include "meowbt.h"
 
 /* GLFW window hints that this bridge understands. */
 #define MEOW_GLFW_CLIENT_API 0x22001
@@ -529,8 +530,9 @@ void *meowCreateContext(void *share) {
 }
 
 void meowMakeCurrent(void *window) {
-    /* 渲染线程首次进入时按 MEOW_QOS 提升线程 QoS（env 关闭时 no-op）。 */
+    /* 渲染线程首次进入时：按 MEOW_QOS 提升线程 QoS；按 MEOW_BT 装 crash 抓栈。 */
     meow_qos_apply_current_thread();
+    meow_bt_install_once();
     g_boundWindow = window;
     if (!egl_bind()) {
         MEOWLOGW("meowMakeCurrent: no GL context/surface available");
@@ -548,8 +550,9 @@ void meowSetWindowHint(int hint, int value) {
 }
 
 void meowSwapBuffers(void) {
-    /* 渲染线程兜底：即便 MakeCurrent 走了别的路径，也保证按 MEOW_QOS 提升一次。 */
+    /* 渲染线程兜底：即便 MakeCurrent 走了别的路径，也保证 QoS 提升一次 + 抓栈已装。 */
     meow_qos_apply_current_thread();
+    meow_bt_install_once();
     /* If a resize never made it through the pump, apply it now. */
     struct meow_environ_s *env = meow_environ;
     if (env != NULL && env->width > 0 && env->height > 0 &&

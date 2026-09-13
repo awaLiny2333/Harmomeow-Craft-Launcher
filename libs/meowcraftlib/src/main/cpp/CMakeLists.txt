@@ -24,7 +24,8 @@ add_library(meowcraftbridge SHARED
     meowcraftbridge/egl_gl.c
     meowcraftbridge/input_bridge.c
     meowcraftbridge/meowcraftbridge_environ.c
-    meowcraftbridge/meowqos.c)
+    meowcraftbridge/meowqos.c
+    meowcraftbridge/meowbt.c)
 
 target_include_directories(meowcraftbridge PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/meowcraftbridge)
