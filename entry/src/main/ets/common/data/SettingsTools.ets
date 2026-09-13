@@ -4,7 +4,7 @@ import { STORE_NAME, KEY_SHOW_INPUT_RATE, KEY_CPU_COUNT, KEY_MAX_HEAP_MB,
   KEY_VERSION_ISOLATION, KEY_SCROLL_SPEED, KEY_DOWNLOAD_SOURCE,
   KEY_FABRIC_SOURCE, KEY_VERSION_TYPE, KEY_RENDERER_OVERRIDES, SCROLL_SPEED_DEFAULT_PERCENT,
   KEY_RENDER_SCALE, RENDER_SCALE_DEFAULT, RENDER_SCALE_OPTIONS,
-  KEY_RENDER_ENV, KEY_JVM_ARGS, KEY_MS_CLIENT_ID, KEY_LAST_LAUNCH } from '../constants/Constants';
+  KEY_RENDER_ENV, KEY_JVM_ARGS, KEY_MS_CLIENT_ID, KEY_LAST_LAUNCH, KEY_GLTHREAD } from '../constants/Constants';
 import { SOURCE_MIRROR, TYPE_RELEASE } from '../constants/DownloadContract';
 import { RENDERER_AUTO } from '../constants/LaunchDefaults';
 
@@ -247,6 +247,32 @@ export class SettingsTools {
     }
     try {
       this.store.putSync(KEY_JVM_ARGS, v);
+      this.store.flushSync();
+    } catch {
+      return;
+    }
+  }
+
+  // ---- 线程化渲染（glthread；主进程高级选项写，游戏进程 GameLauncher 读）----
+
+  /** glthread 开关；**默认开**（`GALLIUM_THREAD=1`，仅现代渲染路径生效；异常时可关）。 */
+  glThread(): boolean {
+    if (this.store === null) {
+      return true;
+    }
+    try {
+      return this.store.getSync(KEY_GLTHREAD, true) as boolean;
+    } catch {
+      return true;
+    }
+  }
+
+  setGlThread(on: boolean): void {
+    if (this.store === null) {
+      return;
+    }
+    try {
+      this.store.putSync(KEY_GLTHREAD, on);
       this.store.flushSync();
     } catch {
       return;

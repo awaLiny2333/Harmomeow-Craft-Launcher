@@ -9,7 +9,7 @@ import { Account, AccountsTools, ACCOUNT_TYPE_MICROSOFT } from './AccountsTools'
 import { SettingsTools } from './SettingsTools';
 import { MEOW_HOME_DIR, MC_RUN_DIR_PREFIX, NATIVES_DIR, jreHomeDir,
   hspLibsDir, versionDir } from '../constants/Paths';
-import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H } from '../constants/LaunchDefaults';
+import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H, RENDERER_ENV } from '../constants/LaunchDefaults';
 import { rendererForVersion } from './RendererPolicy';
 
 const LOG_DOMAIN = 0x0001;
@@ -98,8 +98,14 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   const fullCmd = [java, ...argv].join(' ');
   hilog.info(LOG_DOMAIN, LOG_TAG, 'CMD: %{public}s', fullCmd.substring(0, 3000));
   hilog.info(LOG_DOMAIN, LOG_TAG, 'CMD_TAIL: %{public}s', fullCmd.substring(fullCmd.length - 800));
-  await startJvm(ctx, [java, ...argv], renderer.lib, renderer.env, renderer.glProfile,
-    settings.renderEnv());
+  // 线程化渲染（glthread）开关（**默认开**）：**仅现代渲染路径**启用——该路径有 GL guard 兜底修复
+  // Mesa glthread 的 UAF；≤1.16/legacy 走 gl4es、不在修复范围，保持关。拼在用户「额外渲染环境变量」
+  // **之前** → 用户可显式覆盖。见 notes 20-design/glthread-B方案-GL-guard.md。
+  const glthread = settings.glThread() && renderer.env === RENDERER_ENV;
+  const renderEnv = `GALLIUM_THREAD=${glthread ? '1' : '0'}\n${settings.renderEnv()}`;
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'glthread=%{public}s renderer=%{public}s',
+    glthread ? 'on' : 'off', renderer.env);
+  await startJvm(ctx, [java, ...argv], renderer.lib, renderer.env, renderer.glProfile, renderEnv);
 }
 
 /** 读取设备 CPU 芯片型号（deviceInfo.chipType，API 21+）；失败/空返回空串。 */

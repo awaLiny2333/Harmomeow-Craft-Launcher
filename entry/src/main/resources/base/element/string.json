@@ -257,6 +257,14 @@
       "value": "游戏窗口右下角显示当前鼠标有效采样率（Hz）"
     },
     {
+      "name": "advanced_glthread",
+      "value": "线程化渲染"
+    },
+    {
+      "name": "advanced_glthread_hint",
+      "value": "GPU 调用交独立线程，帧数更高、加载稍慢；仅 1.17 及以上版本生效，如遇异常可关闭"
+    },
+    {
       "name": "advanced_cpu_count",
       "value": "CPU 线程数"
     },

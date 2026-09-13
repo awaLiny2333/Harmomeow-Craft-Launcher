@@ -17,6 +17,8 @@ import native from 'libmeowassets.so';
 export struct AdvancedOptionsView {
   /** 是否显示采样率 overlay。 */
   @Local showInputRate: boolean = false;
+  /** 线程化渲染（glthread）开关（默认开）。 */
+  @Local glThread: boolean = true;
   /** CPU 线程数覆盖（空 = 自动）。 */
   @Local cpuCountText: string = '';
   /** 最大堆 MB 覆盖（空 = 自动）。 */
@@ -44,6 +46,7 @@ export struct AdvancedOptionsView {
     const s = new SettingsTools(this.context());
     this.settings = s;
     this.showInputRate = s.showInputRate();
+    this.glThread = s.glThread();
     const c = s.cpuCount();
     this.cpuCountText = c > 0 ? `${c}` : '';
     const m = s.maxHeapMb();
@@ -113,6 +116,25 @@ export struct AdvancedOptionsView {
           .onChange((isOn: boolean) => {
             this.showInputRate = isOn;
             this.settings?.setShowInputRate(isOn);
+          });
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      // 线程化渲染（glthread）：默认开；仅现代渲染路径生效（≤1.16/legacy 走 gl4es 不适用）
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.advanced_glthread'));
+          Text($r('app.string.advanced_glthread_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+
+        Toggle({ type: ToggleType.Switch, isOn: this.glThread })
+          .onChange((isOn: boolean) => {
+            this.glThread = isOn;
+            this.settings?.setGlThread(isOn);
           });
       }
       .width('100%')
