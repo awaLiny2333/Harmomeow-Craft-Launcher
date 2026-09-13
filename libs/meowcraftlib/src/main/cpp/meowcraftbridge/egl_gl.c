@@ -417,6 +417,56 @@ static void egl_drop_surface(void) {
     g_egl.surfaceWindow = NULL;
 }
 
+/* ------------------------------------------------------------------------- */
+/* GL info probe (diagnostic: MEOW_GLINFO=1)                                 */
+/* ------------------------------------------------------------------------- *
+ * Logs GL_VERSION/GL_RENDERER and whether a set of extension-gated features is
+ * advertised. Used to verify that MESA_EXTENSION_OVERRIDE actually removed an
+ * extension (MC 26.x picks its buffer/transient-memory path from these). */
+static int g_glinfoDone = 0;
+static void meow_gl_info_once(void) {
+    if (g_glinfoDone) {
+        return;
+    }
+    const char *en = getenv("MEOW_GLINFO");
+    if (en == NULL || en[0] == '\0' || (en[0] == '0' && en[1] == '\0')) {
+        return;
+    }
+    g_glinfoDone = 1;
+
+    typedef const unsigned char *(*GetStringFn)(unsigned int);
+    typedef void (*GetIntegervFn)(unsigned int, int *);
+    typedef const unsigned char *(*GetStringiFn)(unsigned int, unsigned int);
+    GetStringFn getString = (GetStringFn)eglGetProcAddress("glGetString");
+    GetIntegervFn getIntegerv = (GetIntegervFn)eglGetProcAddress("glGetIntegerv");
+    GetStringiFn getStringi = (GetStringiFn)eglGetProcAddress("glGetStringi");
+    if (getString == NULL || getIntegerv == NULL || getStringi == NULL) {
+        MEOWLOGW("glinfo: procs missing (gs=%p gi=%p gsi=%p)", (void *)getString,
+                 (void *)getIntegerv, (void *)getStringi);
+        return;
+    }
+    MEOWLOGI("glinfo: GL_VERSION=%{public}s GL_RENDERER=%{public}s",
+             (const char *)getString(0x1F02), (const char *)getString(0x1F01));
+    int n = 0;
+    getIntegerv(0x821D /* GL_NUM_EXTENSIONS */, &n);
+    MEOWLOGI("glinfo: num_extensions=%{public}d", n);
+    static const char *keys[] = {
+        "GL_ARB_buffer_storage", "GL_ARB_direct_state_access", "GL_ARB_multi_draw_indirect",
+        "GL_ARB_draw_indirect", "GL_ARB_base_instance", "GL_ARB_vertex_attrib_binding",
+        "GL_ARB_clip_control", "GL_ARB_shader_draw_parameters", "GL_ARB_debug_output", NULL
+    };
+    for (int k = 0; keys[k] != NULL; ++k) {
+        int found = 0;
+        for (int i = 0; i < n && !found; ++i) {
+            const char *e = (const char *)getStringi(0x1F03 /* GL_EXTENSIONS */, (unsigned)i);
+            if (e != NULL && strcmp(e, keys[k]) == 0) {
+                found = 1;
+            }
+        }
+        MEOWLOGI("glinfo: %{public}s=%{public}s", keys[k], found ? "YES" : "no");
+    }
+}
+
 /* Ensure a surface exists for the current state->window and make it current. */
 static int egl_bind(void) {
     if (!egl_ensure_context()) {
@@ -438,6 +488,8 @@ static int egl_bind(void) {
     eglSwapInterval(g_egl.display, 0);
     /* gl4es must be initialized only after its GLES context is current. */
     gl4es_init_once();
+    /* 一次性 GL 能力探针（诊断；env 门控）。 */
+    meow_gl_info_once();
     return 1;
 }
 
