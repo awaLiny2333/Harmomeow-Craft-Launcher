@@ -30,6 +30,8 @@
 
 #include <window_manager/oh_window.h>
 
+#include "../meowcraftbridge/meowqos.h"
+
 #include <arkui/native_interface.h>
 #include <arkui/native_node.h>
 #include <arkui/native_node_napi.h>
@@ -260,6 +262,12 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
                      "env set: MEOWCRAFT_RENDERER=%{public}s so=%{public}s NGG=%{public}s",
                      rendererEnv.c_str(), rendererSo.c_str(), (cacheDir + "/").c_str());
+
+        // 线程调度（实验，env 驱动，均可降级）：在 JVM 起线程之前，对**启动线程**做
+        // 绑核（MEOW_AFFINITY，如 "8-19"；JVM 线程/渲染线程继承该 mask）与 QoS
+        // （MEOW_QOS=1）。失败/未配置只是 no-op，见 meowqos.c。
+        meow_affinity_apply_current_thread();
+        meow_qos_apply_current_thread();
 
         // ---- 预 dlopen 渲染器（历史件行为：dl_open 在 JVM 前）----
         // RTLD_GLOBAL 使 meowcraftbridge 随后能 dlsym 到渲染器的 GL/EGL 符号。

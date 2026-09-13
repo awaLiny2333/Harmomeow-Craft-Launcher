@@ -2,8 +2,11 @@ cmake_minimum_required(VERSION 3.5.0)
 project(meowcraftlib)
 
 # MeowJreBridge：Meowcraft 自研 ArkTS→JVM 桥（进程内 dlopen JRE 的 libjli 起 JVM）。
+# meowqos.c 编进两个 target：各自给“调用它的线程”设 QoS / 绑核（jre 侧 = 启动线程，
+# craftbridge 侧 = 渲染线程）；env 驱动、缺库可降级。
 add_library(meowjrebridge SHARED
     meowjrebridge/meowjrebridge.cpp
+    meowcraftbridge/meowqos.c
 )
 
 target_link_libraries(meowjrebridge PUBLIC
@@ -20,7 +23,8 @@ target_link_libraries(meowjrebridge PUBLIC
 add_library(meowcraftbridge SHARED
     meowcraftbridge/egl_gl.c
     meowcraftbridge/input_bridge.c
-    meowcraftbridge/meowcraftbridge_environ.c)
+    meowcraftbridge/meowcraftbridge_environ.c
+    meowcraftbridge/meowqos.c)
 
 target_include_directories(meowcraftbridge PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/meowcraftbridge)
