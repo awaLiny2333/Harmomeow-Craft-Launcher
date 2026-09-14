@@ -250,12 +250,10 @@ cp stuffs/research/meowcraft_extras.tar.gz entry/src/main/resources/rawfile/
 
 | artifact | sha256 |
 |---|---|
-| `lwjgl-3.3.3.jar` | `5f93d247d7d242b6ebaf15a39832370cfe6334e4030d511bb2501ffa8eab7f9b` |
-| `lwjgl-3.4.3.jar` | `81ece9bda5d3105bdb28031f843f0f6d1525c56fb1085d5a4ed1d35980064361` |
-| `liblwjgl_333.so` / `_opengl_333` / `_stb_333` (3.3.3) | `0b1dc8ae…` / `4541eeb3…` / `a8d2392d…` |
+| `lwjgl-3.4.3.jar` (carries the 5 3.4.x compat shims) | `b9b306a0a0318d7cfe998b222031abf9b27a5a7285a59d7ba03839e25e693e03` |
 | `liblwjgl_343.so` / `_opengl_343` / `_stb_343` (3.4.3) | `16298280…` / `e1f1413b…` / `8eb4a1b8…` |
 | `libffi.a` (3.8.0, aarch64-linux-ohos) | `238cadb7bfa70ca5b4f718cc66878f1f3d26107bc6f6b0e272380c3f3f1fda5b` |
-| `meowcraft_extras.tar.gz` (shipped) | `15372559b6abe2fb48933d3a09991ca1a716d943406024c0698a5ffe47aa0c00` |
+| `meowcraft_extras.tar.gz` (shipped; single modern generation) | `f8437074206fec19a29bd6b67b8274fd333ca1ad0ca8b90735688405dd2221bf` |
 
 Reproducibility caveats (verified 2026-09-10):
 - **Native builds are byte-reproducible only when the absolute `--src`/`--out` paths are
