@@ -83,6 +83,8 @@ export struct GameVersionsView {
   /** 逐版本「线程化渲染」覆盖（复制 Preferences 的两张 id 表，供编辑面板下拉展示）。 */
   @Local glThreadOffIds: string[] = [];
   @Local glThreadOnIds: string[] = [];
+  /** 全局「线程化渲染」开关（高级选项）的**当前值**——只用于把「默认」显示成 默认（开/关），不参与判定。 */
+  @Local glThreadGlobal: boolean = true;
 
   /** 安装器共享状态（与 InstallerState 同一实例，承载远程清单/单任务进度/错误）。 */
   @Local installer: InstallerState = getInstallerState();
@@ -110,6 +112,8 @@ export struct GameVersionsView {
     // 逐版本「线程化渲染」覆盖（持久化）载入。
     this.glThreadOffIds = new SettingsTools(this.context()).glThreadOffIds();
     this.glThreadOnIds = new SettingsTools(this.context()).glThreadOnIds();
+    // 全局开关当前值（只用于把「默认」显示成 默认（开/关））；展开面板时还会再读一次（见 toggleEdit）。
+    this.glThreadGlobal = new SettingsTools(this.context()).glThread();
     // 下载源（持久化）：默认镜像，海外可切官方。
     this.installer.source = new SettingsTools(this.context()).downloadSource();
     // mod loader 下载源（**独立于版本源**）：持久化载入。
@@ -147,6 +151,8 @@ export struct GameVersionsView {
     }
     this.editingId = v.id;
     this.editing = v;
+    // 每次展开都重读全局开关：高级选项可能在别处刚被改过（「默认」的文案要跟着它变）。
+    this.glThreadGlobal = new SettingsTools(this.context()).glThread();
     // 快照"该实例所属的游戏目录"：面板跨目录切换后仍指向它（标题标注 + 删除/相对路径据此刻定目标）。
     this.editingDirUri = this.state.selected;
     this.editingRoot = resolveGameRoot(this.state.selected);
@@ -326,10 +332,17 @@ export struct GameVersionsView {
     return rendererForVersion(v.mcVersion, this.rendererBackend(v.id)).env === RENDERER_ENV;
   }
 
-  /** 「线程化渲染」Select 选项：默认（开）/ 开 / 关。 */
+  /** 「默认」项的文案 = 跟随**高级选项**里的全局开关（故按其实际状态显示 默认（开）/ 默认（关））。 */
+  private glThreadDefaultLabel(): Resource {
+    return this.glThreadGlobal
+      ? $r('app.string.glthread_default_on')
+      : $r('app.string.glthread_default_off');
+  }
+
+  /** 「线程化渲染」Select 选项：默认（跟随高级选项）/ 开 / 关。 */
   private glThreadOptions(): SelectOption[] {
     return [
-      { value: $r('app.string.glthread_default') },
+      { value: this.glThreadDefaultLabel() },
       { value: $r('app.string.glthread_on') },
       { value: $r('app.string.glthread_off') },
     ];
@@ -365,7 +378,7 @@ export struct GameVersionsView {
     if (i === 2) {
       return $r('app.string.glthread_off');
     }
-    return $r('app.string.glthread_default');
+    return this.glThreadDefaultLabel();
   }
 
   /** 切换某版本的线程化渲染覆盖：落盘 Preferences 后回读（游戏进程启动时读同一份）。 */

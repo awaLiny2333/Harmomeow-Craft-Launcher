@@ -174,7 +174,7 @@
     },
     {
       "name": "version_glthread_hint",
-      "value": "仅 OpenGLv4 后端生效（选其它后端不生效）；个别版本掉帧时可关掉试试"
+      "value": "“默认”跟随高级选项里的开关；仅 OpenGLv4 后端生效（选其它后端不生效）"
     },
     {
       "name": "version_delete",
@@ -213,8 +213,12 @@
       "value": "GL4ES（旧版本兼容）"
     },
     {
-      "name": "glthread_default",
+      "name": "glthread_default_on",
       "value": "默认（开）"
+    },
+    {
+      "name": "glthread_default_off",
+      "value": "默认（关）"
     },
     {
       "name": "glthread_on",
