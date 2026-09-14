@@ -4,11 +4,11 @@
 #
 #   STAGE: extract ref/lwjgl3@<tag> into a throwaway tree (git archive; the source
 #          repo checkout is untouched) -> build_lwjgl_natives.sh -> <staging>/out
-#   INSTALL: install_natives.sh <tag> -> libs/meowlwjgl3/libs/arm64-v8a/lib*_<digits>.so
+#   INSTALL: install_natives.sh <tag> -> libs/meowlwjgls/libs/arm64-v8a/lib*_<digits>.so
 #            (+ natives.manifest)
 #
 # Usage:
-#   sh tools/lwjgl/rebuild_for_meowcraft.sh [tag]     # default tag: 3.3.3
+#   sh tools/lwjgl/rebuild_for_meowcraft.sh [tag]     # default tag: 3.4.3
 #
 # 3.3.x: libffi auto-resolved by build_lwjgl_natives.sh (source tree under
 #        stuffs/research, else the OHOS HNP prebuilt 3.4.4).
@@ -24,12 +24,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 PROJ="$(cd "$HERE/../.." && pwd)"      # Meowcraft project dir
 WS="$(cd "$PROJ/.." && pwd)"           # workspace: holds ref/ and stuffs/
 
-TAG="${1:-3.3.3}"
+TAG="${1:-3.4.3}"
 REF="$WS/ref/lwjgl3"
 WT="$WS/stuffs/research/lwjgl_natives-$TAG/src"
 BUILD="$WS/stuffs/research/lwjgl_natives-$TAG/build"
 STAGE="$WS/stuffs/research/lwjgl_natives-$TAG/out"
-COMPARE="$PROJ/libs/meowlwjgl3/libs/arm64-v8a"
+COMPARE="$PROJ/libs/meowlwjgls/libs/arm64-v8a"
 SDK="${OHOS_SDK_NATIVE:-$HOME/devecow/deveco_tools/sdk/default/openharmony/native}"
 
 [ -d "$REF/.git" ] || {

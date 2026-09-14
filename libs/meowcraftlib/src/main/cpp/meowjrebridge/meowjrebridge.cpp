@@ -100,10 +100,14 @@ bool GetStringArray(napi_env env, napi_value arr, std::vector<std::string>& out)
     for (uint32_t i = 0; i < len; ++i) {
         napi_value item = nullptr;
         napi_get_element(env, arr, i, &item);
-        char buf[2048] = {0};
         size_t n = 0;
-        if (napi_get_value_string_utf8(env, item, buf, sizeof(buf), &n) == napi_ok) {
-            out.emplace_back(buf, n);
+        if (napi_get_value_string_utf8(env, item, nullptr, 0, &n) != napi_ok) {
+            continue;
+        }
+        std::string buf(n + 1, '\0');
+        size_t written = 0;
+        if (napi_get_value_string_utf8(env, item, &buf[0], buf.size(), &written) == napi_ok) {
+            out.emplace_back(buf, 0, written);
         }
     }
     return true;
@@ -116,10 +120,18 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
     if (argc < 2) {
         return nullptr;
     }
-    char dirBuf[512] = {0};
-    size_t dirLen = 0;
-    napi_get_value_string_utf8(env, args[0], dirBuf, sizeof(dirBuf), &dirLen);
-    std::string filesDir(dirBuf, dirLen);
+    // filesDir：同样两段式（固定 buffer 会静默截断）。
+    std::string filesDir;
+    {
+        size_t dirLen = 0;
+        if (napi_get_value_string_utf8(env, args[0], nullptr, 0, &dirLen) == napi_ok) {
+            std::string dirBuf(dirLen + 1, '\0');
+            size_t written = 0;
+            if (napi_get_value_string_utf8(env, args[0], &dirBuf[0], dirBuf.size(), &written) == napi_ok) {
+                filesDir.assign(dirBuf, 0, written);
+            }
+        }
+    }
     std::vector<std::string> javaArgs;
     GetStringArray(env, args[1], javaArgs);
     if (javaArgs.empty()) {

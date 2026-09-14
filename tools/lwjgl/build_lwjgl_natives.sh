@@ -40,7 +40,7 @@
 #       [--compare DIR]
 #
 # Required:
-#   --src DIR         lwjgl3 source tree, checked out at the target tag (3.3.3)
+#   --src DIR         lwjgl3 source tree, checked out at the target tag (3.4.3)
 #   --sdk-native DIR  OHOS SDK native dir (build/cmake/ohos.toolchain.cmake + sysroot)
 #   --out DIR         output dir; receives liblwjgl{,_opengl,_stb}.so
 #
@@ -52,7 +52,7 @@
 #   --jni-inc DIR     dir with jni.h/jni_md.h (default: repo meowcraftbridge headers)
 #   --libffi-src DIR  full libffi source tree (configure.ac + src/) to build from
 #   --libffi-a FILE   prebuilt libffi.a for the target instead of building one
-#   --compare DIR     shipped-native reference dir (default: meowlwjgl3 libs/<arch>)
+#   --compare DIR     shipped-native reference dir (default: meowlwjgls libs/<arch>)
 #   -h, --help        show this help
 #
 # Emits stripped .so with the OHOS .permission/.codesign/.comment metadata
@@ -160,7 +160,7 @@ STB="$SRC/modules/lwjgl/stb"
   echo "error: lwjgl module dirs missing under $SRC/modules/lwjgl" >&2; exit 2; }
 
 # Shipped reference dir (auto only when --compare is omitted).
-[ -n "$COMPARE" ] || COMPARE="$ROOT/libs/meowlwjgl3/libs/$ARCH"
+[ -n "$COMPARE" ] || COMPARE="$ROOT/libs/meowlwjgls/libs/$ARCH"
 
 rm -rf "$BUILD"
 mkdir -p "$BUILD/obj-core" "$BUILD/obj-opengl" "$BUILD/obj-stb" "$BUILD/out"

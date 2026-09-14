@@ -63,9 +63,9 @@ classes (and the natives) are ours.
         |                                               (rule A: "later wins")
         v
   scratch overlay/*.java --javac--> scratch classes/*.class        (2) COMPILE
-        |                                 |  cp = the 8 module jars + jsr305 + jspecify
+        |                                 |  cp = the merged module jars (12 for 3.4.x) + jsr305 + jspecify
         |                                 |
-  official 8 module jars --unzip--> merge/  <-- copy org/** classes    (3) MERGE
+  official module jars (12 for 3.4.x) --unzip--> merge/  <-- copy org/** classes    (3) MERGE
         |                                          (4) strip META-INF/cacio/android
         |                                          (rule B: overlay classes copied LAST and
         |                                                   only under org/** => they win)
@@ -246,7 +246,7 @@ cp stuffs/research/meowcraft_extras.tar.gz entry/src/main/resources/rawfile/
 `finalize_for_meowcraft.sh` (the old single-`lwjgl.jar` swapper) is **retired** —
 `pack_extras.py` replaces it.
 
-## 4. Artifacts & digests (2026-09-11; natives measured 2026-09-10)
+## 4. Artifacts & digests (jar/tar re-measured 2026-09-14; natives 2026-09-10)
 
 | artifact | sha256 |
 |---|---|
@@ -263,7 +263,7 @@ Reproducibility caveats (verified 2026-09-10):
   `libs/meowlwjgls/libs/arm64-v8a`); a rebuild at a different path is functionally identical
   but has a different hash. Verified: **3× same-path rebuilds `cmp`-identical**.
 - `lwjgl-<ver>.jar`: deterministic (`pack_jar.py` + pinned Maven inputs). The digests in the table are
-  the current shipped jars (2026-09-11); the 3.4.3 jar now also carries the MC 26.3
+  the current shipped jars (2026-09-14: single modern generation + 5 compat shims); the 3.4.3 jar also carries the MC 26.3
   `sdl/vma/spvc/shaderc` modules. **Verified 2026-09-10**: two same-`--work` rebuilds of the
   then-current 3.4.3 jar were `cmp`-identical and reproduced their digest; the 3.3.3 jar likewise
   reproduces across rebuilds.

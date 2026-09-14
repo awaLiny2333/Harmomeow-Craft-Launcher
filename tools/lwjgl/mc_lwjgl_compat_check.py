@@ -172,13 +172,19 @@ def collect_refs(mc):
     return refs, class_refs
 
 
-# Members every class inherits from java/lang/Object: those live in the JDK, not in the
-# LWJGL jar, so "declared nowhere in the jar" is expected and is NOT a compat gap.
-JDK_OBJECT_MEMBERS = {
+# Members a class inherits from JDK supertypes (Object / Enum): those live in the JDK, not
+# in the LWJGL jar, so "declared nowhere in the jar" is expected and is NOT a compat gap.
+# (e.g. org.lwjgl.system.Platform$Architecture extends java/lang/Enum -> name()/ordinal().)
+JDK_INHERITED_MEMBERS = {
+    # java.lang.Object
     ("equals", "(Ljava/lang/Object;)Z"), ("hashCode", "()I"),
     ("toString", "()Ljava/lang/String;"), ("getClass", "()Ljava/lang/Class;"),
     ("clone", "()Ljava/lang/Object;"), ("notify", "()V"), ("notifyAll", "()V"),
     ("wait", "()V"), ("wait", "(J)V"), ("finalize", "()V"),
+    # java.lang.Enum
+    ("name", "()Ljava/lang/String;"), ("ordinal", "()I"),
+    ("compareTo", "(Ljava/lang/Enum;)I"), ("compareTo", "(Ljava/lang/Object;)I"),
+    ("getDeclaringClass", "()Ljava/lang/Class;"),
 }
 
 
@@ -200,7 +206,7 @@ def main():
                                | {c for c in class_refs if c not in classes})
         missing_member = sorted({(o, n, d) for (o, n, d) in refs
                                  if o in classes and not has_member(info, o, n, d)
-                                 and (n, d) not in JDK_OBJECT_MEMBERS})
+                                 and (n, d) not in JDK_INHERITED_MEMBERS})
         print("\n== %s  (%d org/lwjgl refs)" % (mc, len(refs)))
         print("   missing classes (%d): %s" % (len(missing_class), ", ".join(missing_class)))
         print("   missing members (%d):" % len(missing_member))

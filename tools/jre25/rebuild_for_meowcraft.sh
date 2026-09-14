@@ -89,7 +89,7 @@ echo "== 校验 =="
 python3 "$HERE/verify_symbols.py" "$OUT" --libc "$SDK/sysroot/usr/lib/aarch64-linux-ohos/libc.so" \
     --extra "$SDK/sysroot/usr/lib/aarch64-linux-ohos/libz.so" \
     --extra "$SDK/llvm/lib/aarch64-linux-ohos/libc++_shared.so" \
-    --extra "${MEOW_FREETYPE:-$HERE/../../libs/meowlwjgl3/libs/arm64-v8a/libfreetype.so}"
+    --extra "${MEOW_FREETYPE:-$HERE/../../libs/meowlwjgls/libs/arm64-v8a/libfreetype.so}"
 
 cat <<EOF
 

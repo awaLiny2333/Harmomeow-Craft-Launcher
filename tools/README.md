@@ -34,7 +34,7 @@ commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61
 
 | 工具 | 产出 | 说明 |
 |---|---|---|
-| `lwjgl/` | `lwjgl-<ver>.jar`、`liblwjgl{,_opengl,_stb}_<digits>.so`、`libffi.a`、`meowcraft_extras.tar.gz` | LWJGL **两代并存**（3.3.3 + 3.4.3，natives 统一后缀 `_333`/`_343`）；含净室 overlay、GLCapabilities 生成器、libffi 交叉编、`install_natives.sh`（扁平目录治理）、多件打包 |
+| `lwjgl/` | `lwjgl-<ver>.jar`、`liblwjgl{,_opengl,_stb}_<digits>.so`、`libffi.a`、`meowcraft_extras.tar.gz` | LWJGL 现代**单代 3.4.3**（含 3.4.x 兼容 shim；旧 3.3.3 已于 2026-09-14 退役）；含净室 overlay、GLCapabilities 生成器、libffi 交叉编、`install_natives.sh`（扁平目录治理）、多件打包 |
 | `lwjgl2/` | `liblwjgl.so` | 自编 **LWJGL2** OHOS native（aarch64 裸名 `liblwjgl.so`，不带后缀）；**MC 1.6.x–1.12.2** 的 legacy 平台绑定（JNI_VERSION=19 跨 2.9.x 稳定）；只编 native，不重编 MC 的 `lwjgl-2.9.x.jar` |
 | `gl4es/` | `libgl4es.so` | 自编 **gl4es v1.1.7** OHOS 移植（桌面固定管线 GL → 原生 GLES 翻译层）；**MC ≤1.16**（含 1.6.x–1.12.2，经 LWJGL2 `extgl` 取址）的渲染翻译层 |
 | `openal/` | `libopenal.so` | OpenAL Soft **1.24.3** OHOS 移植（OHAudio 默认后端 + 导出 `ALC_SOFT_system_events`） |
@@ -54,7 +54,7 @@ commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61
 外部 SDK/仓就位后（§1）：
 
 ```sh
-# A. LWJGL 两代（javac 那步由人跑；见 tools/lwjgl/README.md）
+# A. LWJGL 单代 3.4.3（javac 那步由人跑；见 tools/lwjgl/README.md）
 sh tools/lwjgl/build_libffi.sh --src stuffs/research/libffi/libffi-3.8.0 \
     --sdk-native $SDK/native --out stuffs/research/libffi/out-ohos            # ① libffi 3.8.0（3.4.x natives 用）
 git -C ref/lwjgl3 worktree add --detach ref/lwjgl3-3.4.3 3.4.3               # ② 3.4.3 源码树
@@ -64,7 +64,7 @@ sh tools/lwjgl/build_lwjgl_jar.sh --version 3.4.3 --overlay tools/lwjgl/deltas/o
     --overlay tools/lwjgl/deltas/overlay-3.4.3      # ③b 3.4.3 jar（人跑）；≥3.4.x 自动补 sdl/vma/spvc/shaderc 模块（MC 26.3）
 sh tools/lwjgl/rebuild_for_meowcraft.sh 3.3.3                                # ④a 3.3.3 natives → 构建并安装 liblwjgl*_333.so
 sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3                                # ④b 3.4.3 natives → liblwjgl*_343.so（自动带 libffi）
-# （natives 由 install_natives.sh 统一命名 + 维护 libs/meowlwjgl3/libs/natives.manifest；勿手工拷/改名）
+# （natives 由 install_natives.sh 统一命名 + 维护 libs/meowlwjgls/libs/natives.manifest；勿手工拷/改名）
 python3 tools/lwjgl/pack_extras.py --base-tar entry/.../rawfile/meowcraft_extras.tar.gz \
     --jar lwjgl-3.3.3.jar=… --jar lwjgl-3.4.3.jar=… --out entry/.../rawfile/meowcraft_extras.tar.gz   # ⑤ 组包
 
@@ -105,7 +105,7 @@ sh tools/jre26/rebuild_for_meowcraft.sh \
     --out          stuffs/research/jdk26/out
 
 # C. 部署（改 libs 后必须先清模块 build；见下）
-rm -rf libs/{meowlwjgl3,meowjre,meowcraftlib}/build entry/build
+rm -rf libs/{meowlwjgls,meowjre,meowcraftlib}/build entry/build
 devecocli build --modules entry meowjre      # 注意：不带 --modules 只出 HAP，不出 HSP
 devecocli run --module entry meowjre --device <serial>
 ```

@@ -106,12 +106,29 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   // ~2800 次/秒的小图上传）会被「每次同步」拖垮 → 对 ≤1.21.x 关掉守卫的同步（守卫退化为纯透传，
   // glthread 收益照拿）。见 notes 20-design/lwjgl3-并代可行性.md / glthread-B方案-GL-guard.md §2。
   const guardSyncNone = glthread && !guardNeedsSync(mcVersion);
+  const userRenderEnv = settings.renderEnv();
   const renderEnv = `GALLIUM_THREAD=${glthread ? '1' : '0'}`
     + (guardSyncNone ? '\nMEOW_GUARD_SYNC=none' : '')
-    + `\n${settings.renderEnv()}`;
+    + `\n${userRenderEnv}`;
+  // 用户「额外渲染环境变量」里若**显式**写 none，会让守卫对"本需要同步的版本"也纯透传（fail-open）——
+  // 不改用户语义（用户优先），但记一条 WARN 便于实机排障（见 notes 00-current/运行时环境变量.md 回滚阶梯）。
+  if (glthread && guardNeedsSync(mcVersion) && userForcedGuardSyncNone(userRenderEnv)) {
+    hilog.warn(LOG_DOMAIN, LOG_TAG,
+      'extra render env forces MEOW_GUARD_SYNC=none on a version that needs the guard sync (UAF risk)');
+  }
   hilog.info(LOG_DOMAIN, LOG_TAG, 'glthread=%{public}s guardSync=%{public}s renderer=%{public}s',
     glthread ? 'on' : 'off', guardSyncNone ? 'none(auto)' : 'per-call', renderer.env);
   await startJvm(ctx, [java, ...argv], renderer.lib, renderer.env, renderer.glProfile, renderEnv);
+}
+
+/** 用户「额外渲染环境变量」里是否**显式**要求 `MEOW_GUARD_SYNC=none`（格式 `K=V`，换行或 `;` 分隔）。 */
+function userForcedGuardSyncNone(env: string): boolean {
+  for (const part of env.split(/[\n;]/)) {
+    if (part.trim() === 'MEOW_GUARD_SYNC=none') {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** 读取设备 CPU 芯片型号（deviceInfo.chipType，API 21+）；失败/空返回空串。 */

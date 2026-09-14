@@ -117,6 +117,7 @@ function lwjglClasspathOk(dir: string, legacy: boolean, keepGenJar: string): boo
   let ours = 0;
   let oursKeep = 0;
   let mc2 = 0;
+  let stray = 0;
   let entries: string[] = [];
   try {
     entries = fileIo.listFileSync(dir);
@@ -134,7 +135,15 @@ function lwjglClasspathOk(dir: string, legacy: boolean, keepGenJar: string): boo
       }
     } else if (name.startsWith('lwjgl-2.') || name.startsWith('lwjgl_util-2.')) {
       mc2++;
+    } else if (/^lwjgl-\d/.test(name)) {
+      // 其它 `lwjgl-<数字>*`（如退役的 `lwjgl-3.3.3.jar` 若 prune 没删掉）= 第二份 org.lwjgl
+      // 提供者；只匹配"lwjgl-数字"以免误伤 `lwjgl_util-2.x` 或第三方 `lwjgl-helper.jar`。
+      stray++;
     }
+  }
+  if (stray > 0) {
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'stray lwjgl jar(s) in classpath dir: %{public}d', stray);
+    return false;
   }
   if (legacy) {
     return ours === 0 && mc2 >= 1;
@@ -142,8 +151,8 @@ function lwjglClasspathOk(dir: string, legacy: boolean, keepGenJar: string): boo
   return ours === 1 && oursKeep === 1 && mc2 === 0;
 }
 
-/** 删除**我们的** lwjgl jar 中"不该留的那一份"（3.3.3 已退役，但旧 `cacheDir/mc-cp/<id>/`
- *  可能仍残留它；避免 -cp 双份类冲突）。只匹配 `LWJGL_GEN_JARS` 里的**精确名**——**绝不能**用
+/** 删除**我们的** lwjgl jar 中"不该留的那一份"（现在只有一代，故正常情况什么都不删；主要是给
+ *  "旧 cacheDir 残留的 3.3.3"兜底）。只匹配 `LWJGL_GEN_JARS` 里的**精确名**——**绝不能**用
  *  `lwjgl-` 前缀，否则会误删 MC 自带的 LWJGL2（`lwjgl-2.9.x.jar`，legacy ≤1.12.2 需要）。 */
 function dropOtherLwjglJar(dir: string, keepJar: string): void {
   const ours = new Set<string>(LWJGL_GEN_JARS);

@@ -4,7 +4,7 @@
 # This is the "jar" half of the lwjgl self-build (the natives half is
 # build_lwjgl_natives.sh). It reproduces the shipped fat lwjgl.jar recipe:
 #
-#   official LWJGL modules (12)  +  clean-room GLFW overlay (~19 java files)
+#   official LWJGL modules (12)  +  clean-room GLFW overlay (~20 java files)
 #   -> one merged jar, META-INF/cacio stripped, overlay wins on collisions.
 #
 # The overlay lives in tools/lwjgl/deltas/overlay; its RendererInit class matches
@@ -15,7 +15,7 @@
 #
 # Usage:
 #   sh build_lwjgl_jar.sh --overlay DIR [--overlay DIR2 ...] [--official DIR]
-#                         [--out DIR] [--work DIR] [--version 3.3.3] [--cache DIR]
+#                         [--out DIR] [--work DIR] [--version 3.4.3] [--cache DIR]
 #                         [--maven-base URL] [--offline] [--pack-jar FILE] [--manifest FILE]
 #
 # The official LWJGL modules are pulled from Maven Central (release, sha1-verified)

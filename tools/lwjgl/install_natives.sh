@@ -16,7 +16,7 @@
 #   sh tools/lwjgl/install_natives.sh --sdl FILE [--libs DIR]       # install our SDL3 fork as libSDL3.so (tag common)
 #   sh tools/lwjgl/install_natives.sh --native NAME=PATH [--libs DIR]  # install a gen-agnostic native (tag common)
 #
-#   <tag>        LWJGL generation, e.g. 3.3.3 -> suffix _333
+#   <tag>        LWJGL generation, e.g. 3.4.3 -> suffix _343
 #   --src DIR    dir with liblwjgl{,_opengl,_stb}.so (default: auto-detect under
 #                stuffs/research/lwjgl_natives[-<tag>]/out)
 #   --sdl FILE   our SDL3 build (tools/sdl/out/libSDL3.so) -> installed as libSDL3.so
