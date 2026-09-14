@@ -252,10 +252,10 @@ cp stuffs/research/meowcraft_extras.tar.gz entry/src/main/resources/rawfile/
 
 | artifact | sha256 |
 |---|---|
-| `lwjgl-3.4.3.jar` (carries the 5 3.4.x compat shims) | `b9b306a0a0318d7cfe998b222031abf9b27a5a7285a59d7ba03839e25e693e03` |
+| `lwjgl-3.4.3.jar` (carries the 5 3.4.x compat shims) | `7783219a6011a115781ea7abc38fc5967db1c8a8fc294308973b717c865088bf` |
 | `liblwjgl_343.so` / `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (3.4.3) | `16298280…` / `e1f1413b…` / `8eb4a1b8…` |
 | `libffi.a` (3.8.0, aarch64-linux-ohos) | `238cadb7bfa70ca5b4f718cc66878f1f3d26107bc6f6b0e272380c3f3f1fda5b` |
-| `meowcraft_extras.tar.gz` (shipped; single modern generation) | `f8437074206fec19a29bd6b67b8274fd333ca1ad0ca8b90735688405dd2221bf` |
+| `meowcraft_extras.tar.gz` (shipped; single modern generation) | `b76f45f78a3af9bb279aa7e881a3d4794f65f2522fdef04204a93890ba8592eb` |
 
 Reproducibility caveats (verified 2026-09-10):
 - **Native builds are byte-reproducible only when the absolute `--src`/`--out` paths are
