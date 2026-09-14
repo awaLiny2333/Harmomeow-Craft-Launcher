@@ -55,24 +55,24 @@ export const CLIENT_MOD_NAME: string = 'Harmomeow Craft';
 
 // ---- staging（启动支持 jar 载体）----
 /** 内容令牌：meowcraft_extras.tar.gz 内容变更（换 jar / 打补丁）时递增，强制重抽缓存。 */
-export const EXTRAS_VERSION: string = '20260913-fabric2';
-/** 平铺目录必须保留的公共 jar（其余 .jar 视为残留删除；各代 lwjgl jar 按版本另行保留）。 */
+export const EXTRAS_VERSION: string = '20260914-lwjgl343only';
+/** 平铺目录必须保留的公共 jar（其余 .jar 视为残留删除；lwjgl 世代 jar 按版本另行保留）。 */
 export const EXPECTED_EXTRA_JARS: string[] = ['launcher.jar', 'gson-for-launcher.jar'];
-// ---- LWJGL 世代（多版本并存：随包多代 jar+natives，按 MC 版本选一）----
+// ---- LWJGL（**现代只随包一代**：3.4.3 服务全部 LWJGL3 版本；legacy ≤1.12.2 仍走 MC 的 LWJGL2）----
 // 命名约定与 tools/lwjgl 一致：jar = `lwjgl-<gen>.jar`；native = `liblwjgl{,_opengl,_stb}_<gen 去点>.so`
 // （由 tools/lwjgl/install_natives.sh 铺进扁平目录）。世代选择表见 MinecraftLauncher.lwjglGeneration。
+// 注：3.4.3 之所以能服务 1.13–1.21.x，靠我们 overlay 里的 **3.4.x 兼容 shim**
+// （struct mallocStack ×3 / STBImageResize.nstbir_resize_uint8 / tinyfd_messageBox）——
+// 见 tools/lwjgl/README.md「3.4.x compat shims」与 notes 20-design/lwjgl3-并代可行性.md。
 export const LWJGL_JAR_PREFIX: string = 'lwjgl-';
-/** bundled 库名映射器类：按世代把 native 名映射到后缀名（多世代同目录共存）。
+/** bundled 库名映射器类：把 native 名映射到世代后缀名（与 legacy 的无后缀 `liblwjgl.so` 共存）。
  *  实现见 tools/lwjgl/deltas/overlay/org/lwjgl/system/MeowBundledNameMapper.java。 */
 export const LWJGL_NAME_MAPPER: string = 'org.lwjgl.system.MeowBundledNameMapper';
-/** 世代 1：LWJGL 3.3.3（MC 1.17 – 1.21.x；也是 ≤3.3 的归并地板）。 */
-export const LWJGL_GEN_333: string = '3.3.3';
-/** 世代 2：LWJGL 3.4.3（MC ≥ 1.22 / 26.x）。 */
+/** 唯一 LWJGL3 世代：3.4.3（服务 MC 1.13.x–1.21.x 与 ≥1.22 / 26.x）。 */
 export const LWJGL_GEN_343: string = '3.4.3';
-/** 我们随包的 LWJGL 世代 jar 名（= `meowcraft_extras.tar.gz` 里那两代合并 jar）。
+/** 我们随包的 LWJGL 世代 jar 名（= `meowcraft_extras.tar.gz` 里那一代合并 jar）。
  *  classpath 平铺目录里必须**只有一个** `org.lwjgl` 提供者 → `ClasspathStager` 用它精确裁决
- *  保留/删除哪一代（`dropOtherLwjglJar` + 形态断言）。加一代时**必须**同步这里。 */
+ *  保留/删除（`dropOtherLwjglJar` + 形态断言），并防误删 legacy 的 `lwjgl-2.9.x.jar`。 */
 export const LWJGL_GEN_JARS: string[] = [
-  `${LWJGL_JAR_PREFIX}${LWJGL_GEN_333}.jar`,
   `${LWJGL_JAR_PREFIX}${LWJGL_GEN_343}.jar`,
 ];

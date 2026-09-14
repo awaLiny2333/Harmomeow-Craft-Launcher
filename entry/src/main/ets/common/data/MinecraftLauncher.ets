@@ -5,7 +5,7 @@ import { RENDERER_LIB, VULKAN_LIB_DISABLED, WINDOW_DEFAULT_W, WINDOW_DEFAULT_H,
   SPOOF_OS_NAME, SPOOF_OS_VERSION, SPOOF_CPU_NAME,
   LOCALE_LANGUAGE, LOCALE_COUNTRY, LOCALE_TIMEZONE, RULE_OS_NAME, RULE_OS_ARCH,
   OFFLINE_USERNAME, LAUNCHER_NAME, LAUNCHER_VERSION,
-  CLIENT_MOD_NAME, LWJGL_GEN_333, LWJGL_GEN_343,
+  CLIENT_MOD_NAME, LWJGL_GEN_343,
   LWJGL_NAME_MAPPER } from '../constants/LaunchDefaults';
 import { MEOW_CLASS_LOADER, MEOW_MAIN_CLASS } from '../constants/LaunchContract';
 import { NATIVES_DIR } from '../constants/Paths';
@@ -193,7 +193,7 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     argv.push(`-Djna.boot.library.path=${opts.nativeLibsDir}`);
     argv.push(`-Dorg.lwjgl.librarypath=${opts.nativeLibsDir}`);
     argv.push(`-Djava.library.path=${craft}${opts.nativeLibsDir}:${nativesDir}`);
-    // freetype 由随包 libfreetype.so 提供（自编，来自 meowlwjgl3 HAR；libfontmanager 硬依赖，勿改名覆盖）。
+    // freetype 由随包 libfreetype.so 提供（自编，来自 meowlwjgls HAR；libfontmanager 硬依赖，勿改名覆盖）。
   }
 
   // 自研桥模式固定参数（与历史启动器 JVMLauncher overridableArguments 全量对齐——LWJGL 桥与 MeowClassLoader 需要）。
@@ -483,20 +483,21 @@ interface LwjglGenRule {
 }
 
 /**
- * LWJGL 世代表（**按门槛降序**）。就近归并：取「声明的 lwjgl 版本 ≥ 门槛」的**最高**世代；
- * 低于所有门槛（含无该依赖/极老版本）→ 落到表中**最老**世代（我们的地板）。
- * 故**永不选到未随包的世代**。新增一代：加一行（门槛 = 该世代的 lwjgl 版本）+ 随包 jar/natives
- * （见 tools/lwjgl/：`build_lwjgl_jar.sh` + `install_natives.sh <tag>`）。
+ * LWJGL 世代表（**按门槛降序**）。**现代只随包一代（3.4.3）** → 任何 LWJGL3 声明（含更老的
+ * 3.1.x/3.2.x/3.3.x）都归并到它；表最后一行即"地板"，未命中任何门槛也落到它。
+ * legacy（≤1.12.2，声明 `org.lwjgl.lwjgl:*`）不走此表——由 `isLegacyLwjgl` 单独处理
+ * （用 MC 自带的 LWJGL2 + 我们自编的 `liblwjgl.so`）。
+ * 现代能统一到 3.4.3，靠我们 overlay 里的 **3.4.x 兼容 shim**（见 tools/lwjgl/README.md）。
+ * 将来若要并存多代：按门槛降序加行即可（门槛 = 该世代的 lwjgl 版本）。
  */
 const LWJGL_GEN_TABLE: LwjglGenRule[] = [
   { minMajor: 3, minMinor: 4, gen: LWJGL_GEN_343 },
-  { minMajor: 3, minMinor: 3, gen: LWJGL_GEN_333 },
 ];
 
 /**
- * 从版本 json 声明的 `org.lwjgl:lwjgl:<ver>` 推断 LWJGL 世代。跨代 API 不兼容，故按代选随包件；
- * 未知/更老版本就近归并到最老世代（不会指向未随包的世代；若某版本真缺 API，运行期显式报
- * `NoSuchMethodError`，即"该加一代"的信号）。
+ * 从版本 json 声明的 `org.lwjgl:lwjgl:<ver>` 推断 LWJGL 世代。现代只有一代（3.4.3）→ 一律返回它；
+ * 更老/未知/无该依赖也归并到它（不会指向未随包的世代）。若某版本真缺 API，运行期显式报
+ * `NoSuchMethodError`，即"该补 shim / 该加一代"的信号（先跑 tools/lwjgl/mc_lwjgl_compat_check.py）。
  */
 export function lwjglGeneration(jsonPath: string): string {
   const resolved = resolveVersionByPath(jsonPath);

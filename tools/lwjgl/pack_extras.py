@@ -48,8 +48,10 @@ def main():
     members = {}
     if os.path.exists(args.base_tar):
         members.update(read_base(args.base_tar))
-    # replace any base lwjgl jar (old single-generation layout) with the gen jars
-    for old in [k for k in members if k == "lwjgl.jar"]:
+    # drop every lwjgl jar the base tar carries -- the old single-generation `lwjgl.jar`
+    # AND any per-generation `lwjgl-<ver>.jar`. Only the --jar set below ships. Without
+    # this, retiring a generation would silently keep its stale jar in the bundle.
+    for old in [k for k in members if k == "lwjgl.jar" or (k.startswith("lwjgl-") and k.endswith(".jar"))]:
         del members[old]
     # drop stale members (e.g. a previous layout's native subdirectories)
     for pfx in args.drop_prefix:

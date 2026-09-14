@@ -7,6 +7,6 @@
   "license": "Apache-2.0",
   "dependencies": {
     "meowcraftlib": "file:../meowcraftlib",
-    "meowlwjgl3": "file:../meowlwjgl3"
+    "meowlwjgls": "file:../meowlwjgls"
   }
 }

@@ -1,9 +1,0 @@
-{
-  "name": "meowlwjgl3",
-  "version": "1.0.0",
-  "description": "Meowcraft LWJGL3/OpenAL/JNA/freetype components HAR (merged into each JRE HSP)",
-  "main": "Index.ets",
-  "author": "",
-  "license": "Apache-2.0",
-  "dependencies": {}
-}

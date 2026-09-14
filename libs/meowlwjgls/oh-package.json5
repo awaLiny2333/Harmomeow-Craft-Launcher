@@ -1,0 +1,9 @@
+{
+  "name": "meowlwjgls",
+  "version": "1.0.0",
+  "description": "Meowcraft LWJGL components HAR: LWJGL3 (modern, single generation 3.4.3) + LWJGL2 (legacy <=1.12.2) + OpenAL + freetype (merged into the JRE HSP)",
+  "main": "Index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {}
+}

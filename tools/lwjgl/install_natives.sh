@@ -21,7 +21,7 @@
 #                stuffs/research/lwjgl_natives[-<tag>]/out)
 #   --sdl FILE   our SDL3 build (tools/sdl/out/libSDL3.so) -> installed as libSDL3.so
 #   --native     NAME=PATH, e.g. libshaderc.so=stuffs/research/shaderc/out/libshaderc.so
-#   --libs DIR   flat packaged dir (default libs/meowlwjgl3/libs/arm64-v8a)
+#   --libs DIR   flat packaged dir (default libs/meowlwjgls/libs/arm64-v8a)
 #
 # Manifest: <libs>/../natives.manifest, lines "<tag>  <file>  <sha256>".
 set -e
@@ -30,7 +30,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 PROJ="$(cd "$HERE/../.." && pwd)"
 WS="$(cd "$PROJ/.." && pwd)"
 
-TAG=""; MODE=install; SRC=""; SDL_SO=""; NATIVE_SPEC=""; LIBS="$PROJ/libs/meowlwjgl3/libs/arm64-v8a"
+TAG=""; MODE=install; SRC=""; SDL_SO=""; NATIVE_SPEC=""; LIBS="$PROJ/libs/meowlwjgls/libs/arm64-v8a"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --clean) MODE=clean; TAG="$2"; shift 2 ;;
