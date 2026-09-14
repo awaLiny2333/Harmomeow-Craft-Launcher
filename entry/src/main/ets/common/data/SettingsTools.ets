@@ -4,9 +4,10 @@ import { STORE_NAME, KEY_SHOW_INPUT_RATE, KEY_CPU_COUNT, KEY_MAX_HEAP_MB,
   KEY_VERSION_ISOLATION, KEY_SCROLL_SPEED, KEY_DOWNLOAD_SOURCE,
   KEY_FABRIC_SOURCE, KEY_VERSION_TYPE, KEY_RENDERER_OVERRIDES, SCROLL_SPEED_DEFAULT_PERCENT,
   KEY_RENDER_SCALE, RENDER_SCALE_DEFAULT, RENDER_SCALE_OPTIONS,
-  KEY_RENDER_ENV, KEY_JVM_ARGS, KEY_MS_CLIENT_ID, KEY_LAST_LAUNCH, KEY_GLTHREAD } from '../constants/Constants';
+  KEY_RENDER_ENV, KEY_JVM_ARGS, KEY_MS_CLIENT_ID, KEY_LAST_LAUNCH, KEY_GLTHREAD,
+  KEY_GLTHREAD_OFF, KEY_GLTHREAD_ON } from '../constants/Constants';
 import { SOURCE_MIRROR, TYPE_RELEASE } from '../constants/DownloadContract';
-import { RENDERER_AUTO } from '../constants/LaunchDefaults';
+import { RENDERER_AUTO, GLTHREAD_DEFAULT, GLTHREAD_ON, GLTHREAD_OFF } from '../constants/LaunchDefaults';
 
 /** 逐版本渲染后端覆盖条目（backend ∈ auto/openglv4/gl4es）。 */
 export interface RendererOverride {
@@ -139,16 +140,20 @@ export class SettingsTools {
     return this.versionIsolationIds().includes(versionId);
   }
 
-  /** 删除版本时清理其持久化设置：隔离开关 + 渲染后端覆盖（一次落盘）。 */
+  /** 删除版本时清理其持久化设置：隔离开关 + 渲染后端覆盖 + 线程化渲染覆盖（一次落盘）。 */
   clearVersion(versionId: string): void {
     if (this.store === null || versionId.length === 0) {
       return;
     }
     const iso = this.versionIsolationIds().filter((v: string) => v !== versionId);
     const ovr = this.rendererOverrides().filter((o: RendererOverride) => o.id !== versionId);
+    const gtOff = this.glThreadOffIds().filter((v: string) => v !== versionId);
+    const gtOn = this.glThreadOnIds().filter((v: string) => v !== versionId);
     try {
       this.store.putSync(KEY_VERSION_ISOLATION, JSON.stringify(iso));
       this.store.putSync(KEY_RENDERER_OVERRIDES, JSON.stringify(ovr));
+      this.store.putSync(KEY_GLTHREAD_OFF, JSON.stringify(gtOff));
+      this.store.putSync(KEY_GLTHREAD_ON, JSON.stringify(gtOn));
       this.store.flushSync();
     } catch {
       return;
@@ -480,6 +485,76 @@ export class SettingsTools {
       this.store.flushSync();
     } catch {
       return;
+    }
+  }
+
+  // ---- 逐版本「线程化渲染」覆盖（主进程 UI 写，游戏进程 GameLauncher 读）----
+  // 存两个 JSON 字符串数组（强制关 / 强制开），未列入 = 跟随全局开关（默认开）。
+  // 形态与「版本隔离」的 id 列表一致（零迁移成本）；因默认开，实际以"关表"为主。
+
+  /** 强制关 glthread 的版本 id 列表（无记录/解析失败 → 空）。 */
+  glThreadOffIds(): string[] {
+    return this.idList(KEY_GLTHREAD_OFF);
+  }
+
+  /** 强制开 glthread 的版本 id 列表（全局关时用来"只给某版本开"）。 */
+  glThreadOnIds(): string[] {
+    return this.idList(KEY_GLTHREAD_ON);
+  }
+
+  /** 某版本的「线程化渲染」覆盖：`default`（跟随全局）/ `on` / `off`。 */
+  glThreadOverride(versionId: string): string {
+    if (this.glThreadOnIds().includes(versionId)) {
+      return GLTHREAD_ON;
+    }
+    if (this.glThreadOffIds().includes(versionId)) {
+      return GLTHREAD_OFF;
+    }
+    return GLTHREAD_DEFAULT;
+  }
+
+  /** 写入某版本的「线程化渲染」覆盖（default = 清除该版本的两张表）；立即落盘。 */
+  setGlThreadOverride(versionId: string, value: string): void {
+    if (this.store === null || versionId.length === 0) {
+      return;
+    }
+    const off = this.glThreadOffIds().filter((v: string) => v !== versionId);
+    const on = this.glThreadOnIds().filter((v: string) => v !== versionId);
+    if (value === GLTHREAD_OFF) {
+      off.push(versionId);
+    } else if (value === GLTHREAD_ON) {
+      on.push(versionId);
+    }
+    try {
+      this.store.putSync(KEY_GLTHREAD_OFF, JSON.stringify(off));
+      this.store.putSync(KEY_GLTHREAD_ON, JSON.stringify(on));
+      this.store.flushSync();
+    } catch {
+      return;
+    }
+  }
+
+  /** 读一个"版本 id 字符串数组"设置（无记录/解析失败 → 空数组）。 */
+  private idList(key: string): string[] {
+    if (this.store === null) {
+      return [];
+    }
+    let raw = '';
+    try {
+      raw = this.store.getSync(key, '') as string;
+    } catch {
+      return [];
+    }
+    if (raw.length === 0) {
+      return [];
+    }
+    try {
+      const ids = JSON.parse(raw) as string[];
+      return Array.isArray(ids)
+        ? ids.filter((v: string) => typeof v === 'string')
+        : [];
+    } catch {
+      return [];
     }
   }
 

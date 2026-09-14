@@ -169,6 +169,14 @@
       "value": "推荐 = 自动（≥1.17 GL / ≤1.16 GL4ES）"
     },
     {
+      "name": "version_glthread_label",
+      "value": "线程化渲染"
+    },
+    {
+      "name": "version_glthread_hint",
+      "value": "仅 OpenGLv4 后端可用；个别版本掉帧时可关掉试试"
+    },
+    {
       "name": "version_delete",
       "value": "删除版本"
     },
@@ -203,6 +211,18 @@
     {
       "name": "renderer_gl4es",
       "value": "GL4ES（旧版本兼容）"
+    },
+    {
+      "name": "glthread_default",
+      "value": "默认（开）"
+    },
+    {
+      "name": "glthread_on",
+      "value": "开"
+    },
+    {
+      "name": "glthread_off",
+      "value": "关"
     },
     {
       "name": "java_env_title",
@@ -262,7 +282,7 @@
     },
     {
       "name": "advanced_glthread_hint",
-      "value": "GPU 调用交独立线程，帧数更高、加载稍慢；仅 1.17 及以上版本生效，如遇异常可关闭"
+      "value": "GPU 调用交独立线程，帧数更高、加载稍慢；仅 OpenGLv4 后端生效（各版本还可在“编辑版本”里单独覆盖），如遇异常可关闭"
     },
     {
       "name": "advanced_cpu_count",

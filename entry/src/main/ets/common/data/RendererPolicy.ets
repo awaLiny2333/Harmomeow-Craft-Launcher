@@ -40,6 +40,26 @@ function isLegacyVersion(mcVersion: string): boolean {
   return false;
 }
 
+/**
+ * GL guard 是否需要「每次 glTexSubImage2D 后同步」（= 不给它 `MEOW_GUARD_SYNC=none` 时的默认行为）。
+ *
+ * 实测（见 notes 20-design/glthread-B方案-GL-guard.md §2.2、§2.4）：
+ * - **26.x** 在 glthread 下会因 Mesa 的 glthread UAF（`tc_texture_subdata` 不拷贝客户端数据，
+ *   延后到 flush 才读）间歇崩溃（~50%）→ **必须每次同步**；
+ * - **≤1.21.x** 从未因它崩过（数十次实机），而 1.21.10 主菜单会以 **~2800 次/秒**的小图上传
+ *   （1x1…32x32）把「每次同步」放大成灾难性掉帧 → **必须不同步**（glthread 的收益照拿）。
+ * 认不出/更老的版本 → 保守返回 true（同步）。
+ */
+export function guardNeedsSync(mcVersion: string): boolean {
+  const m: RegExpMatchArray | null = mcVersion.match(/^(\d+)\.(\d+)/);
+  if (m === null) {
+    return true;
+  }
+  const major = parseInt(m[1]);
+  const minor = parseInt(m[2]);
+  return !(major === 1 && minor <= 21);
+}
+
 /** `mcVersion` = 版本 json 的内部 `id`（真 MC 版本号），**不是实例名**。 */
 export function rendererForVersion(mcVersion: string, backend: string): RendererChoice {
   // GL profile 永远按版本判定：<1.17 用固定管线必须 compatibility，≥1.17 用 core。

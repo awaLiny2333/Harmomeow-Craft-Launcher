@@ -57,6 +57,9 @@ export const KEY_JVM_ARGS: string = 'jvm_args';
 /** 线程化渲染（glthread，默认**开**）：GPU 调用交独立线程（提帧、加载期略慢）。仅现代渲染路径启用；
  *  ≤1.16/legacy 走 gl4es 不受益，保持关；异常时可关。见 notes 20-design/glthread-B方案-GL-guard.md。 */
 export const KEY_GLTHREAD: string = 'glthread';
+/** 逐版本「线程化渲染」覆盖：强制**关**列表 / 强制**开**列表（JSON 字符串数组；未列入 = 跟随全局开关）。 */
+export const KEY_GLTHREAD_OFF: string = 'glthread_off';
+export const KEY_GLTHREAD_ON: string = 'glthread_on';
 
 // 布局：通用间距与透明度（单位 vp，透明度 0~1）。
 // 统一的布局常量保证各组件间距视觉一致，弱化次要文字用 OPACITY_SECONDARY 而不是改字号。

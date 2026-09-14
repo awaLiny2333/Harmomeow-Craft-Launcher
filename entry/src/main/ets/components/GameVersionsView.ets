@@ -9,7 +9,9 @@ import {
 import {
   SOURCE_MIRROR, SOURCE_OFFICIAL, TYPE_OTHER, TYPE_RELEASE, TYPE_SNAPSHOT
 } from '../common/constants/DownloadContract';
-import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES } from '../common/constants/LaunchDefaults';
+import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES,
+  GLTHREAD_DEFAULT, GLTHREAD_ON, GLTHREAD_OFF } from '../common/constants/LaunchDefaults';
+import { rendererForVersion } from '../common/data/RendererPolicy';
 import { LOADER_FABRIC, LOADER_LEGACY_FABRIC, VERSION_FORM_VANILLA } from '../common/data/VersionResolver';
 import { SettingsTools, RendererOverride } from '../common/data/SettingsTools';
 import {
@@ -78,6 +80,10 @@ export struct GameVersionsView {
   /** 逐版本渲染后端覆盖（编辑面板的下拉；与 Preferences 同源）。 */
   @Local overrides: RendererOverride[] = [];
 
+  /** 逐版本「线程化渲染」覆盖（复制 Preferences 的两张 id 表，供编辑面板下拉展示）。 */
+  @Local glThreadOffIds: string[] = [];
+  @Local glThreadOnIds: string[] = [];
+
   /** 安装器共享状态（与 InstallerState 同一实例，承载远程清单/单任务进度/错误）。 */
   @Local installer: InstallerState = getInstallerState();
 
@@ -101,6 +107,9 @@ export struct GameVersionsView {
     this.state.isolatedIds = new SettingsTools(this.context()).versionIsolationIds();
     // 逐版本渲染后端覆盖（持久化）载入，供编辑面板下拉展示。
     this.overrides = new SettingsTools(this.context()).rendererOverrides();
+    // 逐版本「线程化渲染」覆盖（持久化）载入。
+    this.glThreadOffIds = new SettingsTools(this.context()).glThreadOffIds();
+    this.glThreadOnIds = new SettingsTools(this.context()).glThreadOnIds();
     // 下载源（持久化）：默认镜像，海外可切官方。
     this.installer.source = new SettingsTools(this.context()).downloadSource();
     // mod loader 下载源（**独立于版本源**）：持久化载入。
@@ -310,6 +319,63 @@ export struct GameVersionsView {
     settings.setRendererOverride(versionId, backend);
     this.overrides = settings.rendererOverrides();
     hilog.info(LOG_DOMAIN, LOG_TAG, 'renderer %{public}s = %{public}s', versionId, backend);
+  }
+
+  /** 该版本的「线程化渲染」是否可用：**只有 OpenGLv4（桌面 GL）后端**有效，其余后端灰化。 */
+  private glThreadSupported(v: GameVersion): boolean {
+    return rendererForVersion(v.mcVersion, this.rendererBackend(v.id)).env === RENDERER_ENV;
+  }
+
+  /** 「线程化渲染」Select 选项：默认（开）/ 开 / 关。 */
+  private glThreadOptions(): SelectOption[] {
+    return [
+      { value: $r('app.string.glthread_default') },
+      { value: $r('app.string.glthread_on') },
+      { value: $r('app.string.glthread_off') },
+    ];
+  }
+
+  /** 某版本的线程化渲染覆盖值（default/on/off）；未覆盖 = default（跟随全局开关）。 */
+  private glThreadOverride(versionId: string): string {
+    if (this.glThreadOnIds.includes(versionId)) {
+      return GLTHREAD_ON;
+    }
+    if (this.glThreadOffIds.includes(versionId)) {
+      return GLTHREAD_OFF;
+    }
+    return GLTHREAD_DEFAULT;
+  }
+
+  private glThreadIndex(versionId: string): number {
+    const v = this.glThreadOverride(versionId);
+    if (v === GLTHREAD_ON) {
+      return 1;
+    }
+    if (v === GLTHREAD_OFF) {
+      return 2;
+    }
+    return 0;
+  }
+
+  private glThreadValue(versionId: string): Resource {
+    const i = this.glThreadIndex(versionId);
+    if (i === 1) {
+      return $r('app.string.glthread_on');
+    }
+    if (i === 2) {
+      return $r('app.string.glthread_off');
+    }
+    return $r('app.string.glthread_default');
+  }
+
+  /** 切换某版本的线程化渲染覆盖：落盘 Preferences 后回读（游戏进程启动时读同一份）。 */
+  private setGlThread(versionId: string, index: number): void {
+    const value = index === 1 ? GLTHREAD_ON : (index === 2 ? GLTHREAD_OFF : GLTHREAD_DEFAULT);
+    const settings = new SettingsTools(this.context());
+    settings.setGlThreadOverride(versionId, value);
+    this.glThreadOffIds = settings.glThreadOffIds();
+    this.glThreadOnIds = settings.glThreadOnIds();
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'glthread %{public}s = %{public}s', versionId, value);
   }
 
   /** 授权当前选中目录：成功后刷新版本扫描。 */
@@ -712,6 +778,30 @@ export struct GameVersionsView {
           .value(this.rendererValue(this.editing.id))
           .onSelect((index: number) => {
             this.setRenderer(this.editing.id, index);
+          })
+          .selectedOptionBgColor($r('app.color.brand_bg'))
+          .selectedOptionFontColor($r('app.color.brand'));
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      // 线程化渲染（逐版本）：**只对 OpenGLv4（桌面 GL）后端生效** —— 选其它后端时灰化禁用。
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.version_glthread_label'));
+          Text($r('app.string.version_glthread_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+        Select(this.glThreadOptions())
+          .width('auto')
+          .enabled(this.glThreadSupported(this.editing))
+          .opacity(this.glThreadSupported(this.editing) ? 1 : OPACITY_SECONDARY)
+          .selected(this.glThreadIndex(this.editing.id))
+          .value(this.glThreadValue(this.editing.id))
+          .onSelect((index: number) => {
+            this.setGlThread(this.editing.id, index);
           })
           .selectedOptionBgColor($r('app.color.brand_bg'))
           .selectedOptionFontColor($r('app.color.brand'));
