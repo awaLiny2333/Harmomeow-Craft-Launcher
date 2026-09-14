@@ -174,7 +174,7 @@
     },
     {
       "name": "version_glthread_hint",
-      "value": "“默认”跟随高级选项里的开关；仅 OpenGLv4 后端生效（选其它后端不生效）"
+      "value": "GPU 调用交独立线程，帧数更高、加载稍慢；仅 OpenGLv4 后端生效（选其它后端不生效）"
     },
     {
       "name": "version_delete",
@@ -211,22 +211,6 @@
     {
       "name": "renderer_gl4es",
       "value": "GL4ES（旧版本兼容）"
-    },
-    {
-      "name": "glthread_default_on",
-      "value": "默认（开）"
-    },
-    {
-      "name": "glthread_default_off",
-      "value": "默认（关）"
-    },
-    {
-      "name": "glthread_on",
-      "value": "开"
-    },
-    {
-      "name": "glthread_off",
-      "value": "关"
     },
     {
       "name": "java_env_title",
@@ -279,14 +263,6 @@
     {
       "name": "advanced_show_input_rate_hint",
       "value": "游戏窗口右下角显示当前鼠标有效采样率（Hz）"
-    },
-    {
-      "name": "advanced_glthread",
-      "value": "线程化渲染"
-    },
-    {
-      "name": "advanced_glthread_hint",
-      "value": "GPU 调用交独立线程，帧数更高、加载稍慢；仅 OpenGLv4 后端生效（各版本还可在“编辑版本”里单独覆盖），如遇异常可关闭"
     },
     {
       "name": "advanced_cpu_count",

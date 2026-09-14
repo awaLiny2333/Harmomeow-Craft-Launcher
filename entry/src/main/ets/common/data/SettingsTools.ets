@@ -4,10 +4,10 @@ import { STORE_NAME, KEY_SHOW_INPUT_RATE, KEY_CPU_COUNT, KEY_MAX_HEAP_MB,
   KEY_VERSION_ISOLATION, KEY_SCROLL_SPEED, KEY_DOWNLOAD_SOURCE,
   KEY_FABRIC_SOURCE, KEY_VERSION_TYPE, KEY_RENDERER_OVERRIDES, SCROLL_SPEED_DEFAULT_PERCENT,
   KEY_RENDER_SCALE, RENDER_SCALE_DEFAULT, RENDER_SCALE_OPTIONS,
-  KEY_RENDER_ENV, KEY_JVM_ARGS, KEY_MS_CLIENT_ID, KEY_LAST_LAUNCH, KEY_GLTHREAD,
-  KEY_GLTHREAD_OFF, KEY_GLTHREAD_ON } from '../constants/Constants';
+  KEY_RENDER_ENV, KEY_JVM_ARGS, KEY_MS_CLIENT_ID, KEY_LAST_LAUNCH,
+  KEY_GLTHREAD_OFF } from '../constants/Constants';
 import { SOURCE_MIRROR, TYPE_RELEASE } from '../constants/DownloadContract';
-import { RENDERER_AUTO, GLTHREAD_DEFAULT, GLTHREAD_ON, GLTHREAD_OFF } from '../constants/LaunchDefaults';
+import { RENDERER_AUTO } from '../constants/LaunchDefaults';
 
 /** 逐版本渲染后端覆盖条目（backend ∈ auto/openglv4/gl4es）。 */
 export interface RendererOverride {
@@ -148,12 +148,10 @@ export class SettingsTools {
     const iso = this.versionIsolationIds().filter((v: string) => v !== versionId);
     const ovr = this.rendererOverrides().filter((o: RendererOverride) => o.id !== versionId);
     const gtOff = this.glThreadOffIds().filter((v: string) => v !== versionId);
-    const gtOn = this.glThreadOnIds().filter((v: string) => v !== versionId);
     try {
       this.store.putSync(KEY_VERSION_ISOLATION, JSON.stringify(iso));
       this.store.putSync(KEY_RENDERER_OVERRIDES, JSON.stringify(ovr));
       this.store.putSync(KEY_GLTHREAD_OFF, JSON.stringify(gtOff));
-      this.store.putSync(KEY_GLTHREAD_ON, JSON.stringify(gtOn));
       this.store.flushSync();
     } catch {
       return;
@@ -252,32 +250,6 @@ export class SettingsTools {
     }
     try {
       this.store.putSync(KEY_JVM_ARGS, v);
-      this.store.flushSync();
-    } catch {
-      return;
-    }
-  }
-
-  // ---- 线程化渲染（glthread；主进程高级选项写，游戏进程 GameLauncher 读）----
-
-  /** glthread 开关；**默认开**（`GALLIUM_THREAD=1`，仅现代渲染路径生效；异常时可关）。 */
-  glThread(): boolean {
-    if (this.store === null) {
-      return true;
-    }
-    try {
-      return this.store.getSync(KEY_GLTHREAD, true) as boolean;
-    } catch {
-      return true;
-    }
-  }
-
-  setGlThread(on: boolean): void {
-    if (this.store === null) {
-      return;
-    }
-    try {
-      this.store.putSync(KEY_GLTHREAD, on);
       this.store.flushSync();
     } catch {
       return;
@@ -488,46 +460,30 @@ export class SettingsTools {
     }
   }
 
-  // ---- 逐版本「线程化渲染」覆盖（主进程 UI 写，游戏进程 GameLauncher 读）----
-  // 存两个 JSON 字符串数组（强制关 / 强制开），未列入 = 跟随全局开关（默认开）。
-  // 形态与「版本隔离」的 id 列表一致（零迁移成本）；因默认开，实际以"关表"为主。
+  // ---- 逐版本「线程化渲染」（主进程 UI 写，游戏进程 GameLauncher 读）----
+  // 只存"**关闭**"的版本 id 列表（JSON 字符串数组）—— 该项**默认开**，未列入即开。
 
-  /** 强制关 glthread 的版本 id 列表（无记录/解析失败 → 空）。 */
+  /** glthread 被关闭的版本 id 列表（无记录/解析失败 → 空）。 */
   glThreadOffIds(): string[] {
     return this.idList(KEY_GLTHREAD_OFF);
   }
 
-  /** 强制开 glthread 的版本 id 列表（全局关时用来"只给某版本开"）。 */
-  glThreadOnIds(): string[] {
-    return this.idList(KEY_GLTHREAD_ON);
+  /** 某版本是否启用 glthread（**默认开**；只有"关闭表"里的版本为 false）。 */
+  glThreadEnabled(versionId: string): boolean {
+    return !this.glThreadOffIds().includes(versionId);
   }
 
-  /** 某版本的「线程化渲染」覆盖：`default`（跟随全局）/ `on` / `off`。 */
-  glThreadOverride(versionId: string): string {
-    if (this.glThreadOnIds().includes(versionId)) {
-      return GLTHREAD_ON;
-    }
-    if (this.glThreadOffIds().includes(versionId)) {
-      return GLTHREAD_OFF;
-    }
-    return GLTHREAD_DEFAULT;
-  }
-
-  /** 写入某版本的「线程化渲染」覆盖（default = 清除该版本的两张表）；立即落盘。 */
-  setGlThreadOverride(versionId: string, value: string): void {
+  /** 写入某版本的 glthread 开关（off 即加入"关闭表"，on = 移出）；立即落盘。 */
+  setGlThreadEnabled(versionId: string, on: boolean): void {
     if (this.store === null || versionId.length === 0) {
       return;
     }
     const off = this.glThreadOffIds().filter((v: string) => v !== versionId);
-    const on = this.glThreadOnIds().filter((v: string) => v !== versionId);
-    if (value === GLTHREAD_OFF) {
+    if (!on) {
       off.push(versionId);
-    } else if (value === GLTHREAD_ON) {
-      on.push(versionId);
     }
     try {
       this.store.putSync(KEY_GLTHREAD_OFF, JSON.stringify(off));
-      this.store.putSync(KEY_GLTHREAD_ON, JSON.stringify(on));
       this.store.flushSync();
     } catch {
       return;

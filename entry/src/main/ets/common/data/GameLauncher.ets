@@ -9,8 +9,7 @@ import { Account, AccountsTools, ACCOUNT_TYPE_MICROSOFT } from './AccountsTools'
 import { SettingsTools } from './SettingsTools';
 import { MEOW_HOME_DIR, MC_RUN_DIR_PREFIX, NATIVES_DIR, jreHomeDir,
   hspLibsDir, versionDir } from '../constants/Paths';
-import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H, RENDERER_ENV,
-  GLTHREAD_ON, GLTHREAD_OFF } from '../constants/LaunchDefaults';
+import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H, RENDERER_ENV } from '../constants/LaunchDefaults';
 import { rendererForVersion, guardNeedsSync } from './RendererPolicy';
 
 const LOG_DOMAIN = 0x0001;
@@ -99,13 +98,10 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   const fullCmd = [java, ...argv].join(' ');
   hilog.info(LOG_DOMAIN, LOG_TAG, 'CMD: %{public}s', fullCmd.substring(0, 3000));
   hilog.info(LOG_DOMAIN, LOG_TAG, 'CMD_TAIL: %{public}s', fullCmd.substring(fullCmd.length - 800));
-  // 线程化渲染（glthread）：**仅现代渲染路径（OpenGLv4/桌面 GL）**启用——gl4es/legacy 路径无此机制
-  // （桥对它们本就置 GALLIUM_THREAD=0）。生效值 = 逐版本覆盖（默认/开/关）优先，否则全局开关（默认开）。
+  // 线程化渲染（glthread）：**逐版本开关（默认开，可在「编辑版本」里关）**；且**仅现代渲染路径
+  // （OpenGLv4/桌面 GL）**有效——gl4es/legacy 无此机制（桥对它们本就置 GALLIUM_THREAD=0）。
   // 拼在用户「额外渲染环境变量」**之前** → 用户可显式覆盖。
-  const override = settings.glThreadOverride(versionId);
-  const glThreadWanted = override === GLTHREAD_ON ? true
-    : (override === GLTHREAD_OFF ? false : settings.glThread());
-  const glthread = glThreadWanted && renderer.env === RENDERER_ENV;
+  const glthread = settings.glThreadEnabled(versionId) && renderer.env === RENDERER_ENV;
   // Mesa glthread 的 UAF **只对 26.x 实测会崩**；≤1.21.x 从不因它崩，而它们（尤其 1.21.10 主菜单
   // ~2800 次/秒的小图上传）会被「每次同步」拖垮 → 对 ≤1.21.x 关掉守卫的同步（守卫退化为纯透传，
   // glthread 收益照拿）。见 notes 20-design/lwjgl3-并代可行性.md / glthread-B方案-GL-guard.md §2。
@@ -113,9 +109,8 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   const renderEnv = `GALLIUM_THREAD=${glthread ? '1' : '0'}`
     + (guardSyncNone ? '\nMEOW_GUARD_SYNC=none' : '')
     + `\n${settings.renderEnv()}`;
-  hilog.info(LOG_DOMAIN, LOG_TAG,
-    'glthread=%{public}s (override=%{public}s) guardSync=%{public}s renderer=%{public}s',
-    glthread ? 'on' : 'off', override, guardSyncNone ? 'none' : 'per-call', renderer.env);
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'glthread=%{public}s guardSync=%{public}s renderer=%{public}s',
+    glthread ? 'on' : 'off', guardSyncNone ? 'none' : 'per-call', renderer.env);
   await startJvm(ctx, [java, ...argv], renderer.lib, renderer.env, renderer.glProfile, renderEnv);
 }
 

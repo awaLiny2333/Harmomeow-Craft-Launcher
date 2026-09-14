@@ -42,10 +42,6 @@ export const RENDERER_LIB_GL4ES: string = 'libgl4es.so';
 export const RENDERER_ENV_GL4ES: string = 'gl4es';
 /** 逐版本"渲染后端"覆盖值：推荐（按 MC 版本自动）/ 桌面 GL / gl4es。 */
 export const RENDERER_AUTO: string = 'auto';
-/** 逐版本「线程化渲染」覆盖值：默认（跟随全局开关）/ 强制开 / 强制关。 */
-export const GLTHREAD_DEFAULT: string = 'default';
-export const GLTHREAD_ON: string = 'on';
-export const GLTHREAD_OFF: string = 'off';
 export const VULKAN_LIB: string = 'libvulkan.so';
 // 26.2 新增 NativeLibrariesBootstrap：一旦探测到 Vulkan loader，就会强载 lwjgl-shaderc/spvc/vma
 // （本工程不随包这些模块）。把 LWJGL 的 Vulkan 库名指向一个不存在的名字 → 探测失败 → 跳过 Vulkan 组；
