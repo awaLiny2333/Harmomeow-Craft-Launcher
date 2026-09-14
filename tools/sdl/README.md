@@ -162,12 +162,12 @@ loudly if an anchor is missing. It applies:
 ## 5. Install into the app
 ```sh
 sh Meowcraft/tools/lwjgl/install_natives.sh --sdl stuffs/research/sdl/out/libSDL3.so
-# → libs/meowlwjgl3/libs/arm64-v8a/libSDL3.so (natives.manifest tag "common")
+# → libs/meowlwjgls/libs/arm64-v8a/libSDL3.so (natives.manifest tag "common")
 ```
 Then clean the module build and redeploy (`hvigor` does not track `libs/` add/remove):
 
 ```sh
-rm -rf libs/{meowlwjgl3,meowjre25,meowcraftlib}/build entry/build
+rm -rf libs/{meowlwjgls,meowjre25,meowcraftlib}/build entry/build
 devecocli build --modules entry meowjre25
 devecocli run --module entry meowjre25 --device <serial>
 ```

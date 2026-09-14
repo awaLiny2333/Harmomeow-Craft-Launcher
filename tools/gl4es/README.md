@@ -40,7 +40,7 @@ GBM=OFF   EGL_WRAPPER=OFF   GLX_STUBS=OFF   STATICLIB=OFF
 
 ```sh
 sh tools/lwjgl/install_natives.sh --native libgl4es.so=stuffs/research/gl4es/out/libgl4es.so
-# 落 libs/meowlwjgl3/libs/arm64-v8a/libgl4es.so + natives.manifest（tag common）
+# 落 libs/meowlwjgls/libs/arm64-v8a/libgl4es.so + natives.manifest（tag common）
 ```
 
 ## 运行期模型（宿主自持上下文）

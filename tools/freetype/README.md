@@ -1,7 +1,7 @@
 # tools/freetype — 自编 OHOS 版 FreeType（libfreetype.so）
 
 用**上游 FreeType 2.13.3 源码**自编鸿蒙版 `libfreetype.so`，替换外部转手来的预编译件
-（`libs/meowlwjgl3/libs/arm64-v8a/libfreetype.so`），把可控性从「归因（未复现）」升级为「**源码级**」。
+（`libs/meowlwjgls/libs/arm64-v8a/libfreetype.so`），把可控性从「归因（未复现）」升级为「**源码级**」。
 
 ## 为什么 / 关键发现
 - `libfreetype.so` 是 **MC 字体渲染**的 native（LWJGL `lwjgl-freetype` 绑定）。
@@ -13,7 +13,7 @@
 | 文件 | 作用 |
 |---|---|
 | `build_freetype_meow.sh` | **独立通用**构建脚本：路径全从参数来，无项目假设 |
-| `rebuild_for_meowcraft.sh` | 本项目 wrapper：`ref/freetype` 拉临时 worktree(`VER-2-13-3`) → 构建 → 落 meowlwjgl3 |
+| `rebuild_for_meowcraft.sh` | 本项目 wrapper：`ref/freetype` 拉临时 worktree(`VER-2-13-3`) → 构建 → 落 meowlwjgls |
 
 ## 用法
 

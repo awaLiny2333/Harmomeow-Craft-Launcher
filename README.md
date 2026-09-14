@@ -29,8 +29,8 @@ Harmomeow Craft Launcher targets **HarmonyOS PCs**. It does not rely on an Andro
 | Version range | Rendering path | Status |
 |---|---|---|
 | 1.6.x – 1.12.2 | self-built LWJGL2 + gl4es (GLES) | ✅ |
-| 1.13 – 1.16.x | LWJGL3 + gl4es (GLES) | ✅ |
-| 1.17 – 1.21.x | LWJGL 3.3.3 + system desktop GL (Zink) | ✅ |
+| 1.13 – 1.16.x | LWJGL 3.4.3 + gl4es (GLES) | ✅ |
+| 1.17 – 1.21.x | LWJGL 3.4.3 + system desktop GL (Zink) | ✅ |
 | ≥ 1.22 (26.x) | LWJGL 3.4.3 | ✅ |
 | ≥ 26.3 | self-built SDL3 + `ohos` driver | ✅ |
 
@@ -128,7 +128,7 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
 | Component | Version | License | Bundled | Notes |
 |---|---|---|---|---|
 | OpenJDK / JRE | 26.0.2.1 (official glibc; our binary patches + self-built `libjli`/`libjvm`) | GPL-2.0 + Classpath-Exception | ✅ | Runtime; **fully self-held (zero black box)** — see `tools/jre26/` |
-| LWJGL | 3.3.3 / 3.4.3 / 2.9.3 | BSD-3 | ✅ | **three generations co-exist**, selected per MC version |
+| LWJGL | 3.4.3 / 2.9.3 | BSD-3 | ✅ | **one modern generation (3.4.3, with the 3.4.x compat shims) + legacy LWJGL2**, selected per MC version |
 | OpenAL Soft | 1.24.3 | LGPL-2.0+ | ✅ | OHAudio backend |
 | FreeType | 2.13.3 | FTL | ✅ | font rendering |
 | SDL3 | `release-3.4.14` (fork) | Zlib | ✅ | platform binding for MC ≥ 26.3 |
@@ -148,7 +148,7 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
 
 | Tool | Artifact |
 |---|---|
-| [`tools/lwjgl/`](tools/lwjgl/) | LWJGL two-generation jars + 6 natives + `libffi` + extras packing |
+| [`tools/lwjgl/`](tools/lwjgl/) | LWJGL single modern generation jar (3.4.3) + 3 natives + `libffi` + extras packing |
 | [`tools/lwjgl2/`](tools/lwjgl2/) | legacy LWJGL2 `liblwjgl.so` (MC 1.6–1.12) |
 | [`tools/openal/`](tools/openal/) [`tools/freetype/`](tools/freetype/) [`tools/gl4es/`](tools/gl4es/) [`tools/sdl/`](tools/sdl/) [`tools/shaderc/`](tools/shaderc/) [`tools/oshi/`](tools/oshi/) [`tools/meow-launcher/`](tools/meow-launcher/) | OpenAL / FreeType / gl4es / SDL3 / shaderc / oshi / clean-room launcher |
 
@@ -159,7 +159,7 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
 ## Production
 
 - **Runtime environment**: an ordinary HarmonyOS PC (2-in-1), API ≥ 23.
-- **Deploy order**: install the HAR/HSP first (`meowjre` / `meowcraftlib` / `meowlwjgl3`), then the `entry` HAP; **after changing natives, clean the module build and rebuild the HSP**.
+- **Deploy order**: install the HAR/HSP first (`meowjre` / `meowcraftlib` / `meowlwjgls`), then the `entry` HAP; **after changing natives, clean the module build and rebuild the HSP**.
 
 ## License
 

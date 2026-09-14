@@ -203,12 +203,28 @@ finalize() {
       echo "error: $name missing .note.ohos.ident (not an OHOS clang build?)" >&2; exit 1; }
   fi
 
-  # Capture the shipped counterpart BEFORE copying (out may equal ref).
-  old_sha=""; old_size=""; old_n=""
-  if [ -f "$COMPARE/$name.so" ]; then
-    old_sha=$(sha256sum "$COMPARE/$name.so" | cut -d' ' -f1)
-    old_size=$(wc -c < "$COMPARE/$name.so")
-    old_n=$(count_exports "$COMPARE/$name.so" "$pat")
+  # Capture the shipped counterpart BEFORE copying (out may equal ref). The shipped native
+  # carries the generation tag right AFTER the base (liblwjgl_343[_opengl|_stb].so), so match
+  # that shape (any tag). For core NEVER accept the tag-less liblwjgl.so -- that is the legacy
+  # LWJGL2 native, a completely different library (comparing against it printed a bogus
+  # parity=DIFF line); tinyfd is generation-agnostic and keeps its bare name.
+  old_sha=""; old_size=""; old_n=""; old_file=""
+  suffix="${name#liblwjgl}"
+  if [ "$name" = "liblwjgl" ]; then
+    for f in "$COMPARE/liblwjgl_"[0-9]*".so"; do
+      if [ -f "$f" ]; then old_file="$f"; break; fi
+    done
+  else
+    for f in "$COMPARE/${name}.so" "$COMPARE/liblwjgl_"[0-9]*"${suffix}.so"; do
+      if [ -f "$f" ]; then old_file="$f"; break; fi
+    done
+  fi
+  if [ -n "$old_file" ]; then
+    old_sha=$(sha256sum "$old_file" | cut -d' ' -f1)
+    old_size=$(wc -c < "$old_file")
+    old_n=$(count_exports "$old_file" "$pat")
+  else
+    echo "  $name: WARN no shipped counterpart under $COMPARE (comparison skipped)" >&2
   fi
 
   cp "$so" "$OUT/$name.so"
@@ -218,7 +234,7 @@ finalize() {
   echo "  $name: exports=$n  size=$new_size  NEEDED=libc.so  .note.ohos=yes"
   echo "  $name: sha256=$new_sha"
   if [ -n "$old_sha" ]; then
-    echo "  $name: shipped=$old_sha ($old_size B, exports=$old_n)"
+    echo "  $name: shipped=$(basename "$old_file") $old_sha ($old_size B, exports=$old_n)"
     echo "  $name: parity=$([ "$n" = "$old_n" ] && echo 'EXPORT-MATCH' || echo "DIFF new=$n old=$old_n")"
   fi
 }

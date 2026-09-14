@@ -59,13 +59,13 @@ export const EXTRAS_VERSION: string = '20260915-lwjgl-tagname';
 /** 平铺目录必须保留的公共 jar（其余 .jar 视为残留删除；lwjgl 世代 jar 按版本另行保留）。 */
 export const EXPECTED_EXTRA_JARS: string[] = ['launcher.jar', 'gson-for-launcher.jar'];
 // ---- LWJGL（**现代只随包一代**：3.4.3 服务全部 LWJGL3 版本；legacy ≤1.12.2 仍走 MC 的 LWJGL2）----
-// 命名约定与 tools/lwjgl 一致：jar = `lwjgl-<gen>.jar`；native = `liblwjgl{,_opengl,_stb}_<gen 去点>.so`
+// 命名约定与 tools/lwjgl 一致：jar = `lwjgl-<gen>.jar`；native = `liblwjgl_<gen 去点>{,_opengl,_stb}.so`
 // （由 tools/lwjgl/install_natives.sh 铺进扁平目录）。世代选择表见 MinecraftLauncher.lwjglGeneration。
 // 注：3.4.3 之所以能服务 1.13–1.21.x，靠我们 overlay 里的 **3.4.x 兼容 shim**
 // （struct mallocStack ×3 / STBImageResize.nstbir_resize_uint8 / tinyfd_messageBox）——
 // 见 tools/lwjgl/README.md「3.4.x compat shims」与 notes 20-design/lwjgl3-并代可行性.md。
 export const LWJGL_JAR_PREFIX: string = 'lwjgl-';
-/** bundled 库名映射器类：把 native 名映射到世代后缀名（与 legacy 的无后缀 `liblwjgl.so` 共存）。
+/** bundled 库名映射器类：把 native 名映射成"世代号紧跟基名"的形式（与 legacy 的无后缀 `liblwjgl.so` 共存）。
  *  实现见 tools/lwjgl/deltas/overlay/org/lwjgl/system/MeowBundledNameMapper.java。 */
 export const LWJGL_NAME_MAPPER: string = 'org.lwjgl.system.MeowBundledNameMapper';
 /** 唯一 LWJGL3 世代：3.4.3（服务 MC 1.13.x–1.21.x 与 ≥1.22 / 26.x）。 */

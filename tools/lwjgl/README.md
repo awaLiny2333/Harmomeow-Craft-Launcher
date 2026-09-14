@@ -122,7 +122,7 @@ Why those two are version-pinned:
   `if(!ext.contains(...)) return false;` guards, de-short-circuit `||`/`&&`, and neutralise the
   pure-logging `reportMissing("GL","…")` → `false` — without the last one the de-short-circuit makes
   LWJGL log `[GL] … an entry point is missing` for **every** probe); it reproduces the
-  shipped 3.3.3/3.4.3 overlay **byte-for-byte** from the official file.
+  shipped 3.4.3 overlay **byte-for-byte** from the official file.
 
 The 3.4.x `GLFW.java` adds the three 3.4.x IME/preedit methods MC ≥ 1.22 calls
 (`glfwSetPreeditCallback`, `glfwSetIMEStatusCallback`, `glfwSetPreeditCursorRectangle`),
@@ -133,7 +133,8 @@ implemented in Java only (bridge unchanged; preedit is register-only/no-op).
 1. `deltas/overlay-<newver>/org/lwjgl/{opengl/GLCapabilities.java, glfw/GLFW.java}` — generate the
    caps with `gen_glcap.py`; start `GLFW.java` from the previous generation's and diff the API.
 2. Build: `--overlay deltas/overlay --overlay deltas/overlay-<newver>` (the guard enforces it).
-3. Natives: `rebuild_for_meowcraft.sh <newver>` → `liblwjgl*_<digits>.so` + a `natives.manifest` entry.
+3. Natives: `rebuild_for_meowcraft.sh <newver>` → `liblwjgl_<digits>{,_opengl,_stb}.so` (the
+   generation tag right after the base name, e.g. 3.4.3 → `liblwjgl_343*.so`) + a `natives.manifest` entry.
 4. Pack: add `lwjgl-<newver>.jar` (`pack_extras.py --jar … --require …`).
 5. Runtime: add a `LWJGL_GEN_TABLE` row in `MinecraftLauncher.ets` (threshold = that gen's lwjgl
    version); add the jar name to `LaunchDefaults.LWJGL_GEN_JARS`; bump `EXTRAS_VERSION`,
@@ -193,17 +194,17 @@ sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3        # build + install -> liblwj
   `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (must stay in lockstep with
   `MeowBundledNameMapper`, the Java side that decides what LWJGL looks for).
 - Natives must be **co-packaged** (fs-verity: runtime-written files fail `dlopen`).
-- **`liblwjgl_tinyfd.so` is generation-agnostic** (no suffix): MC ≥ 1.22's
+- **`liblwjgl_tinyfd.so` is generation-agnostic** (no generation tag): MC ≥ 1.22's
   `NativeLibrariesBootstrap` eagerly loads `org.lwjgl.util.tinyfd` at boot (fail-fast), and
   `MeowBundledNameMapper` passes `lwjgl_tinyfd` through unchanged. It is built by
   `build_lwjgl_natives.sh` (from `modules/lwjgl/tinyfd`'s `tinyfiledialogs.c` + generated JNI)
   and installed by `install_natives.sh` with a manifest line tagged `common`.
-- **`libSDL3.so` is also generation-agnostic** (no suffix): MC ≥ 26.3 dropped GLFW and drives
+- **`libSDL3.so` is also generation-agnostic** (no generation tag): MC ≥ 26.3 dropped GLFW and drives
   window/input/GL through SDL3 (`org.lwjgl.sdl`, LWJGL ≥ 3.4.x). It is a **local SDL3 fork** built by
   `tools/sdl/` (pin `release-3.4.14`, matching the official `libSDL3.so.git` that LWJGL 3.4.3 ships) and
   installed via `install_natives.sh --sdl <file>` (manifest tag `common`). `MeowBundledNameMapper` passes
   `SDL3` through unchanged, so the file keeps the plain name.
-- **`libshaderc.so` / `libspirv-cross.so` are also generation-agnostic** (no suffix): MC ≥ 26.3's
+- **`libshaderc.so` / `libspirv-cross.so` are also generation-agnostic** (no generation tag): MC ≥ 26.3's
   `renderpearl` loads `org.lwjgl.util.shaderc.Shaderc` → `libshaderc.so` and
   `org.lwjgl.util.spvc.Spvc` → `libspirv-cross.so` (LWJGL **direct bindings**). Built by `tools/shaderc/`
   (pinned to the exact upstream revisions LWJGL 3.4.3 used) and installed via
@@ -212,10 +213,11 @@ sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3        # build + install -> liblwj
   and **`lwjgl-vma lwjgl-spvc lwjgl-shaderc`** (renderpearl). The `sdl` *native* is our `libSDL3.so`
   above — **not** the Maven `lwjgl-sdl-*-natives` jar.
 - `tools/lwjgl/install_natives.sh` owns this directory: it copies a generation's build
-  output in under the suffix and records `libs/meowlwjgls/libs/natives.manifest`
-  (`<tag>\t<file>\t<sha256>`); `--clean <tag>` / `--list` for lifecycle. **Never hand-edit.**
-- At launch LWJGL resolves the suffix via `MeowBundledNameMapper`
-  (`-Dmeow.lwjgl.gen=<tag>`, set for **every** generation).
+  output in with the generation tag right after the base name and records
+  `libs/meowlwjgls/libs/natives.manifest` (`<tag>\t<file>\t<sha256>`); `--clean <tag>` /
+  `--list` for lifecycle. **Never hand-edit.**
+- At launch LWJGL resolves the generation tag via `MeowBundledNameMapper`
+  (`-Dmeow.lwjgl.gen=<tag>`, set for **every** shipped generation).
 
 ### Generation mapping (nearest clamp — never selects an un-shipped generation)
 
@@ -248,7 +250,7 @@ cp stuffs/research/meowcraft_extras.tar.gz entry/src/main/resources/rawfile/
 `finalize_for_meowcraft.sh` (the old single-`lwjgl.jar` swapper) is **retired** —
 `pack_extras.py` replaces it.
 
-## 4. Artifacts & digests (jar/tar re-measured 2026-09-14; natives 2026-09-10)
+## 4. Artifacts & digests (jar/tar re-measured 2026-09-15; natives 2026-09-10)
 
 | artifact | sha256 |
 |---|---|
@@ -261,14 +263,13 @@ Reproducibility caveats (verified 2026-09-10):
 - **Native builds are byte-reproducible only when the absolute `--src`/`--out` paths are
   identical** — the linker embeds the absolute output path in `.dynstr` (no SONAME/RPATH
   entry is emitted; functional impact none). The digests above correspond to
-  `--out …/stuffs/research/lwjgl_natives-3.4.3/out` (and the 3.3.3 set dropped in
+  `--out …/stuffs/research/lwjgl_natives-3.4.3/out` (installed in
   `libs/meowlwjgls/libs/arm64-v8a`); a rebuild at a different path is functionally identical
   but has a different hash. Verified: **3× same-path rebuilds `cmp`-identical**.
-- `lwjgl-<ver>.jar`: deterministic (`pack_jar.py` + pinned Maven inputs). The digests in the table are
-  the current shipped jars (2026-09-14: single modern generation + 5 compat shims); the 3.4.3 jar also carries the MC 26.3
+- `lwjgl-<ver>.jar`: deterministic (`pack_jar.py` + pinned Maven inputs). The digest in the table is
+  the current shipped jar (2026-09-15: single modern generation + 5 compat shims); the 3.4.3 jar also carries the MC 26.3
   `sdl/vma/spvc/shaderc` modules. **Verified 2026-09-10**: two same-`--work` rebuilds of the
-  then-current 3.4.3 jar were `cmp`-identical and reproduced their digest; the 3.3.3 jar likewise
-  reproduces across rebuilds.
+  then-current 3.4.3 jar were `cmp`-identical and reproduced their digest.
 - `libffi.a`: **3× same-path rebuilds `cmp`-identical and independent of the output path**
   (static archive) — verified equal to the shipped build input.
 - hvigor **re-strips** packaged `.so`, so the **installed** hash differs from the source build.

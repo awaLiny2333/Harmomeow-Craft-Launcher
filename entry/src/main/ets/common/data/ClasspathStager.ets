@@ -55,6 +55,12 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
     } catch (e) {
       upToDate = false; // 无标记或读取失败 → 重抽
     }
+    // 标记命中还不够：cacheDir 可能被系统部分清理（丢件却留下标记）→ 期望件必须都在。
+    if (upToDate && !stagedBundleComplete(dir, keepGenJar)) {
+      upToDate = false;
+    }
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'extras %{public}s: stamp=%{public}s reextract=%{public}s',
+      versionId, stamp, upToDate ? 'no' : 'yes');
     if (!upToDate) {
       if (native.extractRawTar(ctx.resourceManager, RAWFILE_MEOWCRAFT_EXTRAS, dir) as boolean) {
         const f = fileIo.openSync(doneMark, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE |
@@ -104,8 +110,10 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
       legacyLwjgl ? 'yes' : 'no', keepGenJar.length > 0 ? keepGenJar : '(none)');
     return '';
   }
-  hilog.info(LOG_DOMAIN, LOG_TAG, 'stage %{public}s: gen=%{public}s checked=%{public}d copied=%{public}d',
-    versionId, gen, checked, copied);
+  hilog.info(LOG_DOMAIN, LOG_TAG,
+    'stage %{public}s: gen=%{public}s keep=%{public}s(%{public}d) checked=%{public}d copied=%{public}d',
+    versionId, gen, keepGenJar.length > 0 ? keepGenJar : '(none)',
+    keepGenJar.length > 0 ? jarBytes(`${dir}/${keepGenJar}`) : -1, checked, copied);
   return dir;
 }
 
@@ -153,13 +161,40 @@ function lwjglClasspathOk(dir: string, legacy: boolean, keepGenJar: string): boo
   return ours === 1 && oursKeep === 1 && mc2 === 0;
 }
 
-/** 随包 extras tar 的字节数（读不出来 → -1，退化为只比令牌）。 */
+/** 随包 extras tar 的字节数（**轻量**：只取 fd/长度，不把内容读进内存；失败 → -1，退化为只比令牌）。 */
 function extrasTarBytes(ctx: common.UIAbilityContext): number {
   try {
-    return ctx.resourceManager.getRawFileContentSync(RAWFILE_MEOWCRAFT_EXTRAS).byteLength;
+    const d = ctx.resourceManager.getRawFdSync(RAWFILE_MEOWCRAFT_EXTRAS);
+    const len = d.length;
+    ctx.resourceManager.closeRawFdSync(RAWFILE_MEOWCRAFT_EXTRAS);
+    return len;
   } catch (e) {
     return -1;
   }
+}
+
+/** 平铺目录里某文件的字节数（-1 = 缺失）；日志用，便于一眼看出"是不是旧的"。 */
+function jarBytes(path: string): number {
+  try {
+    return fileIo.statSync(path).size;
+  } catch (e) {
+    return -1;
+  }
+}
+
+/** 抽取标记命中时确认"该有的件都在"（防 cacheDir 被系统部分清理：标记还在、文件没了）。 */
+function stagedBundleComplete(dir: string, keepGenJar: string): boolean {
+  const need = keepGenJar.length > 0
+    ? EXPECTED_EXTRA_JARS.concat([keepGenJar])
+    : EXPECTED_EXTRA_JARS;
+  for (const n of need) {
+    try {
+      fileIo.accessSync(`${dir}/${n}`);
+    } catch (e) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** 删除**我们的** lwjgl jar 中"不该留的那一份"（现在只有一代，故正常情况什么都不删；主要是给

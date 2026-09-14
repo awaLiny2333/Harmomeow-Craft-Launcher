@@ -1,10 +1,11 @@
 #!/bin/sh
 # Meowcraft wrapper: build one LWJGL generation's natives and install them into the
-# flat packaged dir under the uniform suffix.
+# flat packaged dir with the generation tag right after the base name
+# (e.g. 3.4.3 -> liblwjgl_343{,_opengl,_stb}.so).
 #
 #   STAGE: extract ref/lwjgl3@<tag> into a throwaway tree (git archive; the source
 #          repo checkout is untouched) -> build_lwjgl_natives.sh -> <staging>/out
-#   INSTALL: install_natives.sh <tag> -> libs/meowlwjgls/libs/arm64-v8a/lib*_<digits>.so
+#   INSTALL: install_natives.sh <tag> -> libs/meowlwjgls/libs/arm64-v8a/liblwjgl_343{,_opengl,_stb}.so
 #            (+ natives.manifest)
 #
 # Usage:

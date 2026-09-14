@@ -121,10 +121,11 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   await startJvm(ctx, [java, ...argv], renderer.lib, renderer.env, renderer.glProfile, renderEnv);
 }
 
-/** 用户「额外渲染环境变量」里是否**显式**要求 `MEOW_GUARD_SYNC=none`（格式 `K=V`，换行或 `;` 分隔）。 */
+/** 用户「额外渲染环境变量」里是否要求 `MEOW_GUARD_SYNC=none`（格式 `K=V`，换行或 `;` 分隔；容忍 `=` 两侧空格）。 */
 function userForcedGuardSyncNone(env: string): boolean {
   for (const part of env.split(/[\n;]/)) {
-    if (part.trim() === 'MEOW_GUARD_SYNC=none') {
+    const kv = part.trim().split('=');
+    if (kv.length === 2 && kv[0].trim() === 'MEOW_GUARD_SYNC' && kv[1].trim() === 'none') {
       return true;
     }
   }

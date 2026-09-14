@@ -29,8 +29,8 @@ Harmomeow Craft Launcher 面向**鸿蒙（HarmonyOS）PC**：不依赖 Android �
 | 版本段 | 渲染路径 | 状态 |
 |---|---|---|
 | 1.6.x – 1.12.2 | 自编 LWJGL2 + gl4es（GLES） | ✅ |
-| 1.13 – 1.16.x | LWJGL3 + gl4es（GLES） | ✅ |
-| 1.17 – 1.21.x | LWJGL 3.3.3 + 系统桌面 GL（Zink） | ✅ |
+| 1.13 – 1.16.x | LWJGL 3.4.3 + gl4es（GLES） | ✅ |
+| 1.17 – 1.21.x | LWJGL 3.4.3 + 系统桌面 GL（Zink） | ✅ |
 | ≥ 1.22（26.x） | LWJGL 3.4.3 | ✅ |
 | ≥ 26.3 | 自编 SDL3 + `ohos` 驱动 | ✅ |
 
@@ -128,7 +128,7 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 | 组件 | 版本 | 许可 | 随包 | 说明 |
 |---|---|---|---|---|
 | OpenJDK / JRE | 26.0.2.1（官方 glibc 件；二进制魔改 + 自编 `libjli`/`libjvm`） | GPL-2.0 + Classpath-Exception | ✅ | 运行时；**全自持（零黑箱）**——见 `tools/jre26/` |
-| LWJGL | 3.3.3 / 3.4.3 / 2.9.3 | BSD-3 | ✅ | **三代并存**，按 MC 版本选代 |
+| LWJGL | 3.4.3 / 2.9.3 | BSD-3 | ✅ | **现代单代（3.4.3，含 3.4.x 兼容 shim）+ legacy LWJGL2**，按 MC 版本选代 |
 | OpenAL Soft | 1.24.3 | LGPL-2.0+ | ✅ | OHAudio 后端 |
 | FreeType | 2.13.3 | FTL | ✅ | 字体渲染 |
 | SDL3 | `release-3.4.14`（fork） | Zlib | ✅ | MC ≥ 26.3 平台绑定 |
@@ -148,7 +148,7 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 
 | 工具 | 产物 |
 |---|---|
-| [`tools/lwjgl/`](tools/lwjgl/) | LWJGL 两代 jar + 6 native + `libffi` + extras 组包 |
+| [`tools/lwjgl/`](tools/lwjgl/) | LWJGL 现代单代 jar（3.4.3）+ 3 native + `libffi` + extras 组包 |
 | [`tools/lwjgl2/`](tools/lwjgl2/) | legacy LWJGL2 `liblwjgl.so`（MC 1.6–1.12） |
 | [`tools/openal/`](tools/openal/) [`tools/freetype/`](tools/freetype/) [`tools/gl4es/`](tools/gl4es/) [`tools/sdl/`](tools/sdl/) [`tools/shaderc/`](tools/shaderc/) [`tools/oshi/`](tools/oshi/) [`tools/meow-launcher/`](tools/meow-launcher/) | OpenAL / FreeType / gl4es / SDL3 / shaderc / oshi / 净室 launcher |
 
@@ -159,7 +159,7 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 ## 生产环境
 
 - **运行环境**：一般普通鸿蒙 PC（2-in-1），API ≥ 23。
-- **部署顺序**：先装 HAR/HSP（`meowjre` / `meowcraftlib` / `meowlwjgl3`），再装 `entry` HAP；**改 native 后需清模块 build 再重建 HSP**。
+- **部署顺序**：先装 HAR/HSP（`meowjre` / `meowcraftlib` / `meowlwjgls`），再装 `entry` HAP；**改 native 后需清模块 build 再重建 HSP**。
 
 ## 许可证
 

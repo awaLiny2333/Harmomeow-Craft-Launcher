@@ -1,7 +1,7 @@
 # tools/openal — 自编 OHOS 版 OpenAL Soft（libopenal.so）
 
 用**上游 OpenAL Soft 1.24.3 源码**自编鸿蒙版 `libopenal.so`，替换外部转手来的
-预编译件（`libs/meowlwjgl3/libs/arm64-v8a/libopenal.so`），把它的可控性从
+预编译件（`libs/meowlwjgls/libs/arm64-v8a/libopenal.so`），把它的可控性从
 「归因（未复现）」升级为「**源码级**」。
 
 包含两个后端改造：
@@ -12,7 +12,7 @@
 
 ```sh
 git clone https://github.com/kcat/openal-soft.git ref/openal-soft     # 含全部 tag（1.21–1.25…）
-sh tools/openal/rebuild_for_meowcraft.sh 1.24.3    # 本项目：自动 worktree(tag) → 三补丁 → 构建 → 落 meowlwjgl3
+sh tools/openal/rebuild_for_meowcraft.sh 1.24.3    # 本项目：自动 worktree(tag) → 三补丁 → 构建 → 落 meowlwjgls
 # 通用脚本（路径全参数化，可脱离本工程复用）：
 sh tools/openal/build_openal_meow.sh --src <源码树> --sdk-native $SDK/native --out <目录>
 ```
@@ -58,7 +58,7 @@ Android simple buffer queue IID、并（在 `#if 0` 里）用 JNI。OHOS 只有
 | `ohaudio/ohaudio.cpp` / `ohaudio.h` | OHAudio 后端源码（按 1.24 API：`open(std::string_view)` / `enumerate` / fmt；播放 model-b + 捕获 ring） |
 | `patch_openal_events_export.py` | 导出 `ALC_SOFT_system_events` 三个函数（补 `ALC_API` + 列入 `libopenal.version`） |
 | `build_openal_meow.sh` | **独立通用**构建脚本：路径全从参数来，无项目假设 |
-| `rebuild_for_meowcraft.sh` | 本项目 wrapper：从 `ref/openal-soft` 拉临时 worktree → 构建 → 落 `meowlwjgl3` |
+| `rebuild_for_meowcraft.sh` | 本项目 wrapper：从 `ref/openal-soft` 拉临时 worktree → 构建 → 落 `meowlwjgls` |
 
 ## 用法
 

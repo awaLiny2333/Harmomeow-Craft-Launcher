@@ -11,7 +11,7 @@
 
 | 仓 | 上游 | 用到的 tag | 获取 |
 |---|---|---|---|
-| `ref/lwjgl3` | https://github.com/LWJGL/lwjgl3.git | `3.3.3`、`3.4.3` | `git clone https://github.com/LWJGL/lwjgl3.git ref/lwjgl3`（含全部 tag；3.4.3 另建 worktree，见 tools/lwjgl） |
+| `ref/lwjgl3` | https://github.com/LWJGL/lwjgl3.git | `3.4.3` | `git clone https://github.com/LWJGL/lwjgl3.git ref/lwjgl3`（含全部 tag；3.4.3 另建 worktree，见 tools/lwjgl） |
 | `ref/lwjgl` | https://github.com/LWJGL/lwjgl.git | commit `2df01dd7`（`lwjgl2.9.3-19-g2df01dd7`） | `git clone https://github.com/LWJGL/lwjgl.git ref/lwjgl`（**LWJGL2**，服务 MC **1.6.x–1.12.2**，见 `tools/lwjgl2/`） |
 | `ref/gl4es` | https://github.com/ptitSeb/gl4es.git | `v1.1.7`（`v1.1.6-91-g81547d98`） | `git clone https://github.com/ptitSeb/gl4es.git ref/gl4es`（见 `tools/gl4es/`） |
 | `ref/openal-soft` | https://github.com/kcat/openal-soft.git | `1.24.3` | `git clone https://github.com/kcat/openal-soft.git ref/openal-soft` |
@@ -34,7 +34,7 @@ commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61
 
 | 工具 | 产出 | 说明 |
 |---|---|---|
-| `lwjgl/` | `lwjgl-<ver>.jar`、`liblwjgl{,_opengl,_stb}_<digits>.so`、`libffi.a`、`meowcraft_extras.tar.gz` | LWJGL 现代**单代 3.4.3**（含 3.4.x 兼容 shim；旧 3.3.3 已于 2026-09-14 退役）；含净室 overlay、GLCapabilities 生成器、libffi 交叉编、`install_natives.sh`（扁平目录治理）、多件打包 |
+| `lwjgl/` | `lwjgl-3.4.3.jar`、`liblwjgl_343{,_opengl,_stb}.so`、`libffi.a`、`meowcraft_extras.tar.gz` | LWJGL 现代**单代 3.4.3**（含 3.4.x 兼容 shim；旧 3.3.3 已于 2026-09-14 退役）；含净室 overlay、GLCapabilities 生成器、libffi 交叉编、`install_natives.sh`（扁平目录治理）、多件打包 |
 | `lwjgl2/` | `liblwjgl.so` | 自编 **LWJGL2** OHOS native（aarch64 裸名 `liblwjgl.so`，不带后缀）；**MC 1.6.x–1.12.2** 的 legacy 平台绑定（JNI_VERSION=19 跨 2.9.x 稳定）；只编 native，不重编 MC 的 `lwjgl-2.9.x.jar` |
 | `gl4es/` | `libgl4es.so` | 自编 **gl4es v1.1.7** OHOS 移植（桌面固定管线 GL → 原生 GLES 翻译层）；**MC ≤1.16**（含 1.6.x–1.12.2，经 LWJGL2 `extgl` 取址）的渲染翻译层 |
 | `openal/` | `libopenal.so` | OpenAL Soft **1.24.3** OHOS 移植（OHAudio 默认后端 + 导出 `ALC_SOFT_system_events`） |
@@ -58,14 +58,12 @@ commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61
 sh tools/lwjgl/build_libffi.sh --src stuffs/research/libffi/libffi-3.8.0 \
     --sdk-native $SDK/native --out stuffs/research/libffi/out-ohos            # ① libffi 3.8.0（3.4.x natives 用）
 git -C ref/lwjgl3 worktree add --detach ref/lwjgl3-3.4.3 3.4.3               # ② 3.4.3 源码树
-sh tools/lwjgl/build_lwjgl_jar.sh --version 3.3.3 --overlay tools/lwjgl/deltas/overlay \
-    --overlay tools/lwjgl/deltas/overlay-3.3.3                                                       # ③a 3.3.3 jar（人跑 javac）
 sh tools/lwjgl/build_lwjgl_jar.sh --version 3.4.3 --overlay tools/lwjgl/deltas/overlay \
-    --overlay tools/lwjgl/deltas/overlay-3.4.3      # ③b 3.4.3 jar（人跑）；≥3.4.x 自动补 sdl/vma/spvc/shaderc 模块（MC 26.3）
+    --overlay tools/lwjgl/deltas/overlay-3.4.3      # ③ 3.4.3 jar（人跑 javac）；≥3.4.x 自动补 sdl/vma/spvc/shaderc 模块（MC 26.3）
 sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3                                # ④ 3.4.3 natives → liblwjgl_343{,_opengl,_stb}.so（自动带 libffi）
 # （natives 由 install_natives.sh 统一命名 + 维护 libs/meowlwjgls/libs/natives.manifest；勿手工拷/改名）
 python3 tools/lwjgl/pack_extras.py --base-tar entry/.../rawfile/meowcraft_extras.tar.gz \
-    --jar lwjgl-3.3.3.jar=… --jar lwjgl-3.4.3.jar=… --out entry/.../rawfile/meowcraft_extras.tar.gz   # ⑤ 组包
+    --jar lwjgl-3.4.3.jar=… --out entry/.../rawfile/meowcraft_extras.tar.gz   # ⑤ 组包
 
 # A2. legacy 随包件（MC 1.6.x–1.16.x）
 #   LWJGL2 native：**MC 1.6.x–1.12.2 由 tools/lwjgl2/ 的 liblwjgl.so 支持**（见 tools/lwjgl2/README.md）
@@ -114,17 +112,17 @@ devecocli run --module entry meowjre --device <serial>
 - **hvigor 不追踪 `libs/<abi>/` 增删**：加了/删了 `.so` 后必须清模块 build 再 `build --modules entry meowjre`，
   否则 HSP 不重打（设备报 `… not found`）。见记忆 `meowcraft_hvigor_libs_delete_stale`。
 - **natives 必须随包**：平台只对随包 native 打 fs-verity；运行时写入数据区的文件 `dlopen` 一律 EINVAL。
-  故多版本 natives 同放一个随包目录、用**后缀名**区分（见 `tools/lwjgl/README.md`）。
+  故多版本 natives 同放一个随包目录、**世代号紧跟基名**区分（见 `tools/lwjgl/README.md`）。
 - **确定性**：`pack_jar.py`（固定时间戳 + 排序）、`pack_extras.py`（gzip mtime=0 + 排序）→ 逐字节可复现。
 - **JRE 可复现**：`libc6.so`/`libjli.so`、官方 26 件魔改、数据 tar（`tools/jre26/pack_jre_data.py`）均**逐字节**；自编 `libjvm` 同 OS/工具链/源/**同路径** + `SOURCE_DATE_EPOCH=1784133400`（`jdk-26.0.2.1-ga` 提交）**2× cmp 一致**（`d28164cd…`；`linux_verify_jvm_repro.sh` 默认 2，`MEOW_REPRO_N` 可调高。见 `tools/jre26/README.md` §可复现性）。
 - **native 可复现**：同 tag + 同 SDK + **同 `--src`/`--out` 绝对路径** → 逐字节一致（链接器把输出路径写进 `.dynstr`；换路径同功能、哈希不同）。本工具链的新原生已 **3× 干净重建 `cmp` 一致**（对照 2026-09-11 盘上随包件）：`libSDL3.so`(`241bbfef…`)、`libshaderc.so`(`0cff3465…`)、`libspirv-cross.so`(`93ad9907…`)、`liblwjgl.so`(`df886466…`)；其中 `spirv-cross` 需 `SOURCE_DATE_EPOCH`（`tools/shaderc/build_shaderc_meow.sh` 已内置，取 pinned 提交时间）。`libgl4es.so`(`90c6ff6b…`) 同路径下**预期**可复现（见 `tools/gl4es/README.md`，尚未 3× 验证）。
-- **构建期断言（缺件在发包时拦下，运行期不加防护）**：`pack_extras.py --require <member>`（断言 tar 成员齐，如各代 `lwjgl-<gen>.jar`）；
+- **构建期断言（缺件在发包时拦下，运行期不加防护）**：`pack_extras.py --require <member>`（断言 tar 成员齐，如 `lwjgl-3.4.3.jar`）；
   `install_natives.sh --verify`（断言 `natives.manifest` 每项在盘且 sha 匹配）。缺件属"我们发包可掌控"→ 只在构建期拦，不在运行时查（省开销）。
 - **javac**：任何 `.jar` 步骤沙箱内不可跑，须人在有 JDK 的 shell 执行。
 
 ## 5. 权威文档
 
-- **工具内详解**：`tools/lwjgl/README.md` §1（**overlay 机制**：为什么要覆盖 / 5 步流水线 / 两层判据 / 加代清单），§2–§4（各代构建 / 打包 / digests）。
+- **工具内详解**：`tools/lwjgl/README.md` §1（**overlay 机制**：为什么要覆盖 / 5 步流水线 / 两层判据 / 加代清单），§2–§4（3.4.3 构建 / 打包 / digests）。
 - **JRE 收编**：`tools/jre26/README.md`（现役：输入/工序/可复现/digests/与 25 差异；源 = 更新仓 `jdk26u` @ `jdk-26.0.2.1-ga`）、`tools/jre25/README.md`（历史）。
 - **legacy（MC 1.6.x–1.16.x）**：`tools/lwjgl2/README.md`（LWJGL2 `liblwjgl.so`：生成/编译/随包/踩坑/可复现）、`tools/gl4es/README.md`（gl4es `libgl4es.so`：NOEGL 宿主自持上下文）。
 - **SDL3 / shaderc**：`tools/sdl/README.md`（拉取/补丁/驱动文件/digest）、`tools/shaderc/README.md`；复盘对照 `notes/20-design/26.3-SDL适配复盘.md`、方案 `notes/20-design/sdl3桥接方案.md`。

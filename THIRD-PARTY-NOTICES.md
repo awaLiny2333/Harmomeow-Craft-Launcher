@@ -62,16 +62,16 @@ are copied from OpenJDK and are under the same GPL-2.0+Classpath-Exception terms
 
 ## 4. LWJGL
 
-* `libs/meowlwjgl3/libs/arm64-v8a/liblwjgl{,_opengl,_stb}_{333,343}.so`,
+* `libs/meowlwjgls/libs/arm64-v8a/liblwjgl_343{,_opengl,_stb}.so`,
   `liblwjgl_tinyfd.so`, and the legacy `liblwjgl.so` (LWJGL **2.9.3**
   `@2df01dd7`) — self-built from upstream source.
-* `lwjgl-3.3.3.jar` / `lwjgl-3.4.3.jar` (inside `meowcraft_extras.tar.gz`) —
+* `lwjgl-3.4.3.jar` (inside `meowcraft_extras.tar.gz`) —
   upstream Maven modules plus this project's **clean-room overlay** (replacing
   the GLFW binding / `GLCapabilities` / `RendererInit`); the overlay files are
   derivatives of LWJGL and remain BSD-3-Clause.
 * License: **BSD-3-Clause** — [`LICENSES/BSD-3-Clause.txt`](LICENSES/BSD-3-Clause.txt).
 * `liblwjgl_343.so` statically links **libffi 3.8.0** (MIT, see §7).
-* `liblwjgl_stb_*.so` link **stb** (public domain / MIT).
+* `liblwjgl_343_stb.so` links **stb** (public domain / MIT).
 * `liblwjgl_tinyfd.so` links **tinyfiledialogs** (Zlib).
 * Files have been **modified** (OHOS build configuration, GLFW overlay, LWJGL2
   generator bypass patch). Copyright notices retained.
