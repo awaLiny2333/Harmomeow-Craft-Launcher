@@ -8,9 +8,8 @@ MC 1.13–1.21.x), the 3.4.3 natives, the `libffi.a` the 3.4.x core links, and t
 
 | artifact | shipped as | recipe |
 |---|---|---|
-| `lwjgl-3.3.3.jar` / `lwjgl-3.4.3.jar` (fat merge) | `entry/.../rawfile/meowcraft_extras.tar.gz` members | `build_lwjgl_jar.sh` (+ `pack_extras.py` to assemble the bundle) |
-| `liblwjgl_333.so` / `_opengl_333` / `_stb_333` (3.3.3) | `libs/meowlwjgls/libs/arm64-v8a/` | `rebuild_for_meowcraft.sh` → `install_natives.sh` |
-| `liblwjgl_343.so` / `_opengl_343` / `_stb_343` (3.4.3) | idem | idem + `build_libffi.sh` |
+| `lwjgl-3.4.3.jar` (fat merge + the 3.4.x compat shims) | `entry/.../rawfile/meowcraft_extras.tar.gz` member | `build_lwjgl_jar.sh` (+ `pack_extras.py` to assemble the bundle) |
+| `liblwjgl_343.so` / `_opengl_343` / `_stb_343` (3.4.3) | `libs/meowlwjgls/libs/arm64-v8a/` | `rebuild_for_meowcraft.sh` → `install_natives.sh` |
 | `libffi.a` (3.8.0) | build input only | `build_libffi.sh` |
 
 > `libmeowcraftbridge.so` (our GLFW/input/render bridge) is **separate** — it supplies
@@ -96,14 +95,15 @@ The split test is one question: **is this file pinned to a specific LWJGL versio
 
 ```
 deltas/
-├── overlay/                 # common (13) — needed by EVERY generation
+├── overlay/                 # common (13) — needed regardless of generation
 │   ├── org/lwjgl/glfw/      CallbackBridge  Callbacks  GLFWWindowProperties  GLFWNative*
 │   ├── org/lwjgl/opengl/    RendererInit
 │   └── org/lwjgl/system/    MeowBundledNameMapper
-├── overlay-3.3.3/           # version-pinned (2)
-│   └── org/lwjgl/{opengl/GLCapabilities.java, glfw/GLFW.java}
-└── overlay-3.4.3/           # version-pinned (2)
-    └── org/lwjgl/{opengl/GLCapabilities.java, glfw/GLFW.java}
+└── overlay-3.4.3/           # version-pinned (7): the 2 generated files + the 5 compat shims
+    └── org/lwjgl/{opengl/GLCapabilities.java, glfw/GLFW.java, glfw/GLFWImage.java,
+                   stb/{STBIIOCallbacks,STBVorbisInfo,STBImageResize}.java,
+                   util/tinyfd/TinyFileDialogs.java}
+# overlay-3.3.3/ was RETIRED on 2026-09-14 (single modern generation).
 ```
 
 Why those two are version-pinned:

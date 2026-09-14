@@ -254,12 +254,22 @@ export struct GameVersionsView {
       return;
     }
     const settings = new SettingsTools(this.context());
-    settings.clearVersion(v.id);
+    // 逐版本设置（隔离 / 渲染后端 / 线程化渲染）**只按实例 id 存**，跨 .minecraft 根的同名实例会撞键。
+    // 故只有当**没有别的已授权目录**还留同名实例时才清；否则会把另一根那份的设置一并抹掉。
+    const elsewhere = this.state.dirs.some((d) =>
+      d.uri !== this.editingDirUri && versionDirExists(resolveGameRoot(d.uri), v.id));
+    if (elsewhere) {
+      hilog.info(LOG_DOMAIN, LOG_TAG,
+        'keep per-version settings for %{public}s (same id exists in another root)', v.id);
+    } else {
+      settings.clearVersion(v.id);
+    }
     // 若"上次启动"正是这个版本，一并清理记录（否则"继续上次"会指向已删版本）。
     settings.clearLastLaunchIf(this.editingDirUri, v.id);
     this.state.refreshLastLaunch(this.context());
     this.state.isolatedIds = settings.versionIsolationIds();
     this.overrides = settings.rendererOverrides();
+    this.glThreadOffIds = settings.glThreadOffIds();
     if (this.editingId === v.id) {
       this.editingId = '';
     }

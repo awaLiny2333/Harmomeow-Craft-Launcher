@@ -131,10 +131,17 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         if (v == nullptr) {
             return;
         }
-        char b[1024] = {0};
+        // Two-pass (size first, then fetch): a fixed 1024B buffer SILENTLY TRUNCATED long
+        // strings, which would eat user overrides appended at the end of the extra render
+        // env (e.g. an explicit MEOW_GUARD_SYNC=flush rollback).
         size_t n = 0;
-        if (napi_get_value_string_utf8(env, v, b, sizeof(b), &n) == napi_ok) {
-            out.assign(b, n);
+        if (napi_get_value_string_utf8(env, v, nullptr, 0, &n) != napi_ok) {
+            return;
+        }
+        std::string buf(n + 1, '\0');
+        size_t written = 0;
+        if (napi_get_value_string_utf8(env, v, &buf[0], buf.size(), &written) == napi_ok) {
+            out.assign(buf, 0, written);
         }
     };
     std::string jreHome;

@@ -54,9 +54,8 @@ export const KEY_RENDER_ENV: string = 'render_env';
 /** 额外 JVM 参数（**实验/调优**）：空格/换行分隔，原样追加到 argv。例：`-XX:+UnlockDiagnosticVMOptions -XX:-ImplicitNullChecks`。 */
 export const KEY_JVM_ARGS: string = 'jvm_args';
 
-/** 线程化渲染（glthread，默认**开**）：GPU 调用交独立线程（提帧、加载期略慢）。仅现代渲染路径启用；
- *  ≤1.16/legacy 走 gl4es 不受益，保持关；异常时可关。见 notes 20-design/glthread-B方案-GL-guard.md。 */
-/** 逐版本「线程化渲染」**关闭**列表（JSON 字符串数组；未列入 = 开——该项默认开）。 */
+/** 逐版本「线程化渲染」**关闭**列表（JSON 字符串数组；未列入 = 开）。GPU 调用交独立线程（提帧、
+ *  加载期略慢）；**仅 OpenGLv4（桌面 GL）后端生效**。见 notes 20-design/glthread-B方案-GL-guard.md。 */
 export const KEY_GLTHREAD_OFF: string = 'glthread_off';
 
 // 布局：通用间距与透明度（单位 vp，透明度 0~1）。

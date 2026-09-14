@@ -24,13 +24,14 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
   const cacheDir = ctx.cacheDir;
   const base = `${cacheDir}/${MC_CP_DIR}`;
   const dir = `${base}/${versionId}`;
-  // 随包分发两代 LWJGL jar；按版本 json 声明的 lwjgl 版本选中一代，平铺目录里只保留
-  // 该代（-cp "<dir>/*" 不能同时装两份 org.lwjgl.*）。natives 两代同名共存于 el1
-  // 随包目录，靠启动参数的 bundledLibrary.nameMapper 按世代选名（见 LaunchDefaults）。
+  // 随包**只有一代** LWJGL jar（`lwjgl-3.4.3.jar`，其 overlay 带 3.4.x 兼容 shim，
+  // 服务 MC 1.13–1.21.x 与 ≥1.22）。平铺目录里必须只留它一份（-cp "<dir>/*" 不能同时
+  // 装两份 org.lwjgl.*；旧代残留由 pruneStaleJars 兜底清）。natives 现也只剩 `_343` +
+  // 无后缀的 legacy `liblwjgl.so`，靠 bundledLibrary.nameMapper 区分（见 LaunchDefaults）。
   const gen = lwjglGeneration(jsonPath);
   const genJar = `${LWJGL_JAR_PREFIX}${gen}.jar`;
-  // legacy LWJGL2（≤1.12.2）：classpath 不能混入我们的 LWJGL3（两 jar 都定义 org.lwjgl 包 →
-  // sealing violation）。此时 keepGenJar 置空 → 把两代随包 jar 都从平铺目录移除，只留 MC 的 LWJGL2。
+  // legacy LWJGL2（≤1.12.2）：classpath 不能混入我们的 LWJGL3（两者都定义 org.lwjgl 包 →
+  // sealing violation）。此时 keepGenJar 置空 → 把随包的那一代 jar 从平铺目录移除，只留 MC 的 LWJGL2。
   const legacyLwjgl = isLegacyLwjgl(jsonPath);
   const keepGenJar = legacyLwjgl ? '' : genJar;
   for (const d of [base, dir]) {
@@ -141,9 +142,9 @@ function lwjglClasspathOk(dir: string, legacy: boolean, keepGenJar: string): boo
   return ours === 1 && oursKeep === 1 && mc2 === 0;
 }
 
-/** 删除未选中世代的**我们的** lwjgl jar（另一代随包但本版本不用；避免 -cp 双份类冲突）。
- *  只匹配我们随包的世代名（lwjgl-3.3.3.jar / lwjgl-3.4.3.jar）——**绝不能**用 `lwjgl-` 前缀，
- *  否则会误删 MC 自带的 LWJGL2（`lwjgl-2.9.x.jar`，legacy ≤1.12.2 需要）。 */
+/** 删除**我们的** lwjgl jar 中"不该留的那一份"（3.3.3 已退役，但旧 `cacheDir/mc-cp/<id>/`
+ *  可能仍残留它；避免 -cp 双份类冲突）。只匹配 `LWJGL_GEN_JARS` 里的**精确名**——**绝不能**用
+ *  `lwjgl-` 前缀，否则会误删 MC 自带的 LWJGL2（`lwjgl-2.9.x.jar`，legacy ≤1.12.2 需要）。 */
 function dropOtherLwjglJar(dir: string, keepJar: string): void {
   const ours = new Set<string>(LWJGL_GEN_JARS);
   let entries: string[] = [];

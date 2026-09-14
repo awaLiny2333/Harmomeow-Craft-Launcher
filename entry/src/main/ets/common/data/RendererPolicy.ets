@@ -11,8 +11,9 @@ import { RENDERER_LIB, RENDERER_ENV, RENDERER_LIB_GL4ES,
  * - **≥1.17**：MC 用 core-profile 渲染器 → 走 **GL guard**（`libmeowglguard.so`，透传到系统桌面 GL
  *   `libGLv4.so`/Zink；guard 对 `glTexSubImage2D` 加后置同步以规避 Mesa glthread UAF），`glProfile=core`。
  *
- * ⚠️ 传入的 `mcVersion` 必须是**版本 json 的内部 `id`**（真正的 MC 版本号，如 `1.16.5`/`1.21.10`/`26.1.2`），
- * **不是实例名/目录名**——实例名可被玩家任意取（对齐 HMCL），用它判版本会选错后端/profile。
+ * ⚠️ 传入的 `mcVersion` 必须是**解析继承/补丁后的真 MC 版本号**（`MinecraftLauncher.readVersionId()` 的产出，
+ * 如 `1.16.5`/`1.21.10`/`26.1.2`；Fabric 实例也会解析回基座版本），**不是实例名/目录名**——实例名可被玩家任意取
+ * （对齐 HMCL），用它判版本会选错后端/profile。
  */
 export class RendererChoice {
   /** 传给 `-Dorg.lwjgl.opengl.libname`，也是桥预 dlopen 的目标（两者必须一致）。 */
@@ -51,6 +52,11 @@ function isLegacyVersion(mcVersion: string): boolean {
  * 认不出/更老的版本 → 保守返回 true（同步）。
  */
 export function guardNeedsSync(mcVersion: string): boolean {
+  // legacy（<1.17）默认走 gl4es、根本不经过守卫；但用户可把后端强制成 OpenGLv4（compat profile）
+  // ——那条组合未实测，保守按"要同步"处理（宁可慢，不可崩）。
+  if (isLegacyVersion(mcVersion)) {
+    return true;
+  }
   const m: RegExpMatchArray | null = mcVersion.match(/^(\d+)\.(\d+)/);
   if (m === null) {
     return true;

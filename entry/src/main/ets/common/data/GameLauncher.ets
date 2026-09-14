@@ -110,7 +110,7 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     + (guardSyncNone ? '\nMEOW_GUARD_SYNC=none' : '')
     + `\n${settings.renderEnv()}`;
   hilog.info(LOG_DOMAIN, LOG_TAG, 'glthread=%{public}s guardSync=%{public}s renderer=%{public}s',
-    glthread ? 'on' : 'off', guardSyncNone ? 'none' : 'per-call', renderer.env);
+    glthread ? 'on' : 'off', guardSyncNone ? 'none(auto)' : 'per-call', renderer.env);
   await startJvm(ctx, [java, ...argv], renderer.lib, renderer.env, renderer.glProfile, renderEnv);
 }
 

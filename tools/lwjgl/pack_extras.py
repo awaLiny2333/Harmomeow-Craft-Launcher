@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Assemble the shipped `meowcraft_extras.tar.gz` from per-generation artifacts.
+"""Assemble the shipped `meowcraft_extras.tar.gz` from built artifacts.
 
-The bundle carries every LWJGL generation side by side; ArkTS staging picks the
-one matching the MC version and discards the other. Layout:
+Since 2026-09-14 the bundle carries ONE modern LWJGL generation (`lwjgl-3.4.3.jar`, whose
+overlay holds the 3.4.x compat shims); ArkTS staging keeps exactly that jar per version.
+Layout:
 
-    ./launcher.jar                     (kept from --base-tar)
-    ./gson-for-launcher.jar            (kept from --base-tar)
-    ./lwjgl-<gen>.jar                  (one per --jar)
-    ./lwjgl-natives-<gen>/liblwjgl*.so (one dir per --natives)
+    ./launcher.jar           (kept from --base-tar)
+    ./gson-for-launcher.jar  (kept from --base-tar)
+    ./lwjgl-3.4.3.jar        (from --jar)
+
+Every `lwjgl*.jar` the base tar carried is dropped first, so a retired generation cannot
+linger.
 
 Deterministic: gzip mtime=0, tar mtime=0, mode 0644 (0755 for dirs), members
 sorted. Pure python, so the agent can run it.
@@ -87,6 +90,13 @@ def main():
             tout.addfile(info, io.BytesIO(data))
     gzf.close()
 
+    # Build-time guard FIRST: every --require member must be present (we control packaging:
+    # catch a missing jar here instead of silently writing a bad bundle / failing on device).
+    missing = [r for r in args.require if r not in members]
+    if missing:
+        sys.stderr.write("error: required member(s) missing from bundle: %s\n" % ", ".join(missing))
+        return 1
+
     blob = buf.getvalue()
     with open(args.out, "wb") as fh:
         fh.write(blob)
@@ -94,12 +104,6 @@ def main():
     print("members:")
     for name in sorted(members):
         sys.stdout.write("  ./%s  (%d bytes)\n" % (name, len(members[name])))
-    # Build-time guard: every --require member must be present (we control packaging;
-    # catch a missing generation jar here instead of at runtime on device).
-    missing = [r for r in args.require if r not in members]
-    if missing:
-        sys.stderr.write("error: required member(s) missing from bundle: %s\n" % ", ".join(missing))
-        return 1
     if args.require:
         print("required members present: %s" % ", ".join(sorted(args.require)))
     print("out: %s (%d bytes)  sha256=%s"

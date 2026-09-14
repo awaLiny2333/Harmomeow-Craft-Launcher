@@ -33,7 +33,7 @@
 #   --official DIR   local fallback dir for stock jars (also source of lwjglx, see below)
 #   --out DIR        output dir for lwjgl.jar (default <work>/out)
 #   --work DIR       scratch dir (default: <outer>/stuffs/research/lwjgl_build-<version>)
-#   --version VER    LWJGL version to fetch (default 3.3.3)
+#   --version VER    LWJGL version to fetch (default 3.4.3)
 #   --cache DIR      Maven cache dir (default <work>/m2)
 #   --maven-base URL Maven repo base (default Maven Central)
 #   --offline        never download; require every jar under --official
@@ -56,7 +56,7 @@ OUTER="$(cd "$ROOT/.." && pwd)"          # workspace root (holds ref/ + stuffs/)
 
 usage() { sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//; /^set -e/d'; }
 
-OFFICIAL=""; OVERLAYS=""; OUT=""; WORK=""; VERSION="3.3.3"; WITH_LWJGLX=0
+OFFICIAL=""; OVERLAYS=""; OUT=""; WORK=""; VERSION="3.4.3"; WITH_LWJGLX=0
 CACHE=""; MAVEN_BASE="https://repo1.maven.org/maven2"; OFFLINE=0
 PACK_JAR="$ROOT/tools/oshi/pack_jar.py"; MANIFEST=""
 while [ "$#" -gt 0 ]; do
@@ -87,17 +87,21 @@ for d in $OVERLAYS; do ABS_OVERLAYS="$ABS_OVERLAYS $(cd "$d" && pwd)"; done
 OVERLAYS="$ABS_OVERLAYS"
 FIRST_OVERLAY="${OVERLAYS# }"; FIRST_OVERLAY="${FIRST_OVERLAY%% *}"
 # Guard: a per-generation overlay (deltas/overlay-<VERSION>) carries the version-pinned
-# GLFW.java / GLCapabilities.java. If it exists but was not passed, the jar would silently
-# miss them (or pick up another generation's) -> fail loudly at build time.
+# GLFW.java / GLCapabilities.java (and, since 2026-09-14, the 3.4.x compat shims). It MUST
+# exist and MUST be passed: otherwise the merge silently falls back to the STOCK LWJGL
+# classes (no bridge forwarding, no shims) and the build still "succeeds". Retired
+# generations deliberately have no overlay dir, so asking for one is an explicit error.
 GEN_OVERLAY="$HERE/deltas/overlay-$VERSION"
-if [ -d "$GEN_OVERLAY" ]; then
-  found=0
-  for d in $OVERLAYS; do [ "$d" = "$GEN_OVERLAY" ] && found=1; done
-  [ "$found" = "1" ] || {
-    echo "error: generation overlay exists but was not passed: $GEN_OVERLAY" >&2
-    echo "       add: --overlay $GEN_OVERLAY" >&2
-    exit 2; }
-fi
+[ -d "$GEN_OVERLAY" ] || {
+  echo "error: no per-generation overlay for $VERSION: $GEN_OVERLAY" >&2
+  echo "       (retired generation? pass a shipped one, e.g. --version 3.4.3)" >&2
+  exit 2; }
+found=0
+for d in $OVERLAYS; do [ "$d" = "$GEN_OVERLAY" ] && found=1; done
+[ "$found" = "1" ] || {
+  echo "error: generation overlay exists but was not passed: $GEN_OVERLAY" >&2
+  echo "       add: --overlay $GEN_OVERLAY" >&2
+  exit 2; }
 [ -n "$OFFICIAL" ] && OFFICIAL="$(cd "$OFFICIAL" && pwd)"
 [ -n "$WORK" ]  || WORK="$OUTER/stuffs/research/lwjgl_build-$VERSION"
 [ -n "$OUT" ]   || OUT="$WORK/out"
@@ -171,7 +175,7 @@ else
   if [ -n "$OFFICIAL" ] && [ -s "$OFFICIAL/lwjgl-lwjglx.jar" ]; then
     LWJGLX="$OFFICIAL/lwjgl-lwjglx.jar"
   else
-    LWJGLX="$(ls "$FIRST_OVERLAY/../../../libs"/*/lwjgl-lwjglx.jar 2>/dev/null | head -1)"
+    LWJGLX="$(ls "$FIRST_OVERLAY/../../../../libs"/*/lwjgl-lwjglx.jar 2>/dev/null | head -1)"
   fi
   if [ -n "$LWJGLX" ]; then MODULE_PATHS="$MODULE_PATHS $LWJGLX"; CP="$CP:$LWJGLX"
   else echo "  note: --with-lwjglx but jar not found (not on Maven; pass --official) -> skipped" >&2; fi
@@ -251,7 +255,9 @@ print("  stripped META-INF (except MANIFEST):", not bad)
 assert not miss, "missing required classes: %s"%miss
 assert len(cls)>=4000, "class count too low: %d"%len(cls)
 glfw=z.read("org/lwjgl/glfw/GLFW.class")
-print("  GLFW libname token:", "meowcraftbridge" if b"meowcraftbridge" in glfw else "??")
+assert b"meowcraftbridge" in glfw, \
+    "GLFW overlay missing: no meowcraftbridge libname token (stock GLFW merged?)"
+print("  GLFW libname token: meowcraftbridge")
 PY
 
 echo "OK -> $OUT/lwjgl.jar ($(wc -c < "$OUT/lwjgl.jar") bytes)  [LWJGL $VERSION]"
