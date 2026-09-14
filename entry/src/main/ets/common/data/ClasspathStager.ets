@@ -41,15 +41,17 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
       // 已存在则忽略
     }
   }
-  // 桥 jar（lwjgl 合并/launcher 等）随包分发。done 文件内容 = EXTRAS_VERSION：
-  // tar 内容一旦变更（换 jar/打补丁）就提升版本号，重抽覆盖缓存旧 jar——
-  // install -r 保留 cacheDir，光靠文件存在会继续用旧 lwjgl.jar（如 so 改名后仍
-  // loadLibrary 旧名 → UnsatisfiedLinkError）。
+  // 桥 jar（lwjgl 合并/launcher 等）随包分发。done 文件内容 = **令牌 + 随包 tar 的字节数**：
+  //  - 令牌由人显式升（内容语义变化时）；
+  //  - 字节数让"换了 tar 却忘升令牌"也自动重抽 —— 2026-09-15 踩过：native 改名后重打了 tar
+  //    但令牌没动 → done 命中 → 缓存的**旧 lwjgl jar**（旧 nameMapper）继续被用 → 找旧 so 名 →
+  //    `UnsatisfiedLinkError`。install -r 保留 cacheDir，光靠"文件存在"判断必然踩这个坑。
+  const stamp = `${EXTRAS_VERSION}|${extrasTarBytes(ctx)}`;
   const doneMark = `${dir}/${MEOWCRAFT_EXTRAS_DONE}`;
   try {
     let upToDate = false;
     try {
-      upToDate = fileIo.readTextSync(doneMark) === EXTRAS_VERSION;
+      upToDate = fileIo.readTextSync(doneMark) === stamp;
     } catch (e) {
       upToDate = false; // 无标记或读取失败 → 重抽
     }
@@ -57,7 +59,7 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
       if (native.extractRawTar(ctx.resourceManager, RAWFILE_MEOWCRAFT_EXTRAS, dir) as boolean) {
         const f = fileIo.openSync(doneMark, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE |
           fileIo.OpenMode.TRUNC);
-        fileIo.writeSync(f.fd, EXTRAS_VERSION);
+        fileIo.writeSync(f.fd, stamp);
         fileIo.closeSync(f);
       }
     }
@@ -149,6 +151,15 @@ function lwjglClasspathOk(dir: string, legacy: boolean, keepGenJar: string): boo
     return ours === 0 && mc2 >= 1;
   }
   return ours === 1 && oursKeep === 1 && mc2 === 0;
+}
+
+/** 随包 extras tar 的字节数（读不出来 → -1，退化为只比令牌）。 */
+function extrasTarBytes(ctx: common.UIAbilityContext): number {
+  try {
+    return ctx.resourceManager.getRawFileContentSync(RAWFILE_MEOWCRAFT_EXTRAS).byteLength;
+  } catch (e) {
+    return -1;
+  }
 }
 
 /** 删除**我们的** lwjgl jar 中"不该留的那一份"（现在只有一代，故正常情况什么都不删；主要是给
