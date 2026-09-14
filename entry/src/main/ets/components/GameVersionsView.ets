@@ -785,7 +785,8 @@ export struct GameVersionsView {
       .width('100%')
       .alignItems(VerticalAlign.Center);
 
-      // 线程化渲染（逐版本）：**只对 OpenGLv4（桌面 GL）后端生效** —— 选其它后端时灰化禁用。
+      // 线程化渲染（逐版本）：**只对 OpenGLv4（桌面 GL）后端生效** —— 其它后端**灰化提示**（仍可编辑，
+      // 值照存；只是启动时不会生效，见 GameLauncher 的 renderer.env 门控）。
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
           Text($r('app.string.version_glthread_label'));
@@ -796,7 +797,6 @@ export struct GameVersionsView {
         .alignItems(HorizontalAlign.Start);
         Select(this.glThreadOptions())
           .width('auto')
-          .enabled(this.glThreadSupported(this.editing))
           .opacity(this.glThreadSupported(this.editing) ? 1 : OPACITY_SECONDARY)
           .selected(this.glThreadIndex(this.editing.id))
           .value(this.glThreadValue(this.editing.id))
