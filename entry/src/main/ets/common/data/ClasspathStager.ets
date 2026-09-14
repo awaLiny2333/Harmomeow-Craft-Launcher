@@ -26,7 +26,7 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
   const dir = `${base}/${versionId}`;
   // 随包**只有一代** LWJGL jar（`lwjgl-3.4.3.jar`，其 overlay 带 3.4.x 兼容 shim，
   // 服务 MC 1.13–1.21.x 与 ≥1.22）。平铺目录里必须只留它一份（-cp "<dir>/*" 不能同时
-  // 装两份 org.lwjgl.*；旧代残留由 pruneStaleJars 兜底清）。natives 现也只剩 `_343` +
+  // 装两份 org.lwjgl.*；旧代残留由 pruneStaleJars 兜底清）。natives 现也只剩 liblwjgl_343* +
   // 无后缀的 legacy `liblwjgl.so`，靠 bundledLibrary.nameMapper 区分（见 LaunchDefaults）。
   const gen = lwjglGeneration(jsonPath);
   const genJar = `${LWJGL_JAR_PREFIX}${gen}.jar`;

@@ -1,12 +1,13 @@
 #!/bin/sh
 # Install a LWJGL generation's natives into the (flat, packaged) module libs dir
-# under a UNIFORM suffixed name, and keep a manifest.
+# under generation-qualified names, and keep a manifest.
 #
-# Why flat + suffixed: hvigor only packages top-level `libs/<abi>/*.so` (subdirs are
-# dropped), and every MC version is served by ONE JRE HSP whose namespace must hold
-# all generations side by side -> same base name, so a per-generation suffix
-# (`_333`, `_343`, ...) disambiguates. LWJGL is told the suffix at launch via
-# MeowBundledNameMapper (`-Dmeow.lwjgl.gen=<tag>`).
+# Why flat + generation-qualified: hvigor only packages top-level `libs/<abi>/*.so`
+# (subdirs are dropped), and every MC version is served by ONE JRE HSP whose namespace
+# must hold all generations side by side -> same base name, so the generation tag goes
+# right AFTER the base: `liblwjgl_343.so`, `liblwjgl_343_opengl.so`,
+# `liblwjgl_343_stb.so`. LWJGL is told the tag at launch via MeowBundledNameMapper
+# (`-Dmeow.lwjgl.gen=<tag>`) -- the two MUST stay in lockstep.
 #
 # Usage:
 #   sh tools/lwjgl/install_natives.sh <tag> [--src DIR] [--libs DIR]
@@ -16,7 +17,7 @@
 #   sh tools/lwjgl/install_natives.sh --sdl FILE [--libs DIR]       # install our SDL3 fork as libSDL3.so (tag common)
 #   sh tools/lwjgl/install_natives.sh --native NAME=PATH [--libs DIR]  # install a gen-agnostic native (tag common)
 #
-#   <tag>        LWJGL generation, e.g. 3.4.3 -> suffix _343
+#   <tag>        LWJGL generation, e.g. 3.4.3 -> names liblwjgl_343{,_opengl,_stb}.so
 #   --src DIR    dir with liblwjgl{,_opengl,_stb}.so (default: auto-detect under
 #                stuffs/research/lwjgl_natives[-<tag>]/out)
 #   --sdl FILE   our SDL3 build (tools/sdl/out/libSDL3.so) -> installed as libSDL3.so
@@ -101,14 +102,26 @@ fi
 DIGITS="$(printf '%s' "$TAG" | tr -d '.')"
 BASES="liblwjgl liblwjgl_opengl liblwjgl_stb"
 
+# Shipped file name for a stock native base: the generation tag goes right AFTER the base,
+# so the three natives line up (lwjgl -> liblwjgl_343.so, lwjgl_opengl ->
+# liblwjgl_343_opengl.so, lwjgl_stb -> liblwjgl_343_stb.so). Must stay in lockstep with
+# MeowBundledNameMapper (the Java side that decides what LWJGL looks for).
+gen_name() {   # <base> <digits>
+  case "$1" in
+    liblwjgl)        echo "liblwjgl_$2.so" ;;
+    liblwjgl_opengl) echo "liblwjgl_$2_opengl.so" ;;
+    liblwjgl_stb)    echo "liblwjgl_$2_stb.so" ;;
+  esac
+}
+
 strip_tag() {  # print manifest without the given tag's lines
   [ -f "$MANIFEST" ] && grep -v "^$1	" "$MANIFEST" || true
 }
 
 if [ "$MODE" = clean ]; then
-  for b in $BASES; do rm -f "$LIBS_ABS/${b}_$DIGITS.so"; done
+  for b in $BASES; do rm -f "$LIBS_ABS/$(gen_name "$b" "$DIGITS")"; done
   strip_tag "$TAG" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST" || true
-  echo "cleaned generation $TAG (suffix _$DIGITS)"
+  echo "cleaned generation $TAG (tag _$DIGITS)"
   exit 0
 fi
 
@@ -124,9 +137,10 @@ fi
 strip_tag "$TAG" > "$MANIFEST.tmp"
 for b in $BASES; do
   [ -f "$SRC/$b.so" ] || { echo "error: missing $SRC/$b.so" >&2; exit 2; }
-  cp "$SRC/$b.so" "$LIBS_ABS/${b}_$DIGITS.so"
-  printf '%s\t%s_%s.so\t%s\n' "$TAG" "$b" "$DIGITS" \
-    "$(sha256sum "$LIBS_ABS/${b}_$DIGITS.so" | cut -d' ' -f1)" >> "$MANIFEST.tmp"
+  name="$(gen_name "$b" "$DIGITS")"
+  cp "$SRC/$b.so" "$LIBS_ABS/$name"
+  printf '%s\t%s\t%s\n' "$TAG" "$name" \
+    "$(sha256sum "$LIBS_ABS/$name" | cut -d' ' -f1)" >> "$MANIFEST.tmp"
 done
 mv "$MANIFEST.tmp" "$MANIFEST"
 
@@ -141,5 +155,5 @@ if [ -f "$SRC/liblwjgl_tinyfd.so" ]; then
   mv "$MANIFEST.tmp" "$MANIFEST"
 fi
 
-echo "installed generation $TAG -> $LIBS_ABS (suffix _$DIGITS)"
+echo "installed generation $TAG -> $LIBS_ABS (tag _$DIGITS)"
 grep "^$TAG	" "$MANIFEST" | sed 's/^/  /'

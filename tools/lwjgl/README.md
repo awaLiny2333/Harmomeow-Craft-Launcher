@@ -9,7 +9,7 @@ MC 1.13–1.21.x), the 3.4.3 natives, the `libffi.a` the 3.4.x core links, and t
 | artifact | shipped as | recipe |
 |---|---|---|
 | `lwjgl-3.4.3.jar` (fat merge + the 3.4.x compat shims) | `entry/.../rawfile/meowcraft_extras.tar.gz` member | `build_lwjgl_jar.sh` (+ `pack_extras.py` to assemble the bundle) |
-| `liblwjgl_343.so` / `_opengl_343` / `_stb_343` (3.4.3) | `libs/meowlwjgls/libs/arm64-v8a/` | `rebuild_for_meowcraft.sh` → `install_natives.sh` |
+| `liblwjgl_343.so` / `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (3.4.3) | `libs/meowlwjgls/libs/arm64-v8a/` | `rebuild_for_meowcraft.sh` → `install_natives.sh` |
 | `libffi.a` (3.8.0) | build input only | `build_libffi.sh` |
 
 > `libmeowcraftbridge.so` (our GLFW/input/render bridge) is **separate** — it supplies
@@ -181,7 +181,7 @@ sh tools/lwjgl/build_libffi.sh --src stuffs/research/libffi/libffi-3.8.0 \
 sh tools/lwjgl/build_lwjgl_jar.sh --version 3.4.3 \
     --overlay tools/lwjgl/deltas/overlay --overlay tools/lwjgl/deltas/overlay-3.4.3
     # -> stuffs/research/lwjgl_build-3.4.3/out/lwjgl.jar   (javac; you run it)
-sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3        # build + install -> liblwjgl*_343.so (+ manifest)
+sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3        # build + install -> liblwjgl_343{,_opengl,_stb}.so (+ manifest)
 ```
 
 ### Naming & the flat directory (why `libs/arm64-v8a/` must stay flat)
@@ -189,7 +189,9 @@ sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3        # build + install -> liblwj
 - hvigor packages **only top-level `libs/<abi>/*.so`** — subdirectories are silently
   dropped, so per-generation subfolders are impossible. Every MC version is served by ONE
   JRE HSP whose namespace must hold all generations side by side -> same base name -> a
-  **uniform per-generation suffix** disambiguates: 3.3.3 -> `_333`, 3.4.3 -> `_343`.
+  **generation tag right after the base name** disambiguates: 3.4.3 -> `liblwjgl_343.so` /
+  `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (must stay in lockstep with
+  `MeowBundledNameMapper`, the Java side that decides what LWJGL looks for).
 - Natives must be **co-packaged** (fs-verity: runtime-written files fail `dlopen`).
 - **`liblwjgl_tinyfd.so` is generation-agnostic** (no suffix): MC ≥ 1.22's
   `NativeLibrariesBootstrap` eagerly loads `org.lwjgl.util.tinyfd` at boot (fail-fast), and
@@ -251,7 +253,7 @@ cp stuffs/research/meowcraft_extras.tar.gz entry/src/main/resources/rawfile/
 | artifact | sha256 |
 |---|---|
 | `lwjgl-3.4.3.jar` (carries the 5 3.4.x compat shims) | `b9b306a0a0318d7cfe998b222031abf9b27a5a7285a59d7ba03839e25e693e03` |
-| `liblwjgl_343.so` / `_opengl_343` / `_stb_343` (3.4.3) | `16298280…` / `e1f1413b…` / `8eb4a1b8…` |
+| `liblwjgl_343.so` / `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (3.4.3) | `16298280…` / `e1f1413b…` / `8eb4a1b8…` |
 | `libffi.a` (3.8.0, aarch64-linux-ohos) | `238cadb7bfa70ca5b4f718cc66878f1f3d26107bc6f6b0e272380c3f3f1fda5b` |
 | `meowcraft_extras.tar.gz` (shipped; single modern generation) | `f8437074206fec19a29bd6b67b8274fd333ca1ad0ca8b90735688405dd2221bf` |
 

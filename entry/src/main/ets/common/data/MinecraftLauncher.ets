@@ -211,7 +211,7 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     const rendererLib = (opts.rendererLib !== undefined && opts.rendererLib.length > 0)
       ? opts.rendererLib : RENDERER_LIB;
     argv.push(`-Dorg.lwjgl.opengl.libname=${rendererLib}`);
-    // LWJGL 世代命名：所有世代统一用后缀名（liblwjgl_<digits>.so，如 _333/_343），与随包
+    // LWJGL 世代命名：世代号紧跟基名（`liblwjgl_<digits>[_opengl|_stb].so`，如 liblwjgl_343.so），与随包
     // 扁平目录里的多代共存；启动一律设 mapper + 世代号，交给 MeowBundledNameMapper 选名。
     const lwjglGen = lwjglGeneration(opts.jsonPath);
     argv.push(`-Dorg.lwjgl.system.bundledLibrary.nameMapper=${LWJGL_NAME_MAPPER}`);

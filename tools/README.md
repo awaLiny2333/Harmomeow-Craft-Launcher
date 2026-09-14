@@ -62,8 +62,7 @@ sh tools/lwjgl/build_lwjgl_jar.sh --version 3.3.3 --overlay tools/lwjgl/deltas/o
     --overlay tools/lwjgl/deltas/overlay-3.3.3                                                       # ③a 3.3.3 jar（人跑 javac）
 sh tools/lwjgl/build_lwjgl_jar.sh --version 3.4.3 --overlay tools/lwjgl/deltas/overlay \
     --overlay tools/lwjgl/deltas/overlay-3.4.3      # ③b 3.4.3 jar（人跑）；≥3.4.x 自动补 sdl/vma/spvc/shaderc 模块（MC 26.3）
-sh tools/lwjgl/rebuild_for_meowcraft.sh 3.3.3                                # ④a 3.3.3 natives → 构建并安装 liblwjgl*_333.so
-sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3                                # ④b 3.4.3 natives → liblwjgl*_343.so（自动带 libffi）
+sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3                                # ④ 3.4.3 natives → liblwjgl_343{,_opengl,_stb}.so（自动带 libffi）
 # （natives 由 install_natives.sh 统一命名 + 维护 libs/meowlwjgls/libs/natives.manifest；勿手工拷/改名）
 python3 tools/lwjgl/pack_extras.py --base-tar entry/.../rawfile/meowcraft_extras.tar.gz \
     --jar lwjgl-3.3.3.jar=… --jar lwjgl-3.4.3.jar=… --out entry/.../rawfile/meowcraft_extras.tar.gz   # ⑤ 组包

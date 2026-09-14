@@ -10,7 +10,8 @@
  *
  * Activate with (before Platform class init, i.e. as a JVM -D):
  *   -Dorg.lwjgl.system.bundledLibrary.nameMapper=org.lwjgl.system.MeowBundledNameMapper
- *   -Dmeow.lwjgl.gen=<generation>     e.g. 3.4.3 -> files liblwjgl_343.so, ...
+ *   -Dmeow.lwjgl.gen=<generation>     e.g. 3.4.3 -> files liblwjgl_343.so,
+ *                                     liblwjgl_343_opengl.so, liblwjgl_343_stb.so
  *
  * With no meow.lwjgl.gen (or an empty value) the name is returned unchanged, so
  * the default generation keeps its stock file names.
@@ -21,23 +22,29 @@ import java.util.function.Function;
 
 public final class MeowBundledNameMapper implements Function<String, String> {
 
-    /** Digits-only generation tag, e.g. "3.4.3" -> "_343"; empty when unset. */
-    private static final String SUFFIX = suffix();
-
-    private static String suffix() {
-        String gen = System.getProperty("meow.lwjgl.gen", "");
-        return gen.isEmpty() ? "" : "_" + gen.replace(".", "");
-    }
+    /** Digits-only generation tag, e.g. "3.4.3" -> "343"; empty when unset. */
+    private static final String GEN = System.getProperty("meow.lwjgl.gen", "").replace(".", "");
 
     @Override
     public String apply(String name) {
-        if (SUFFIX.isEmpty()) {
-            return name;
+        if (GEN.isEmpty()) {
+            return name;   // unset -> the stock file names
         }
-        // Only our own bundled LWJGL natives carry a generation suffix; the GL
-        // driver / OpenAL / FreeType names must pass through untouched.
-        if ("lwjgl".equals(name) || "lwjgl_opengl".equals(name) || "lwjgl_stb".equals(name)) {
-            return name + SUFFIX;
+        // The generation tag sits right AFTER the base name, so the three natives line up:
+        //   lwjgl -> liblwjgl_343.so
+        //   lwjgl_opengl -> liblwjgl_343_opengl.so
+        //   lwjgl_stb -> liblwjgl_343_stb.so
+        // Everything else (gl driver / openal / freetype / SDL3 / lwjgl_tinyfd ...) passes
+        // through untouched -- keep this an EXPLICIT allowlist (a "lwjgl_" prefix rule
+        // would wrongly rewrite lwjgl_tinyfd, which is generation-agnostic).
+        if ("lwjgl".equals(name)) {
+            return "lwjgl_" + GEN;
+        }
+        if ("lwjgl_opengl".equals(name)) {
+            return "lwjgl_" + GEN + "_opengl";
+        }
+        if ("lwjgl_stb".equals(name)) {
+            return "lwjgl_" + GEN + "_stb";
         }
         return name;
     }
