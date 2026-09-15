@@ -177,6 +177,10 @@
       "value": "原版"
     },
     {
+      "name": "version_type_neoforge",
+      "value": "NeoForge"
+    },
+    {
       "name": "version_type_fabric",
       "value": "Fabric"
     },
@@ -521,6 +525,10 @@
       "value": "下载资源"
     },
     {
+      "name": "download_phase_process",
+      "value": "执行安装步骤"
+    },
+    {
       "name": "download_phase_write",
       "value": "写入版本"
     },
@@ -575,6 +583,18 @@
     {
       "name": "loader_fabric",
       "value": "Fabric"
+    },
+    {
+      "name": "loader_neoforge",
+      "value": "NeoForge"
+    },
+    {
+      "name": "loader_neoforge_unsupported",
+      "value": "NeoForge 仅支持 MC 1.20.2 及以上"
+    },
+    {
+      "name": "loader_neoforge_empty",
+      "value": "该版本没有可用的 NeoForge"
     },
     {
       "name": "loader_source_label",

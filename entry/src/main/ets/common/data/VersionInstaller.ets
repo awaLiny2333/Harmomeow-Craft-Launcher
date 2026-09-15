@@ -1,13 +1,23 @@
+import { appManager, common, contextConstant, StartOptions, Want } from '@kit.AbilityKit';
 import { fileIo } from '@kit.CoreFileKit';
+import { zlib } from '@kit.BasicServicesKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DEFAULT_LIBRARY_URL, DOWNLOAD_CONCURRENCY, ENV_OS_ARCH, ENV_OS_BITS, ENV_OS_NAME,
   FABRIC_MAVEN, HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_NOT_FOUND, LEGACY_INDEX_URL_PREFIX,
-  MOJANG_RESOURCES, fabricLaunchMetaCandidates, fabricLoaderListCandidates, fileCandidates,
-  manifestCandidates } from '../constants/DownloadContract';
-import { ASSET_HASH_PREFIX_LENGTH, assetObjectPath, assetsIndexesDir, librariesDir,
+  MOJANG_RESOURCES, NEOFORGE_RELEASES, fabricLaunchMetaCandidates, fabricLoaderListCandidates,
+  fileCandidates, manifestCandidates, neoforgeInstallerCandidates } from '../constants/DownloadContract';
+import { ASSET_HASH_PREFIX_LENGTH, assetObjectPath, assetsIndexesDir, librariesDir, NEO_JVM_RESULT,
   versionDir, versionJarPath, versionJsonPath } from '../constants/Paths';
+import { NEO_INSTALL_ABILITY, NEO_INSTALL_PROCESS_SUFFIX } from '../constants/LaunchContract';
+import { buildNeoForgeProcessorPlans, libraryNames, NeoForgeExpandContext, NeoForgeInstallProfileJson,
+  NeoForgeLaunchJson, NeoForgeMergeModuleEntry, NeoForgeProcessorJob, NeoForgeProcessorPlan,
+  NeoForgeProcessorSet, resolveMergeModuleEntries, stringArgs } from './NeoForgeInstaller';
 import { removeTreeBestEffort } from './VersionTools';
 import { downloadFile, fetchText } from './Downloader';
+
+const LOG_DOMAIN = 0x0001;
+const LOG_TAG = 'VersionInstaller';
 
 /**
  * 原版版本安装器（数据层，纯逻辑 + 落盘；不含 UI）。
@@ -49,6 +59,17 @@ export interface DownloadItem {
 export const PHASE_FILES: number = 1;
 export const PHASE_ASSETS: number = 2;
 export const PHASE_WRITE: number = 3;
+/** 执行安装步骤（NeoForge 的 processor 链）。 */
+export const PHASE_PROCESS: number = 4;
+
+/** processor 执行：轮询间隔与单步超时（ART/binarypatcher 在大 jar 上可能较慢）。 */
+export const PROCESSOR_POLL_MS: number = 500;
+export const PROCESSOR_TIMEOUT_MS: number = 300000;
+/** processor 之间：等上一次 `:neoinstall` 进程完全退出（JVM `_exit` 后仍有回收窗口，立刻再起会 16000068）。 */
+export const PROCESSOR_GONE_TIMEOUT_MS: number = 20000;
+/** 起 ability 的重试上限与退避（仅对"already running"/内部错误重试）。 */
+export const PROCESSOR_START_RETRY_MAX: number = 8;
+export const PROCESSOR_START_BACKOFF_MS: number = 800;
 
 // ---- JSON 结构（Minecraft 版本清单 / 版本 json / 资源索引）----
 
@@ -274,7 +295,7 @@ function rulesAllow(rules?: RuleJson[]): boolean {
 // ---- Maven 路径 / 下载项构造 ----
 
 /** 由 `group:artifact:version[:classifier][@ext]` 生成 Maven 相对路径。 */
-function mavenPath(name: string): string {
+export function mavenPath(name: string): string {
   if (name.length === 0) {
     return '';
   }
@@ -884,4 +905,425 @@ export async function installFabricVersion(gameRoot: string, gameRemote: RemoteV
   onPhase(PHASE_WRITE);
   const composed = composeFabricManifest(vanilla, instanceName, gameVersion, loaderVersion, mainClass, fabricDeps);
   writeText(versionJsonPath(gameRoot, instanceName), JSON.stringify(composed));
+}
+
+// ---- NeoForge 安装（**仅 MC 1.20.2+**；installer jar 只作数据容器）----
+// 依据：真 installer 实测 + 方案文档（notes 20-design/launch/NeoForge支持-改动方案.md）。
+// 形态：**HMCL 形态**（顶层扁平 + patches[game,neoforge]），与 Fabric 一致（Java 侧只读顶层、
+// ArkTS 侧对 patches 形态从空清单重放 patch，故 patches 必须自洽）。
+
+/** 合并两段 arguments（前者在前、后者追加）——对齐 HMCL `Arguments.merge`。 */
+function concatArgs(a?: ArgumentsJson, b?: ArgumentsJson): ArgumentsJson | undefined {
+  if (a === undefined) {
+    return b;
+  }
+  if (b === undefined) {
+    return a;
+  }
+  const game: ArgumentEntry[] = [];
+  for (const x of a.game ?? []) {
+    game.push(x);
+  }
+  for (const x of b.game ?? []) {
+    game.push(x);
+  }
+  const jvm: ArgumentEntry[] = [];
+  for (const x of a.jvm ?? []) {
+    jvm.push(x);
+  }
+  for (const x of b.jvm ?? []) {
+    jvm.push(x);
+  }
+  return { game: game, jvm: jvm };
+}
+
+/** NeoForge 工作目录（installer jar / 解包 / job 文件；位于 cacheDir，可随时重下）。 */
+function neoWorkDir(cacheDir: string, loaderVersion: string): string {
+  return `${cacheDir}/neo-installer/${loaderVersion}`;
+}
+
+/** 确保目录存在（递归；已存在则忽略）。 */
+function ensureDir(dirPath: string): void {
+  try {
+    if (!fileIo.accessSync(dirPath)) {
+      fileIo.mkdirSync(dirPath, true);
+    }
+  } catch {
+    // 并发创建/已存在：忽略。
+  }
+}
+
+/** 读并解析 JSON 文件。 */
+function readJsonFile<T>(path: string): T {
+  return JSON.parse(fileIo.readTextSync(path)) as T;
+}
+
+/**
+ * 组装 NeoForge 实例清单（HMCL 形态）：顶层扁平 + `patches[game, neoforge]`。
+ *
+ * - `game` patch：vanilla 全部字段（priority 0）；
+ * - `neoforge` patch：来自 installer 内嵌 `version.json`（mainClass / arguments / libraries 等，priority 30000）；
+ * - 顶层：`mainClass = neoforge`、`libraries = vanilla ++ neoforge`、`arguments = vanilla ++ neoforge`
+ *   （Java 侧只读顶层 ⇒ 必须把加载器的 jvm/game 参数并进来；`-cp ${classpath}` 由 vanilla 提供）。
+ */
+function composeNeoForgeManifest(vanilla: VersionJson, instanceName: string, gameVersion: string,
+  loaderVersion: string, neo: NeoForgeLaunchJson): VersionJson {
+  const gamePatch: PatchJson = {
+    id: 'game',
+    version: gameVersion,
+    priority: 0,
+    mainClass: vanilla.mainClass,
+    minecraftArguments: vanilla.minecraftArguments,
+    arguments: vanilla.arguments,
+    libraries: vanilla.libraries,
+    assets: vanilla.assets,
+    assetIndex: vanilla.assetIndex,
+    downloads: vanilla.downloads,
+    javaVersion: vanilla.javaVersion,
+    type: vanilla.type,
+    time: vanilla.time,
+    releaseTime: vanilla.releaseTime,
+    minimumLauncherVersion: vanilla.minimumLauncherVersion,
+    complianceLevel: vanilla.complianceLevel,
+    compatibilityRules: vanilla.compatibilityRules,
+    logging: vanilla.logging
+  };
+  const neoPatch: PatchJson = {
+    id: 'neoforge',
+    version: loaderVersion,
+    priority: 30000,
+    mainClass: neo.mainClass,
+    arguments: neo.arguments as ArgumentsJson | undefined,
+    libraries: neo.libraries as LibraryJson[] | undefined,
+    type: neo.type,
+    time: neo.time,
+    releaseTime: neo.releaseTime,
+    logging: neo.logging as Record<string, LoggingEntryJson> | undefined,
+    complianceLevel: neo.complianceLevel
+  };
+  const mainClass = neo.mainClass ?? vanilla.mainClass;
+  vanilla.id = instanceName;
+  vanilla.jar = instanceName;
+  vanilla.root = true;
+  vanilla.mainClass = mainClass;
+  vanilla.libraries = concatLibs(vanilla.libraries, neo.libraries as LibraryJson[] | undefined);
+  vanilla.arguments = concatArgs(vanilla.arguments, neo.arguments as ArgumentsJson | undefined);
+  vanilla.patches = [gamePatch, neoPatch];
+  return vanilla;
+}
+
+/**
+ * 安装 NeoForge 实例（**仅 1.20.2+**）。
+ *
+ * 步骤：拉 vanilla 清单 → 下 installer jar（数据容器）→ 解包读 `install_profile.json` 与内嵌
+ * `version.json` → 下 vanilla 资产（client jar 落 `<名>.jar`、原版库、资源索引与对象）→
+ * 下 NeoForge 两份库（install_profile.libraries + version.json.libraries，按 maven 树）→
+ * 【processor 链】→ 写清单。
+ *
+ * ⚠️ processor 链（T3 待实现）会产出 patched client jar；**未完成前本函数会在写出清单之前抛错**，
+ * 以免留下"能列出但起不来"的残缺实例。
+ */
+export async function installNeoForgeVersion(ctx: common.UIAbilityContext, gameRoot: string,
+  gameRootUri: string, gameRemote: RemoteVersion, loaderVersion: string, instanceName: string,
+  versionSource: string, cacheDir: string,
+  onPhase: (phase: number) => void,
+  onCount: (done: number, total: number) => void,
+  onCurrent: (label: string) => void,
+  onFileProgress: (received: number, total: number) => void): Promise<void> {
+  if (!isValidInstanceName(instanceName)) {
+    throw new Error('invalid instance name');
+  }
+  if (loaderVersion.length === 0) {
+    throw new Error('neoforge loader version missing');
+  }
+
+  // 1) vanilla 清单（版本源）
+  onPhase(PHASE_FILES);
+  const vanillaText = await fetchText(fileCandidates(gameRemote.url, versionSource));
+  const vanilla = JSON.parse(vanillaText) as VersionJson;
+  const gameVersion = (vanilla.id ?? '').length > 0 ? (vanilla.id ?? '') : gameRemote.id;
+
+  // 2) installer jar（数据容器）→ 解包 → 读 profile 与内嵌启动清单
+  const workDir = neoWorkDir(cacheDir, loaderVersion);
+  ensureDir(workDir);
+  const jarPath = `${workDir}/installer.jar`;
+  await runDownloads([newItem('neoforge-installer.jar',
+    neoforgeInstallerCandidates(loaderVersion, versionSource), jarPath, '', 0)],
+    versionSource, onCount, onCurrent, onFileProgress);
+  const unzipDir = `${workDir}/unzipped`;
+  // 幂等：该目录按 loader 版本**跨实例复用**（同名 job 目录），先清后解，避免
+  // 「第二次安装/失败重试」时同名目录已存在导致的重复解压与半截残留。
+  removeTreeBestEffort(unzipDir);
+  ensureDir(unzipDir);
+  onCurrent('installer-profile');
+  await zlib.decompressFile(jarPath, unzipDir);
+  const profile = readJsonFile<NeoForgeInstallProfileJson>(`${unzipDir}/install_profile.json`);
+  const launchRel = (profile.json ?? '/version.json').replace(/^\//, '');
+  const launch = readJsonFile<NeoForgeLaunchJson>(`${unzipDir}/${launchRel}`);
+
+  // 3) vanilla 文件：client jar（落 <名>.jar）+ 原版库 + 资源索引（版本源）
+  const files: DownloadItem[] = [];
+  const client = vanilla.downloads?.client;
+  if (client !== undefined) {
+    const url = client.url ?? '';
+    if (url.length > 0) {
+      files.push(newItem(`${instanceName}.jar`, [url], versionJarPath(gameRoot, instanceName),
+        client.sha1 ?? '', client.size ?? 0));
+    }
+  }
+  for (const lib of vanilla.libraries ?? []) {
+    const item = libraryItem(gameRoot, lib);
+    if (item !== null) {
+      files.push(item);
+    }
+  }
+  const indexItem = assetIndexItem(gameRoot, vanilla.assets ?? '', vanilla.assetIndex);
+  if (indexItem !== null) {
+    files.push(indexItem);
+  }
+  // NeoForge 两份库一并下（maven 树；url 指向 maven.neoforged.net，由下载源重写为镜像）。
+  const profileLibs = (profile.libraries ?? []) as LibraryJson[];
+  for (const lib of profileLibs) {
+    const item = libraryItem(gameRoot, lib);
+    if (item !== null) {
+      files.push(item);
+    }
+  }
+  const launchLibs = (launch.libraries ?? []) as LibraryJson[];
+  for (const lib of launchLibs) {
+    const item = libraryItem(gameRoot, lib);
+    if (item !== null) {
+      files.push(item);
+    }
+  }
+    // 加载器 `-DmergeModules=` 点名的 jar：**不在任何清单里**，但加载器按文件名在 classpath 里找它
+  // （找不到就拿空集做 union 合并 → 读 /META-INF/versions 抛异常 → 启动即败）。
+  // 例：NeoForge 20.2.93 要 `jna-5.10.0.jar`，而 vanilla 1.20.2 只声明 jna 5.13.0 ⇒ 必须补下。
+  const launchJvmArgs = stringArgs(launch.arguments);
+  // group 解析来源要含 **vanilla 库表**：`jna`/`jna-platform` 只在 vanilla 1.20.2 里声明
+  // （NeoForge 清单里没有它们），否则解析不出 group → 补不下那颗 jar。
+  const declaredNames: string[] = [];
+  for (const n of libraryNames(vanilla.libraries as object[] | undefined)) {
+    declaredNames.push(n);
+  }
+  for (const n of libraryNames(profile.libraries)) {
+    declaredNames.push(n);
+  }
+  for (const n of libraryNames(launch.libraries)) {
+    declaredNames.push(n);
+  }
+  const mergeEntries: NeoForgeMergeModuleEntry[] = resolveMergeModuleEntries(launchJvmArgs, declaredNames);
+  for (const e of mergeEntries) {
+    const dest = `${librariesDir(gameRoot)}/${e.relPath}`;
+    if (!exists(dest)) {
+      files.push(newItem(e.fileName, [`${NEOFORGE_RELEASES}${e.relPath}`], dest, '', 0));
+    }
+  }
+await runDownloads(files, versionSource, onCount, onCurrent, onFileProgress);
+
+  // 4) 资源对象（依赖已下好的索引；版本源）
+  const assetId = (vanilla.assetIndex?.id ?? '').length > 0
+    ? (vanilla.assetIndex?.id ?? '')
+    : (vanilla.assets ?? '');
+  if (indexItem !== null && assetId.length > 0) {
+    onPhase(PHASE_ASSETS);
+    let index: AssetIndexJson = {};
+    try {
+      index = JSON.parse(fileIo.readTextSync(`${assetsIndexesDir(gameRoot)}/${assetId}.json`)) as AssetIndexJson;
+    } catch {
+      index = {};
+    }
+    await runDownloads(assetObjectItems(gameRoot, index), versionSource, onCount, onCurrent, onFileProgress);
+  }
+
+  // 5) processor 链：installer 只当数据容器，按 profile 顺序执行工具，产出 patched client jar。
+  //    `{MINECRAFT_JAR}` 必须用**独立 temp 副本**（HMCL 同款硬约束）：工具会就地改写该 jar。
+  onPhase(PHASE_PROCESS);
+  onFileProgress(0, 0); // 处理器阶段无文件进度（清掉上一阶段残留的字节数显示）
+  const mcJarForTools = `${workDir}/mc.jar`;
+  try {
+    fileIo.copyFileSync(versionJarPath(gameRoot, instanceName), mcJarForTools);
+  } catch (error) {
+    const err = error as BusinessError;
+    throw new Error(`copy minecraft jar for processors failed: ${err.message ?? ''}`);
+  }
+  const expandCtx: NeoForgeExpandContext = {
+    libraryDir: librariesDir(gameRoot),
+    unzipDir: unzipDir,
+    gameRoot: gameRoot,
+    installerJar: jarPath,
+    minecraftJar: mcJarForTools,
+    minecraftVersion: gameVersion,
+    mavenPathOf: (name: string): string => mavenPath(name)
+  };
+  const set = await buildNeoForgeProcessorPlans(profile, expandCtx, workDir);
+  await runNeoForgeProcessors(ctx, set, workDir, gameRootUri, onCount, onCurrent);
+  if (set.patchedPath.length === 0 || !exists(set.patchedPath)) {
+    throw new Error('neoforge patched client jar missing after processors');
+  }
+
+  // 6) 写清单（HMCL 形态：顶层扁平 + patches[game, neoforge]）
+  onPhase(PHASE_WRITE);
+  const composed = composeNeoForgeManifest(vanilla, instanceName, gameVersion, loaderVersion, launch);
+  writeText(versionJsonPath(gameRoot, instanceName), JSON.stringify(composed));
+}
+
+/**
+ * 执行 NeoForge 的 processor 链：**每个 processor 起一次无窗 UIAbility（独立进程 + headless JVM）**。
+ *
+ * 为什么逐次起进程：JLI_Launch 一进程只能起一次；`System.exit` 只杀该进程；工具间静态状态互不污染。
+ * 退出码来自桥在 headless 模式写的 `<filesDir>/meow-neo-jvm-result.txt`（native 只有 hilog，拿不到返回值）；
+ * ⚠️ 工具**多数 fail-open（参数错也退 0）** ⇒ 成败另有产物断言（调用方负责）。
+ */
+async function runNeoForgeProcessors(ctx: common.UIAbilityContext, set: NeoForgeProcessorSet,
+  workDir: string, gameRootUri: string, onCount: (done: number, total: number) => void,
+  onCurrent: (label: string) => void): Promise<void> {
+  const resultPath = `${ctx.filesDir}/${NEO_JVM_RESULT}`;
+  const total = set.plans.length;
+  if (total === 0) {
+    throw new Error('neoforge profile has no client-side processors');
+  }
+  onCount(0, total);
+  for (let i = 0; i < total; i++) {
+    const plan: NeoForgeProcessorPlan = set.plans[i];
+    onCurrent(plan.label);
+    // job：完整 java 参数（不经 meow.launcher；headless 由 rendererLib='' 触发）
+    const job = new NeoForgeProcessorJob();
+    job.rootUri = gameRootUri;
+    // `-Djava.io.tmpdir` 必须指可写沙箱目录（鸿蒙无 /tmp，与游戏路径的注入保持一致）：
+    // 部分工具（解压/落盘中间产物）会用它，默认值在设备上不可写。
+    job.argv = ['java', `-Djava.io.tmpdir=${workDir}`, '-cp', plan.classpath.join(':'), plan.mainClass];
+    for (const a of plan.argv) {
+      job.argv.push(a);
+    }
+    const jobPath = `${workDir}/job-${i}.json`;
+    writeText(jobPath, JSON.stringify(job));
+    // 清上一次的结果文件，避免读到陈旧退出码
+    try {
+      fileIo.unlinkSync(resultPath);
+    } catch (e) {
+      // 首次运行不存在属正常；但若因权限/IO 失败而残留，下一轮可能读到**陈旧退出码** ⇒ 记一条。
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'clear prev result file failed (ignored): %{public}s',
+        JSON.stringify(e));
+    }
+    const want: Want = {
+      bundleName: ctx.abilityInfo.bundleName,
+      moduleName: 'entry',
+      abilityName: NEO_INSTALL_ABILITY,
+      parameters: {
+        'job': jobPath,
+      },
+    };
+    const options: StartOptions = {
+      processMode: contextConstant.ProcessMode.NEW_PROCESS_ATTACH_TO_PARENT,
+      startupVisibility: contextConstant.StartupVisibility.STARTUP_HIDE,
+    };
+    // 上一次 processor 的进程要完全退出后才能再起（否则 16000068）；并对该码做退避重试。
+    await waitNeoInstallGone();
+    let started = false;
+    let lastStartError = '';
+    for (let attempt = 0; attempt < PROCESSOR_START_RETRY_MAX && !started; attempt++) {
+      try {
+        await ctx.startAbility(want, options);
+        started = true;
+      } catch (error) {
+        const err = error as BusinessError;
+        lastStartError = `${err.code} ${err.message ?? ''}`;
+        const retryable = (err.code === 16000068 || err.code === 16000050);
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'startAbility attempt %{public}d failed: %{public}s',
+          attempt + 1, lastStartError);
+        if (!retryable) {
+          break;
+        }
+        await new Promise<void>((resolve: () => void) => {
+          setTimeout(resolve, PROCESSOR_START_BACKOFF_MS * (attempt + 1));
+        });
+      }
+    }
+    if (!started) {
+      throw new Error(`start install ability failed (${plan.label}): ${lastStartError}`);
+    }
+    const code = await waitProcessorExit(resultPath, PROCESSOR_TIMEOUT_MS, plan.label);
+    if (code !== 0) {
+      throw new Error(`processor failed (${plan.label}) exit=${code}`);
+    }
+    onCount(i + 1, total);
+  }
+}
+
+/**
+ * `:neoinstall` 进程是否存活（`appManager` 只看本应用进程，无需权限）。
+ * 探测失败按「存活」处理——宁可慢，也不要因为探测不到就误判失败。
+ */
+async function neoInstallProcessAlive(): Promise<boolean> {
+  try {
+    const list = await appManager.getRunningProcessInformation();
+    for (const info of list) {
+      if (info.processName.includes(NEO_INSTALL_PROCESS_SUFFIX)) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * 等 `:neoinstall` 进程完全消失（上一次 processor 的 JVM 刚 `_exit`，能力实例仍在回收窗口中；
+ * 立刻再 `startAbility` 会得到 16000068 "The ability is already running"）。
+ * 只在**已看到过该进程**时才等待；探测失败按"已退出"处理（重试逻辑兜底）。
+ */
+async function waitNeoInstallGone(): Promise<void> {
+  const deadline = Date.now() + PROCESSOR_GONE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    // `neoInstallProcessAlive()` 内部已吞异常并**按存活**返回（宁可慢也不误判退出）⇒ 无 catch 分支。
+    if (!(await neoInstallProcessAlive())) {
+      return;
+    }
+    await new Promise<void>((resolve: () => void) => {
+      setTimeout(resolve, PROCESSOR_POLL_MS);
+    });
+  }
+}
+
+/** 轮询结果文件，等出 `JLI_RETURNED code=N`；超时抛错。 */
+async function waitProcessorExit(resultPath: string, timeoutMs: number, label: string): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let missedPolls = 0;
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve: () => void) => {
+      setTimeout(resolve, PROCESSOR_POLL_MS);
+    });
+    let text = '';
+    try {
+      if (fileIo.accessSync(resultPath)) {
+        text = fileIo.readTextSync(resultPath);
+      }
+    } catch {
+      text = '';
+    }
+    const marker = 'JLI_RETURNED code=';
+    const at = text.lastIndexOf(marker);
+    if (at >= 0) {
+      const numText = text.substring(at + marker.length).split('\n')[0].trim();
+      const n = parseInt(numText, 10);
+      return Number.isNaN(n) ? -1 : n;
+    }
+    // 异常终结：桥已写 `JLI_BEGIN`（JVM 起来了），但进程已消失却没写 `JLI_RETURNED`
+    // ⇒ 工具自己 `System.exit`/崩溃了。此时不必干等到超时（300s），立刻判失败。
+    // 注意：进程存活但长时间无输出是**正常**的（processor 干活可能几分钟），故只在进程消失时判定。
+    if (text.includes('JLI_BEGIN')) {
+      if (await neoInstallProcessAlive()) {
+        missedPolls = 0;
+      } else {
+        // 需**连续 2 次**探测不到才判失败：进程列表是瞬时快照，单次漏列不该误杀正在干活的 processor。
+        missedPolls++;
+        if (missedPolls >= 2) {
+          throw new Error(`processor terminated without exit code (${label})`);
+        }
+      }
+    }
+  }
+  throw new Error(`processor timeout (${label}) after ${timeoutMs} ms`);
 }

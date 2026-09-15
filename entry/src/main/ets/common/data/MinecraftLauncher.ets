@@ -5,11 +5,12 @@ import { RENDERER_LIB, VULKAN_LIB_DISABLED, WINDOW_DEFAULT_W, WINDOW_DEFAULT_H,
   SPOOF_OS_NAME, SPOOF_OS_VERSION, SPOOF_CPU_NAME,
   LOCALE_LANGUAGE, LOCALE_COUNTRY, LOCALE_TIMEZONE, RULE_OS_NAME, RULE_OS_ARCH,
   OFFLINE_USERNAME, LAUNCHER_NAME, LAUNCHER_VERSION,
-  CLIENT_MOD_NAME, LWJGL_GEN_343,
+  CLIENT_MOD_NAME, LWJGL_GEN_343, LWJGL_JAR_PREFIX,
   LWJGL_NAME_MAPPER } from '../constants/LaunchDefaults';
 import { MEOW_CLASS_LOADER, MEOW_MAIN_CLASS } from '../constants/LaunchContract';
+import { libraryNames, resolveMergeModuleEntries } from './NeoForgeInstaller';
 import { NATIVES_DIR } from '../constants/Paths';
-import { VersionJson, VersionRule, VersionRuleArg, VERSION_FORM_VANILLA,
+import { VersionJson, VersionRule, VersionRuleArg, VERSION_FORM_VANILLA, LOADER_NEO_FORGE,
   resolveVersion, resolveVersionByPath } from './VersionResolver';
 
 const LOG_DOMAIN = 0x0001;
@@ -53,6 +54,15 @@ function ruleAllows(rules?: VersionRule[]): boolean {
     return true;
   }
   for (const r of rules) {
+    // features 门控（has_custom_resolution / is_demo_user / is_quick_play_* 等）：本工程**不声明**
+    // 任何 feature ⇒ 带 features 的规则一律不匹配。必须如此：否则会把 MC json 里 feature 门控的
+    // `--width ${resolution_width}` 之类**原样带宏**发出去 → ModLauncher 的 joptsimple 解析
+    // `--width` 时 NumberFormatException → 启动即退（2026-09-16 实测 NeoForge 1.21.1）。
+    // 非空 features 才视为不匹配（与安装侧 VersionInstaller.rulesAllow 口径一致：
+    // `features: {}` 等价于"无特性要求"，应照常命中）。
+    if (r.features !== undefined && Object.keys(r.features).length > 0) {
+      continue;
+    }
     const os = r.os;
     const nameHit = os === undefined || os.name === undefined || os.name === RULE_OS_NAME;
     const archHit = os === undefined || os.arch === undefined || os.arch === RULE_OS_ARCH;
@@ -82,6 +92,8 @@ export interface LaunchOptions {
   jsonPath: string;
   /** 完整 classpath（可选）：通常平铺后用 "<dir>/*" 通配，规避超长 -cp 失效。 */
   classpath?: string;
+  /** 平铺目录（可选）：NeoForge 走真 maven 树 classpath，但随包 LWJGL3 jar 只能从这里取。 */
+  classpathDir?: string;
   /** 沙箱可写运行目录（tmpdir/natives 解压；鸿蒙无 /tmp）。 */
   runDir?: string;
   /** el1 可 dlopen 的 native libs 目录（meowjre HSP libs：JRE .so + LWJGL/JNA 组件）。 */
@@ -108,6 +120,12 @@ export interface LaunchOptions {
   maxHeapMb?: number;
   /** 离线玩家名；空 = 用 LaunchDefaults.OFFLINE_USERNAME。 */
   playerName?: string;
+  /** 账户 UUID（NeoForge 由 ArkTS 直接组 game 参数 ⇒ 必须传真值；原版/Fabric 走 Java 侧可留空）。 */
+  authUuid?: string;
+  /** 账户 accessToken（同上）。 */
+  authAccessToken?: string;
+  /** XSTS user hash（`--xuid`；同上）。 */
+  authXuid?: string;
   /** 设备 CPU 芯片型号（ArkTS deviceInfo.chipType）；空 = 不传。 */
   cpuChip?: string;
   /** 渲染后端库名（按 MC 版本选，见 RendererPolicy）；空 = 默认桌面 GL（RENDERER_LIB）。
@@ -128,6 +146,8 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     return [];
   }
   const json = resolved.json;
+  // NeoForge：启动参数与 classpath 形态都不同于原版/Fabric（见下方各处 `neoForge` 分支）。
+  const neoForge = resolved.loader === LOADER_NEO_FORGE;
   // 实例身份 = versions 目录名（opts.versionId，对齐 HMCL）；无则退回 json 的 id。
   const id = (opts.versionId !== undefined && opts.versionId.length > 0)
     ? opts.versionId : (json.id ?? '');
@@ -138,10 +158,16 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   const gameDir = (opts.gameDir !== undefined && opts.gameDir.length > 0)
     ? opts.gameDir
     : opts.gameRoot;
-  // classpath：给定则直接用，否则按 json 本地存在 jar 拼。
-  const classpath = (opts.classpath !== undefined && opts.classpath.length > 0)
-    ? opts.classpath
-    : assembleClasspath(opts.gameRoot, json, id);
+  // classpath：
+  // - NeoForge：**必须走真 maven 树**（`-p` 模块路径与 `-DignoreList` 都依赖真实布局，
+  //   且平铺的 `<dir>/*` 顺序不定、会与树形成双份库）；随包 LWJGL3 jar 另从平铺目录补进来。
+  // - 原版/Fabric：维持平铺 `<dir>/*`（规避超长 -cp）。
+  const classpath = neoForge
+    ? assembleNeoForgeClasspath(opts.gameRoot, json, id,
+        opts.classpathDir !== undefined ? opts.classpathDir : '', opts.jsonPath)
+    : ((opts.classpath !== undefined && opts.classpath.length > 0)
+      ? opts.classpath
+      : assembleClasspath(opts.gameRoot, json, id));
   // natives 目录：JNA/LWJGL native 解压目标（runDir 沙箱内可写优先）。
   const nativesDir = (opts.runDir !== undefined && opts.runDir.length > 0)
     ? `${opts.runDir}/${NATIVES_DIR}`
@@ -155,7 +181,10 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   const player = (opts.playerName !== undefined && opts.playerName.length > 0)
     ? opts.playerName : OFFLINE_USERNAME;
   const macros = makeMacros(gameDir, opts.gameRoot, id, json.assetIndex?.id ?? '', classpath,
-    nativeMacroDir, player);
+    nativeMacroDir, player,
+    opts.authUuid !== undefined ? opts.authUuid : '',
+    opts.authAccessToken !== undefined ? opts.authAccessToken : '',
+    opts.authXuid !== undefined ? opts.authXuid : '');
   const argv: string[] = [];
 
   // 固定 JVM 参数：平台伪装成 Linux —— MC/oshi/LWJGL 检测 os.name，HarmonyOS 会被拒绝。
@@ -197,7 +226,9 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   }
 
   // 自研桥模式固定参数（与历史启动器 JVMLauncher overridableArguments 全量对齐——LWJGL 桥与 MeowClassLoader 需要）。
-  if (opts.meowcraftLaunch === true) {
+  // NeoForge 同样需要（LWJGL/随包 native/平台伪装都在这一段），只是它**不设** MeowClassLoader、
+  // 主类也不走 MeowLauncher（见下方两个分支的 `neoForge` 条件）。
+  if (opts.meowcraftLaunch === true || neoForge) {
     // 自研 system classloader 只服务 vanilla：它让我们在运行期往 classpath 追加 jar。
     // **Fabric（等加载器）必须走默认 app classloader**：Fabric Knot 要求 loader 类由父加载器持有、
     // game 类由它自己的 KnotClassLoader 持有；若我们自设 system CL，KnotClassLoader 会把 loader 类
@@ -322,8 +353,12 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     argv.push(`-Dorg.lwjgl.system.SharedLibraryExtractPath=${nativesDir}`);
     argv.push(`-Dio.netty.native.workdir=${nativesDir}`);
   }
-  // 主类与后续参数：自研桥模式 = MeowLauncher <username> <version>；否则 vanilla。
-  if (opts.meowcraftLaunch === true) {
+  // 主类与后续参数：
+  // - 原版/Fabric：MeowLauncher <username> <version>（其内部反射真正 mainClass）；
+  // - **NeoForge**：直接以加载器的 mainClass（BootstrapLauncher / fml.startup.Client）为主类，
+  //   并由本函数补齐 game 参数（`--fml.*` 等）——**不设** `-Djava.system.class.loader`
+  //   （NeoForge 自带模块层与类加载体系，自设 system CL 会冲突）。
+  if (opts.meowcraftLaunch === true && !neoForge) {
     argv.push(MEOW_MAIN_CLASS);
     argv.push(player);
     argv.push(id);
@@ -356,7 +391,8 @@ export function readVersionId(jsonPath: string): string {
 /** 宏表：值由 json + 离线约定决定。gameDir = 运行目录（隔离时 = versions/<id>），
  *  gameRoot = .minecraft 根（只有 assets 从它派生，保证资源池始终共享）。 */
 function makeMacros(gameDir: string, gameRoot: string, id: string, assetIndexId: string,
-  classpath: string, nativesDir: string, player: string): LaunchMacros {
+  classpath: string, nativesDir: string, player: string, authUuid: string,
+  authAccessToken: string, authXuid: string): LaunchMacros {
   const m: LaunchMacros = new Map<string, string>();
   m.set('auth_player_name', player);
   m.set('version_name', id);
@@ -364,14 +400,20 @@ function makeMacros(gameDir: string, gameRoot: string, id: string, assetIndexId:
   m.set('game_directory', gameDir);
   m.set('assets_root', `${gameRoot}/assets`);
   m.set('assets_index_name', assetIndexId);
-  m.set('auth_uuid', '');
-  m.set('auth_access_token', '');
+  m.set('auth_uuid', authUuid);
+  m.set('auth_access_token', authAccessToken);
   m.set('classpath', classpath);
   m.set('natives_directory', nativesDir);
+  // NeoForge（FML）清单里的占位符：模块路径 / 库目录 / 主 jar（`-DignoreList` 要用）。
+  m.set('library_directory', `${gameRoot}/libraries`);
+  m.set('classpath_separator', ':');
+  m.set('file_separator', '/');
+  m.set('primary_jar', `${gameRoot}/versions/${id}/${id}.jar`);
+  m.set('primary_jar_name', `${id}.jar`);
   m.set('launcher_name', LAUNCHER_NAME);
   m.set('launcher_version', LAUNCHER_VERSION);
   m.set('clientid', '');
-  m.set('auth_xuid', '');
+  m.set('auth_xuid', authXuid);
   m.set('user_type', 'msa');
   return m;
 }
@@ -468,6 +510,91 @@ function collectFromJson(gameRoot: string, json: VersionJson, versionId: string)
     parts.push(verJar);
   }
   return parts;
+}
+
+/**
+ * NeoForge 的 classpath：**真 maven 树的按序路径** + 随包 LWJGL3 jar + 实例 jar。
+ *
+ * `collectFromJson` 已按声明顺序收集「规则允许且本地存在」的库，并**跳过 MC 声明的 LWJGL3**
+ * （`org/lwjgl/…`，由随包 clean-room jar 替代）——这正是 NeoForge 需要的形态；
+ * 唯一要补的是那个随包 jar（它在平铺目录里，不在 maven 树里）。
+ */
+function assembleNeoForgeClasspath(gameRoot: string, json: VersionJson, versionId: string,
+  stagedDir: string, jsonPath: string): string {
+  const parts = collectFromJson(gameRoot, json, versionId);
+  // 加载器 `-DmergeModules=` 点名的 jar 必须出现在 `java.class.path` 里（它按**文件名**查表做合并）；
+  // 这些 jar（如 jna-5.10.0.jar）不在清单中，由安装期补下到 maven 树 → 这里按名解析后补进 classpath。
+  const jvmArgs = collectArgs(json.arguments?.jvm);
+  const libNames = libraryNames(json.libraries as object[] | undefined);
+  for (const e of resolveMergeModuleEntries(jvmArgs, libNames)) {
+    const p = `${gameRoot}/libraries/${e.relPath}`;
+    if (fileExists(p)) {
+      parts.push(p);
+    }
+  }
+  if (stagedDir.length > 0) {
+    // (1) oshi 补丁版**前置**：真 maven 树里的 oshi 是上游原版，会去初始化 JNA（JNA 在 OHOS 上
+    //     dlopen 自己解出来的 native 必失败 → NoClassDefFoundError，F3/SystemReport 报错）。
+    //     平铺目录里那份是 ClasspathStager 覆盖过的补丁件（认 -Dmeow.cpu.chip），前置即可遮蔽。
+    const oshiBase = oshiJarBaseName(json);
+    if (oshiBase.length > 0) {
+      const patched = `${stagedDir}/${oshiBase}`;
+      if (!fileExists(patched)) {
+        hilog.info(LOG_DOMAIN, LOG_TAG,
+          'oshi override missing (%{public}s) -> upstream oshi kept (JNA noise expected)', oshiBase);
+      }
+      if (fileExists(patched)) {
+        // **替换**而不是「前置」：真 maven 树里的同名 oshi 必须同时移出 classpath，
+        // 否则同名两件同时在场（潜在模块/包冲突，靠先到先得侥幸）。
+        const kept: string[] = [];
+        for (const one of parts) {
+          if (!one.endsWith(`/${oshiBase}`)) {
+            kept.push(one);
+          }
+        }
+        parts.length = 0;
+        parts.push(patched);
+        for (const one of kept) {
+          parts.push(one);
+        }
+      }
+    }
+    // (2) 随包 LWJGL3 jar（collectFromJson 会跳过树里的 org.lwjgl3，由它提供）。
+    const genJar = `${LWJGL_JAR_PREFIX}${lwjglGeneration(jsonPath)}.jar`;
+    const genPath = `${stagedDir}/${genJar}`;
+    if (fileExists(genPath)) {
+      parts.push(genPath);
+    }
+  }
+  // **按绝对路径去重**（保序）：NeoForge 清单与 vanilla 清单会声明**同一个库**
+  // （guava/failureaccess、gson 等 FML 依赖与 MC 依赖重合）⇒ 同路径出现两次会让
+  // bootstraplauncher 1.1.2 的合并阶段抛 `IllegalStateException: Duplicate key`
+  // （2026-09-16 实测 1.20.2）。注意：**不能**按 artifact 名去重——BN 本来就是靠同名不同版本
+  // 的 jar 合并成同一模块，按名去重会破坏它；只有完全相同的路径才该去掉。
+  const unique: string[] = [];
+  const seen: Set<string> = new Set<string>();
+  for (const one of parts) {
+    if (!seen.has(one)) {
+      seen.add(one);
+      unique.push(one);
+    }
+  }
+  return unique.join(':');
+}
+
+/** 声明里的 oshi jar 文件名（如 `oshi-core-6.4.10.jar`）；无则空串。 */
+function oshiJarBaseName(json: VersionJson): string {
+  const prefix = 'com.github.oshi:oshi-core:';
+  for (const lib of json.libraries ?? []) {
+    const name = lib.name ?? '';
+    if (!name.startsWith(prefix)) {
+      continue;
+    }
+    const rel = lib.downloads?.artifact?.path ?? mavenPathFromName(name);
+    const slash = rel.lastIndexOf('/');
+    return slash >= 0 ? rel.substring(slash + 1) : rel;
+  }
+  return '';
 }
 
 /** classpath：本地存在的声明库 jar + 版本 jar，冒号连接。 */

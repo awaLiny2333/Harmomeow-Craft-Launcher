@@ -27,12 +27,17 @@ export const VERSION_FORM_INHERITS: string = 'inherits';
 export const VERSION_FORM_PATCHES: string = 'patches';
 export const LOADER_FABRIC: string = 'fabric';
 export const LOADER_LEGACY_FABRIC: string = 'legacy_fabric';
+/** NeoForge（**仅 MC 1.20.2+**）。 */
+export const LOADER_NEO_FORGE: string = 'neoforge';
 
 /** 原版游戏补丁层的 id（HMCL GameComponentType.GAME）。 */
 const PATCH_ID_GAME: string = 'game';
-/** HMCL 补丁 id：普通/legacy Fabric。 */
+/** HMCL 补丁 id：普通/legacy Fabric / NeoForge。 */
 const PATCH_ID_FABRIC: string = 'fabric';
 const PATCH_ID_LEGACY_FABRIC: string = 'legacyfabric';
+const PATCH_ID_NEO_FORGE: string = 'neoforge';
+/** NeoForge 识别兜底：FML 家族库（patch id 缺失时用）。 */
+const NEO_FORGE_LIBRARY_PREFIX: string = 'net.neoforged.fancymodloader:';
 
 // ---- 版本 json 数据模型（仅建模本工程消费到的字段；JSON 键名由外部格式决定）----
 
@@ -44,6 +49,9 @@ export interface VersionRuleOs {
 
 /** 单条平台规则。 */
 export interface VersionRule {
+  /** 特性门控（如 has_custom_resolution / is_demo_user / is_quick_play_*）。
+   *  本工程不向 JVM 声明任何 feature ⇒ 带该字段的规则一律视为**不匹配**（见 ruleAllows）。 */
+  features?: Record<string, boolean>;
   action?: string;
   os?: VersionRuleOs;
 }
@@ -464,6 +472,7 @@ function emptyJson(): VersionJson {
 export function detectLoader(json: VersionJson): string {
   let fabric = false;
   let legacy = false;
+  let neoforge = false;
   for (const lib of json.libraries ?? []) {
     const name = lib.name ?? '';
     if (name === 'net.fabricmc:fabric-loader' || name.startsWith('net.fabricmc:fabric-loader:')) {
@@ -471,6 +480,10 @@ export function detectLoader(json: VersionJson): string {
     }
     if (name.startsWith('net.legacyfabric:')) {
       legacy = true;
+    }
+    // NeoForge：FML 家族库（patch id 缺失时的兜底判据，对齐 HMCL GameComponentType.NEO_FORGE）。
+    if (name.startsWith(NEO_FORGE_LIBRARY_PREFIX)) {
+      neoforge = true;
     }
   }
   for (const p of json.patches ?? []) {
@@ -483,6 +496,13 @@ export function detectLoader(json: VersionJson): string {
     if (p.id === PATCH_ID_LEGACY_FABRIC) {
       legacy = true;
     }
+    if (p.id === PATCH_ID_NEO_FORGE) {
+      neoforge = true;
+    }
+  }
+  // NeoForge 优先判定（其库表里也可能出现 fabric 字样，且优先级高于 Fabric）。
+  if (neoforge) {
+    return LOADER_NEO_FORGE;
   }
   if (!fabric && !legacy) {
     return '';

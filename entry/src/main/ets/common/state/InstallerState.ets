@@ -1,13 +1,18 @@
+import { common } from '@kit.AbilityKit';
 import { AppStorageV2 } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { RemoteVersion, fetchManifest, installVersion, removeIncompleteInstance,
-  fetchFabricLoaders, installFabricVersion, FabricLoaderVersion } from '../data/VersionInstaller';
+  fetchFabricLoaders, installFabricVersion, installNeoForgeVersion,
+  FabricLoaderVersion } from '../data/VersionInstaller';
+import { fetchNeoForgeVersions, NeoForgeListResult, NeoForgeRemoteVersion } from '../data/NeoForgeVersionList';
 import { SOURCE_MIRROR, TYPE_OTHER, TYPE_RELEASE,
   TYPE_SNAPSHOT } from '../constants/DownloadContract';
 
-/** 安装的 mod loader 种类（原版 / Fabric；后续可扩展）。 */
+/** 安装的 mod loader 种类（原版 / Fabric / NeoForge）。 */
 export const LOADER_KIND_VANILLA: string = 'vanilla';
 export const LOADER_KIND_FABRIC: string = 'fabric';
+/** NeoForge：**仅 MC 1.20.2+**（见 notes 20-design/launch/NeoForge支持-改动方案.md）。 */
+export const LOADER_KIND_NEO_FORGE: string = 'neoforge';
 /** 安装错误码：loader 列表拉取失败 / 未选 loader 版本。 */
 export const INSTALL_ERR_LOADER: number = 4;
 
@@ -79,6 +84,21 @@ export class InstallerState {
    * 避免「切源 / 换游戏版本 / 重开安装面板后，旧的在途响应覆盖新状态」的竞态。
    */
   private fabricLoaderSeq: number = 0;
+
+  /** NeoForge loader 版本列表与选中项（仅 1.20.2+；两条源与降级在数据层完成）。 */
+  @Trace neoLoaders: NeoForgeRemoteVersion[] = [];
+  @Trace neoLoader: string = '';
+  @Trace neoLoadersLoading: boolean = false;
+  @Trace neoLoadersLoaded: boolean = false;
+  /** 已按哪个游戏版本拉过（换版本 → 需重拉）。 */
+  @Trace neoLoadersGame: string = '';
+  /** 上次拉取的失败摘要（用于区分「该版本没有 NeoForge」与「拉取失败」）。 */
+  @Trace neoLoadersErrors: string = '';
+
+  /**
+   * NeoForge 列表请求序号（非观察态）：与 Fabric 同理，防「切源/换版本/重开面板后旧响应覆盖新状态」。
+   */
+  private neoLoaderSeq: number = 0;
 
   /** 过滤后的可见版本列表（Repeat 渲染用；manifest 为原始全量）。 */
   @Trace visible: RemoteVersion[] = [];
@@ -263,6 +283,117 @@ export class InstallerState {
     return ok;
   }
 
+  /** 作废在途的 NeoForge 列表请求并清空（切源 / 换游戏版本 / 重开面板）。 */
+  resetNeoLoaders(): void {
+    this.neoLoaderSeq++;
+    this.neoLoadersLoading = false;
+    this.neoLoaders = [];
+    this.neoLoadersLoaded = false;
+    this.neoLoadersGame = '';
+    this.neoLoadersErrors = '';
+    this.neoLoader = '';
+  }
+
+  /**
+   * 拉取某游戏版本的 NeoForge 列表（仅 1.20.2+，调用方负责版本门槛）；成功后默认选最新。
+   * 复用「版本源」(this.source)：数据层内部按 镜像(BMCLAPI) → 官方 降级。
+   */
+  async refreshNeoLoaders(gameVersion: string): Promise<void> {
+    if (gameVersion.length === 0) {
+      return;
+    }
+    const seq = ++this.neoLoaderSeq;
+    const source = this.source;
+    this.neoLoadersLoading = true;
+    this.errorKind = INSTALL_ERR_NONE;
+    this.errorDetail = '';
+    try {
+      const result: NeoForgeListResult = await fetchNeoForgeVersions(gameVersion, source);
+      if (seq !== this.neoLoaderSeq) {
+        return;
+      }
+      this.neoLoaders = result.versions;
+      this.neoLoadersErrors = result.errors;
+      this.neoLoadersLoaded = true;
+      this.neoLoadersGame = gameVersion;
+      this.neoLoader = result.versions.length > 0 ? result.versions[0].loaderVersion : '';
+      // 空列表 + 有失败摘要 ⇒ 是「拉取失败」而不是「该版本没有」。
+      if (result.versions.length === 0 && result.errors.length > 0) {
+        this.errorKind = INSTALL_ERR_LOADER;
+        this.errorDetail = result.errors;
+      }
+    } catch (error) {
+      if (seq !== this.neoLoaderSeq) {
+        return;
+      }
+      const err = error as BusinessError;
+      this.errorKind = INSTALL_ERR_LOADER;
+      this.errorDetail = err.message ?? '';
+      this.neoLoaders = [];
+      this.neoLoadersLoaded = false;
+      this.neoLoadersGame = '';
+      this.neoLoader = '';
+    } finally {
+      if (seq === this.neoLoaderSeq) {
+        this.neoLoadersLoading = false;
+      }
+    }
+  }
+
+  /**
+   * 安装 NeoForge 实例（**仅 MC 1.20.2+**；HMCL 形态）。资产按 `this.source`（版本源）；
+   * installer 与库的 url 由下载层按下载源重写为镜像。返回是否成功。
+   */
+  async installNeoForge(ctx: common.UIAbilityContext, gameRoot: string, gameRootUri: string,
+    remote: RemoteVersion, instanceName: string): Promise<boolean> {
+    if (this.installingId.length > 0) {
+      return false;
+    }
+    // 硬门：所选 loader 版本必须与本次游戏版本匹配（列表可能因切源/换版本而陈旧）。
+    if (this.neoLoader.length === 0 || this.neoLoadersGame !== remote.id) {
+      this.errorKind = INSTALL_ERR_LOADER;
+      this.errorDetail = '';
+      return false;
+    }
+    this.installingId = remote.id;
+    this.errorKind = INSTALL_ERR_NONE;
+    this.errorDetail = '';
+    this.phase = 0;
+    this.done = 0;
+    this.total = 0;
+    this.current = '';
+    this.fileReceived = 0;
+    this.fileTotal = 0;
+    let ok = true;
+    try {
+      await installNeoForgeVersion(ctx, gameRoot, gameRootUri, remote, this.neoLoader, instanceName, this.source,
+        ctx.cacheDir,
+        (phase: number) => {
+          this.phase = phase;
+        },
+        (done: number, total: number) => {
+          this.done = done;
+          this.total = total;
+        },
+        (label: string) => {
+          this.current = label;
+        },
+        (received: number, total: number) => {
+          this.fileReceived = received;
+          this.fileTotal = total;
+        });
+    } catch (error) {
+      // 失败收尾：清掉半装残留（缺 <名>.json 才清，绝不碰完整实例）。
+      removeIncompleteInstance(gameRoot, instanceName);
+      const err = error as BusinessError;
+      this.errorKind = INSTALL_ERR_INSTALL;
+      this.errorDetail = err.message ?? '';
+      ok = false;
+    }
+    this.installingId = '';
+    return ok;
+  }
+
   /** 设置下载源（面板用）；清空已加载的清单，等待用户点「获取版本列表」。 */
   setSource(source: string): void {
     if (source === this.source) {
@@ -272,6 +403,8 @@ export class InstallerState {
     this.manifestLoaded = false;
     this.manifest = [];
     this.visible = [];
+    // 与 Fabric 的 setFabricSource 对称：NeoForge 列表复用版本源 ⇒ 切源后必须作废重拉。
+    this.resetNeoLoaders();
     this.errorKind = INSTALL_ERR_NONE;
     this.errorDetail = '';
   }

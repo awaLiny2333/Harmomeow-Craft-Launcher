@@ -80,6 +80,9 @@ export const RAWFILE_OSHI_MANIFEST: string = 'oshi-overrides/manifest.txt';
 /** staging 完成标记文件名。 */
 export const MEOWCRAFT_EXTRAS_DONE: string = 'meowcraft_extras.done';
 
+/** NeoForge 安装期 headless JVM 的阶段/退出码结果文件（由桥在 headless 模式追加写入）。 */
+export const NEO_JVM_RESULT: string = 'meow-neo-jvm-result.txt';
+
 /** <filesDir>/meow-jres/<id>（java.home 数据目录）。 */
 export function jreHomeDir(filesDir: string, id: string = JRE_ID_MEOW): string {
   return `${filesDir}/${JRES_ROOT}/${id}`;

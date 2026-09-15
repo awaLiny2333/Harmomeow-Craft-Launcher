@@ -9,6 +9,9 @@ export const GAME_ROUTE: string = 'pages/GameWindow';
 export const GAME_ABILITY: string = 'GameAbility';
 export const ENTRY_MODULE: string = 'entry';
 export const GAME_PROCESS_SUFFIX: string = ':game';
+/** NeoForge 安装期执行 processor 的无窗 ability 与其独立进程名（见 notes 安装期JVM载体-调研.md §8.3）。 */
+export const NEO_INSTALL_ABILITY: string = 'NeoInstallAbility';
+export const NEO_INSTALL_PROCESS_SUFFIX: string = ':neoinstall';
 
 // ---- 自研启动器 Java 类名（launcher.jar 内，契约：净室 meow.launcher）----
 export const MEOW_CLASS_LOADER: string = 'meow.launcher.MeowClassLoader';

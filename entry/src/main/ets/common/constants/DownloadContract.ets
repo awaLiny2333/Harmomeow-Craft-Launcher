@@ -81,6 +81,47 @@ export const FABRIC_META_ROOT: string = 'https://meta.fabricmc.net';
 /** Fabric Maven 仓库（loader/intermediary/asm 等）；带尾斜杠，与库 `url` 字段一致。 */
 export const FABRIC_MAVEN: string = 'https://maven.fabricmc.net/';
 
+// ---- NeoForge（mod loader；**仅 1.20.2+**，制品 = net.neoforged:neoforge）----
+// 依据：真 installer 实测 + HMCL 实现（见 notes 20-design/launch/NeoForge支持-调研.md §1/§8）。
+// 端点边界（实测）：官方 API 只返回**裸版本号**（MC 版本需按版本号规则"破解"）；
+// BMCLAPI 走**独立的按 MC 版本查询接口**（不是把官方 URL 换域名）。
+
+/** NeoForge 官方 Maven 根（制品）。 */
+export const NEOFORGE_MAVEN_ROOT: string = 'https://maven.neoforged.net';
+
+/** NeoForge 官方 Maven releases 前缀（制品下载；镜像重写针对它）。 */
+export const NEOFORGE_RELEASES: string = `${NEOFORGE_MAVEN_ROOT}/releases/`;
+
+/** NeoForge 制品 group 路径（Maven 布局）。 */
+export const NEOFORGE_GROUP_PATH: string = 'net/neoforged/neoforge';
+
+/**
+ * NeoForge 版本列表 API：返回 `{isSnapshot, versions:[裸版本号]}`。
+ * ⚠️ **不要**把它交给镜像重写（BMCLAPI 无该路径）；镜像侧走 {@link neoforgeBmclListUrl} 专用接口。
+ */
+export const NEOFORGE_VERSION_API: string =
+  `${NEOFORGE_MAVEN_ROOT}/api/maven/versions/releases/net/neoforged/neoforge`;
+
+/** BMCLAPI：NeoForge 按 MC 版本列表（返回含 `version` / `mcversion` 的数组）。 */
+export function neoforgeBmclListUrl(mcVersion: string): string {
+  return `${BMCLAPI_ROOT}/neoforge/list/${mcVersion}`;
+}
+
+/** NeoForge installer jar 的官方地址（1.20.2+ 制品；1.20.1 时代的 forge 制品不支持）。 */
+export function neoforgeInstallerUrl(loaderVersion: string): string {
+  return `${NEOFORGE_RELEASES}${NEOFORGE_GROUP_PATH}/${loaderVersion}/neoforge-${loaderVersion}-installer.jar`;
+}
+
+/** installer jar 候选地址（按下载源；镜像 = `{apiRoot}/maven/...`，与 HMCL 一致）。 */
+export function neoforgeInstallerCandidates(loaderVersion: string, source: string): string[] {
+  return fileCandidates(neoforgeInstallerUrl(loaderVersion), source);
+}
+
+/** NeoForge 版本列表的官方候选（唯一一条；不参与镜像重写）。 */
+export function neoforgeOfficialListCandidates(): string[] {
+  return [NEOFORGE_VERSION_API];
+}
+
 /** BMCLAPI 前缀替换表（原版 host + Fabric meta/maven；路径对齐 HMCL）。 */
 export const BMCLAPI_REWRITES: UrlRewrite[] = [
   { from: MOJANG_PISTON_META, to: BMCLAPI_ROOT },
@@ -90,6 +131,7 @@ export const BMCLAPI_REWRITES: UrlRewrite[] = [
   { from: MOJANG_RESOURCES, to: `${BMCLAPI_ROOT}/assets` },
   { from: FABRIC_META_ROOT, to: `${BMCLAPI_ROOT}/fabric-meta` },
   { from: FABRIC_MAVEN, to: `${BMCLAPI_ROOT}/maven/` },
+  { from: NEOFORGE_RELEASES, to: `${BMCLAPI_ROOT}/maven/` },
 ];
 
 /**

@@ -21,6 +21,28 @@ const LOG_TAG = 'GameLauncher';
  * 调用方（GameWindow）负责先注入 surface；本函数只做"起 JVM"。
  * 账户为必需前置：无选中账户直接拒绝（绝不静默造号），UI 层已按此门控启动按钮。
  */
+/**
+ * 日志前**打码凭据**：argv 里会带 `--accessToken <微软 access token>`（NeoForge 由 ArkTS 直接组
+ * game 参数；原版/Fabric 则由 Java 侧读账户文件），整条打进 hilog 就等于把令牌写进日志。
+ * 这里只保留前 4 位，其余以 `(masked)` 代替（保留长度可读性不做，避免泄露长度）。
+ */
+function maskCredentials(cmd: string): string {
+  const key = '--accessToken ';
+  let out = cmd;
+  let idx = out.indexOf(key);
+  while (idx >= 0) {
+    const start = idx + key.length;
+    const space = out.indexOf(' ', start);
+    const end = space < 0 ? out.length : space;
+    const token = out.substring(start, end);
+    if (token.length > 4) {
+      out = out.substring(0, start) + token.substring(0, 4) + '(masked)' + out.substring(end);
+    }
+    idx = out.indexOf(key, start);
+  }
+  return out;
+}
+
 export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string, jsonPath: string,
   versionId: string, width: number, height: number): Promise<void> {
   const cpDir = stageClasspathDir(ctx, gameRoot, jsonPath, versionId);
@@ -80,10 +102,15 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     jsonPath: jsonPath,
     versionId: versionId,
     classpath: `${cpDir}/*`,
+    classpathDir: cpDir,
     runDir: runDir,
     nativeLibsDir: hspLibsDir(ctx.bundleCodeDir), // 自足 JRE 模块 el1（隔离）
     craftLibsDir: hspLibsDir(ctx.bundleCodeDir), // 桥已并入同模块
     meowcraftLaunch: true,
+    // NeoForge 由 ArkTS 直接组 game 参数（不经 launcher.jar）⇒ 账户三件套必须传真值。
+    authUuid: launchAccount.uuid,
+    authAccessToken: launchAccount.accessToken !== undefined ? launchAccount.accessToken : '',
+    authXuid: launchAccount.xuid !== undefined ? launchAccount.xuid : '',
     meowHomeDir: meowHome,
     width: width > 0 ? width : WINDOW_DEFAULT_W,
     height: height > 0 ? height : WINDOW_DEFAULT_H,
@@ -100,8 +127,12 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   }
   const java = `${jreHomeDir(ctx.filesDir)}/bin/java`;
   const fullCmd = [java, ...argv].join(' ');
-  hilog.info(LOG_DOMAIN, LOG_TAG, 'CMD: %{public}s', fullCmd.substring(0, 3000));
-  hilog.info(LOG_DOMAIN, LOG_TAG, 'CMD_TAIL: %{public}s', fullCmd.substring(fullCmd.length - 800));
+  // 先打码再截断；两处长度基准都必须是**打码后**的字符串（否则 token 越长、尾部日志越短，
+  // 真 JWT 那种数百字符的 token 会让 CMD_TAIL 变成空串——独立复核发现）。
+  const maskedCmd = maskCredentials(fullCmd);
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'CMD: %{public}s', maskedCmd.substring(0, 3000));
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'CMD_TAIL: %{public}s',
+    maskedCmd.substring(Math.max(0, maskedCmd.length - 800)));
   // 线程化渲染（glthread）：**逐版本开关（默认开，可在「编辑版本」里关）**；且**仅现代渲染路径
   // （OpenGLv4/桌面 GL）**有效——gl4es/legacy 无此机制（桥对它们本就置 GALLIUM_THREAD=0）。
   // 拼在用户「额外渲染环境变量」**之前** → 用户可显式覆盖。

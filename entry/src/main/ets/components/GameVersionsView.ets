@@ -11,27 +11,30 @@ import {
 } from '../common/constants/DownloadContract';
 import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES } from '../common/constants/LaunchDefaults';
 import { rendererForVersion } from '../common/data/RendererPolicy';
-import { LOADER_FABRIC, LOADER_LEGACY_FABRIC, VERSION_FORM_VANILLA } from '../common/data/VersionResolver';
+import { LOADER_FABRIC, LOADER_LEGACY_FABRIC, LOADER_NEO_FORGE, VERSION_FORM_VANILLA } from '../common/data/VersionResolver';
 import { SettingsTools } from '../common/data/SettingsTools';
 import {
   InstanceSettings, RendererOverride, readInstanceSettings, writeInstanceSettings
 } from '../common/data/InstanceSettings';
 import {
-  canWriteDirectory, isValidInstanceName, PHASE_FILES, PHASE_ASSETS, RemoteVersion,
+  canWriteDirectory, isValidInstanceName, PHASE_FILES, PHASE_ASSETS, PHASE_PROCESS, RemoteVersion,
   versionDirExists
 } from '../common/data/VersionInstaller';
-import { GameVersion, resolveGameRoot } from '../common/data/VersionScanner';
+import { GameVersion, resolveGameRoot, compareVersionIds } from '../common/data/VersionScanner';
 import { versionDirUri } from '../common/constants/Paths';
 import { deleteVersionDir } from '../common/data/VersionTools';
 import {
   launchInMainProcess, LAUNCH_OK, LAUNCH_ERR_NO_ACCOUNT, LAUNCH_ERR_MS_EXPIRED
 } from '../common/data/VersionLaunch';
-import { getInstallerState, InstallerState, INSTALL_ERR_INSTALL, INSTALL_ERR_LOADER, INSTALL_ERR_MANIFEST, INSTALL_ERR_NO_WRITE, INSTALL_ERR_NONE, LOADER_KIND_FABRIC, LOADER_KIND_VANILLA } from '../common/state/InstallerState';
+import { getInstallerState, InstallerState, INSTALL_ERR_INSTALL, INSTALL_ERR_LOADER, INSTALL_ERR_MANIFEST, INSTALL_ERR_NO_WRITE, INSTALL_ERR_NONE, LOADER_KIND_FABRIC, LOADER_KIND_NEO_FORGE, LOADER_KIND_VANILLA } from '../common/state/InstallerState';
 import { getLauncherState, LauncherState } from '../common/state/LauncherState';
 import { AccountState, getAccountState } from '../common/state/AccountState';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'GameVersionsView';
+
+/** NeoForge 支持的 MC 版本下界（本工程只做 1.20.2+；见 notes 20-design/launch/NeoForge支持-改动方案.md）。 */
+const NEO_FORGE_MIN_MC: string = '1.20.2';
 
 /** 实例名校验结果（UI 据此显示提示 / 是否允许「确认安装」）。 */
 const NAME_OK: number = 0;
@@ -211,6 +214,9 @@ export struct GameVersionsView {
   private versionTypeLabel(v: GameVersion): Resource {
     if (v.loader === LOADER_LEGACY_FABRIC) {
       return $r('app.string.version_type_legacy_fabric');
+    }
+    if (v.loader === LOADER_NEO_FORGE) {
+      return $r('app.string.version_type_neoforge');
     }
     if (v.loader === LOADER_FABRIC) {
       return $r('app.string.version_type_fabric');
@@ -480,6 +486,9 @@ export struct GameVersionsView {
     if (this.installer.phase === PHASE_ASSETS) {
       return $r('app.string.download_phase_assets');
     }
+    if (this.installer.phase === PHASE_PROCESS) {
+      return $r('app.string.download_phase_process');
+    }
     return $r('app.string.download_phase_write');
   }
 
@@ -545,30 +554,49 @@ export struct GameVersionsView {
     this.installer.setVersionType(t);
   }
 
-  // ---- mod loader 选择（原版 / Fabric）----
+  // ---- mod loader 选择（原版 / Fabric / NeoForge）----
 
-  /** 加载器 Select 选项（原版 / Fabric）。 */
+  /** 加载器 Select 选项（原版 / Fabric / NeoForge）。 */
   private loaderOptions(): SelectOption[] {
     return [
       { value: $r('app.string.loader_vanilla') },
       { value: $r('app.string.loader_fabric') },
+      { value: $r('app.string.loader_neoforge') },
     ];
   }
 
   private loaderIndex(): number {
-    return this.installer.loaderKind === LOADER_KIND_FABRIC ? 1 : 0;
+    if (this.installer.loaderKind === LOADER_KIND_FABRIC) {
+      return 1;
+    }
+    return this.installer.loaderKind === LOADER_KIND_NEO_FORGE ? 2 : 0;
   }
 
   private loaderValue(): Resource {
-    return this.loaderIndex() === 1 ? $r('app.string.loader_fabric') : $r('app.string.loader_vanilla');
+    if (this.installer.loaderKind === LOADER_KIND_FABRIC) {
+      return $r('app.string.loader_fabric');
+    }
+    return this.installer.loaderKind === LOADER_KIND_NEO_FORGE
+      ? $r('app.string.loader_neoforge')
+      : $r('app.string.loader_vanilla');
   }
 
-  /** 切换 mod loader 种类；切到 Fabric 时拉取该游戏版本的 loader 列表（未拉过才拉）。 */
+  /** NeoForge 的版本门槛：仅 1.20.2+（低于则不给拉列表/不提供安装）。 */
+  private neoForgeSupported(): boolean {
+    return compareVersionIds(this.installTargetId, NEO_FORGE_MIN_MC) >= 0;
+  }
+
+  /** 切换 mod loader 种类；切到某 loader 时拉取该游戏版本的列表（未拉过才拉）。 */
   private setLoaderKind(index: number): void {
-    const kind = index === 1 ? LOADER_KIND_FABRIC : LOADER_KIND_VANILLA;
+    const kind = index === 1 ? LOADER_KIND_FABRIC
+      : (index === 2 ? LOADER_KIND_NEO_FORGE : LOADER_KIND_VANILLA);
     this.installer.loaderKind = kind;
     if (kind === LOADER_KIND_FABRIC && this.installer.fabricLoadersGame !== this.installTargetId) {
       this.installer.refreshFabricLoaders(this.installTargetId);
+    }
+    if (kind === LOADER_KIND_NEO_FORGE && this.neoForgeSupported()
+      && this.installer.neoLoadersGame !== this.installTargetId) {
+      this.installer.refreshNeoLoaders(this.installTargetId);
     }
   }
 
@@ -599,30 +627,58 @@ export struct GameVersionsView {
       : $r('app.string.loader_source_mirror');
   }
 
+  /** 该 loader 的版本号数组（Fabric = loader 版本；NeoForge = loader 版本）。 */
+  private loaderVersionIds(): string[] {
+    const out: string[] = [];
+    if (this.installer.loaderKind === LOADER_KIND_NEO_FORGE) {
+      for (const l of this.installer.neoLoaders) {
+        out.push(l.loaderVersion);
+      }
+    } else {
+      for (const l of this.installer.fabricLoaders) {
+        out.push(l.version);
+      }
+    }
+    return out;
+  }
+
+  /** 当前选中的 loader 版本号（空串 = 未选）。 */
+  private selectedLoaderVersion(): string {
+    return this.installer.loaderKind === LOADER_KIND_NEO_FORGE
+      ? this.installer.neoLoader
+      : this.installer.fabricLoader;
+  }
+
   /** loader 版本下拉项（全部版本进一个下拉，省空间）。 */
   private loaderVersionOptions(): SelectOption[] {
     const out: SelectOption[] = [];
-    for (const l of this.installer.fabricLoaders) {
-      out.push({ value: l.version });
+    for (const v of this.loaderVersionIds()) {
+      out.push({ value: v });
     }
     return out;
   }
 
   private loaderVersionIndex(): number {
-    const list = this.installer.fabricLoaders;
+    const list = this.loaderVersionIds();
+    const sel = this.selectedLoaderVersion();
     for (let i = 0; i < list.length; i++) {
-      if (list[i].version === this.installer.fabricLoader) {
+      if (list[i] === sel) {
         return i;
       }
     }
     return 0;
   }
 
-  /** 选择某 loader 版本（按下拉索引）。 */
-  private selectFabricLoaderByIndex(index: number): void {
-    const list = this.installer.fabricLoaders;
-    if (index >= 0 && index < list.length) {
-      this.installer.fabricLoader = list[index].version;
+  /** 选择某 loader 版本（按下拉索引）；按当前 loader 种类写回对应字段。 */
+  private selectLoaderVersionByIndex(index: number): void {
+    const list = this.loaderVersionIds();
+    if (index < 0 || index >= list.length) {
+      return;
+    }
+    if (this.installer.loaderKind === LOADER_KIND_NEO_FORGE) {
+      this.installer.neoLoader = list[index];
+    } else {
+      this.installer.fabricLoader = list[index];
     }
   }
 
@@ -633,6 +689,10 @@ export struct GameVersionsView {
     }
     if (this.instanceNameErrorKind() !== NAME_OK) {
       return false;
+    }
+    if (this.installer.loaderKind === LOADER_KIND_NEO_FORGE) {
+      // 门槛 + 已选 loader 版本（NeoForge 的安装执行 = processor 链，见 VersionInstaller）。
+      return this.neoForgeSupported() && this.installer.neoLoader.length > 0;
     }
     if (this.installer.loaderKind === LOADER_KIND_FABRIC && this.installer.fabricLoader.length === 0) {
       return false;
@@ -665,6 +725,7 @@ export struct GameVersionsView {
     // resetFabricLoaders 同时作废在途请求，避免上一个版本的在途响应污染本面板。
     this.installer.loaderKind = LOADER_KIND_VANILLA;
     this.installer.resetFabricLoaders();
+    this.installer.resetNeoLoaders();
     this.installer.errorKind = INSTALL_ERR_NONE;
     this.installer.errorDetail = '';
   }
@@ -694,10 +755,12 @@ export struct GameVersionsView {
     if (remote === null || !this.canConfirmInstall()) {
       return;
     }
-    const fabric = this.installer.loaderKind === LOADER_KIND_FABRIC;
+    const kind = this.installer.loaderKind;
     const name = this.installName.trim();
     this.closeInstallPanel();
-    if (fabric) {
+    if (kind === LOADER_KIND_NEO_FORGE) {
+      await this.installNeoForgeRemote(remote, name);
+    } else if (kind === LOADER_KIND_FABRIC) {
       await this.installFabricRemote(remote, name);
     } else {
       await this.installRemote(remote, name);
@@ -753,6 +816,34 @@ export struct GameVersionsView {
     const ok = await this.installer.installFabric(root, remote, instanceName);
     if (ok) {
       // 与 HMCL 一致（enableIsolation）：新装实例默认开启版本隔离；写实例自己的 .hmmcraft 文件。
+      const s = InstanceSettings.defaults();
+      s.isolation = true;
+      if (!writeInstanceSettings(root, instanceName, s)) {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'write default isolation failed for %{public}s', instanceName);
+      }
+    }
+    this.state.refreshVersions();
+  }
+
+  /**
+   * 安装 NeoForge 实例（**仅 1.20.2+**；installer 只作数据容器、processor 链见 VersionInstaller）。
+   * 安装前校验写权限；成功后默认开启隔离并刷新列表。
+   */
+  async installNeoForgeRemote(remote: RemoteVersion, instanceName: string): Promise<void> {
+    const root = resolveGameRoot(this.state.selected);
+    if (root.length === 0) {
+      this.installer.errorKind = INSTALL_ERR_INSTALL;
+      this.installer.errorDetail = '';
+      return;
+    }
+    if (!canWriteDirectory(root)) {
+      this.installer.errorKind = INSTALL_ERR_NO_WRITE;
+      this.installer.errorDetail = '';
+      return;
+    }
+    const ok = await this.installer.installNeoForge(this.context(), root, this.state.selected, remote, instanceName);
+    if (ok) {
+      // 与 HMCL 一致：新装实例默认开启版本隔离。
       const s = InstanceSettings.defaults();
       s.isolation = true;
       if (!writeInstanceSettings(root, instanceName, s)) {
@@ -1139,9 +1230,9 @@ export struct GameVersionsView {
                       Select(this.loaderVersionOptions())
                         .width('auto')
                         .selected(this.loaderVersionIndex())
-                        .value(this.installer.fabricLoader)
+                        .value(this.selectedLoaderVersion())
                         .onSelect((index: number) => {
-                          this.selectFabricLoaderByIndex(index);
+                          this.selectLoaderVersionByIndex(index);
                         })
                         .selectedOptionBgColor($r('app.color.brand_bg'))
                         .selectedOptionFontColor($r('app.color.brand'))
@@ -1149,6 +1240,55 @@ export struct GameVersionsView {
                     }
                     .width('100%')
                     .alignItems(VerticalAlign.Center);
+                  }
+                }
+                // NeoForge：版本门槛 + loader 版本下拉（安装执行待实现，故 confirm 按钮禁用并给出提示）
+                if (this.installer.loaderKind === LOADER_KIND_NEO_FORGE) {
+                  if (!this.neoForgeSupported()) {
+                    Text($r('app.string.loader_neoforge_unsupported'))
+                      .opacity(OPACITY_SECONDARY)
+                      .width('100%');
+                  } else {
+                    if (this.installer.neoLoadersLoading) {
+                      Text($r('app.string.loader_loading'))
+                        .opacity(OPACITY_SECONDARY)
+                        .width('100%');
+                    } else if (this.installer.errorKind === INSTALL_ERR_LOADER) {
+                      Text($r('app.string.loader_error'))
+                        .opacity(OPACITY_SECONDARY)
+                        .width('100%');
+                      Button($r('app.string.common_retry'))
+                        .onClick(() => this.installer.refreshNeoLoaders(this.installTargetId));
+                    } else if (!this.installer.neoLoadersLoaded) {
+                      Button($r('app.string.loader_fetch_hint'))
+                        .onClick(() => this.installer.refreshNeoLoaders(this.installTargetId));
+                    } else if (this.installer.neoLoaders.length === 0) {
+                      Text($r('app.string.loader_neoforge_empty'))
+                        .opacity(OPACITY_SECONDARY)
+                        .width('100%');
+                    } else {
+                      Row({ space: LAYOUT_SPACE }) {
+                        Column({ space: LAYOUT_SPACE_SMALL }) {
+                          Text($r('app.string.loader_version_label'));
+                          Text($r('app.string.loader_version_hint'))
+                            .opacity(OPACITY_SECONDARY);
+                        }
+                        .layoutWeight(1)
+                        .alignItems(HorizontalAlign.Start);
+                        Select(this.loaderVersionOptions())
+                          .width('auto')
+                          .selected(this.loaderVersionIndex())
+                          .value(this.selectedLoaderVersion())
+                          .onSelect((index: number) => {
+                            this.selectLoaderVersionByIndex(index);
+                          })
+                          .selectedOptionBgColor($r('app.color.brand_bg'))
+                          .selectedOptionFontColor($r('app.color.brand'))
+                          .enabled(this.installer.installingId.length === 0);
+                      }
+                      .width('100%')
+                      .alignItems(VerticalAlign.Center);
+                    }
                   }
                 }
               }
