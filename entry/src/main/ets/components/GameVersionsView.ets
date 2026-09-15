@@ -12,7 +12,10 @@ import {
 import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES } from '../common/constants/LaunchDefaults';
 import { rendererForVersion } from '../common/data/RendererPolicy';
 import { LOADER_FABRIC, LOADER_LEGACY_FABRIC, VERSION_FORM_VANILLA } from '../common/data/VersionResolver';
-import { SettingsTools, RendererOverride } from '../common/data/SettingsTools';
+import { SettingsTools } from '../common/data/SettingsTools';
+import {
+  InstanceSettings, RendererOverride, readInstanceSettings, writeInstanceSettings
+} from '../common/data/InstanceSettings';
 import {
   canWriteDirectory, isValidInstanceName, PHASE_FILES, PHASE_ASSETS, RemoteVersion,
   versionDirExists
@@ -76,11 +79,8 @@ export struct GameVersionsView {
   /** 安装面板目标远程版本（缓存对象：切下载源/类型导致 visible 重建时仍可确认）。 */
   private installTargetRef: RemoteVersion | null = null;
 
-  /** 逐版本渲染后端覆盖（编辑面板的下拉；与 Preferences 同源）。 */
-  @Local overrides: RendererOverride[] = [];
-
-  /** 逐版本「线程化渲染」**关闭**表（复制 Preferences，供编辑面板开关展示；未列入 = 开）。 */
-  @Local glThreadOffIds: string[] = [];
+  /** 被编辑实例的设置快照（打开面板时从 `editingRoot` 的实例文件载入；面板三项读写都锚这份）。 */
+  @Local editingSettings: InstanceSettings = InstanceSettings.defaults();
 
   /** 安装器共享状态（与 InstallerState 同一实例，承载远程清单/单任务进度/错误）。 */
   @Local installer: InstallerState = getInstallerState();
@@ -101,22 +101,25 @@ export struct GameVersionsView {
     this.state.refreshJre(this.context().filesDir);
     // 账户就绪态（启动门之一）：与 AccountView 共享同一 AccountState，这里兜底重读一次。
     this.accountState.reload(this.context());
-    // 隔离开关状态来自 Preferences（持久化），载入共享状态供 UI 展示。
-    this.state.isolatedIds = new SettingsTools(this.context()).versionIsolationIds();
-    // 逐版本渲染后端覆盖（持久化）载入，供编辑面板下拉展示。
-    this.overrides = new SettingsTools(this.context()).rendererOverrides();
-    // 逐版本「线程化渲染」关闭表（持久化）载入。
-    this.glThreadOffIds = new SettingsTools(this.context()).glThreadOffIds();
+    // 逐版本设置（隔离 / 渲染后端 / 线程化渲染）三个镜像均由 refreshVersions() 一次遍历重建。
+    this.reloadInstallerSettings();
+    this.state.refreshGameRunning();
+    this.pollTimer = setInterval(() => {
+      this.state.refreshGameRunning();
+    }, 2000);
+  }
+
+  /**
+   * 把应用级全局设置里的下载 / 过滤项载入共享 installer。
+   * 全局设置现为**应用级、全局唯一**（`app-settings.json` 的 global 段）：挂载时读一次即可，不随目录变化。
+   */
+  private reloadInstallerSettings(): void {
     // 下载源（持久化）：默认镜像，海外可切官方。
     this.installer.source = new SettingsTools(this.context()).downloadSource();
     // mod loader 下载源（**独立于版本源**）：持久化载入。
     this.installer.fabricSource = new SettingsTools(this.context()).fabricSource();
     // 版本类型过滤（持久化）：默认正式版。
     this.installer.setVersionType(new SettingsTools(this.context()).versionType());
-    this.state.refreshGameRunning();
-    this.pollTimer = setInterval(() => {
-      this.state.refreshGameRunning();
-    }, 2000);
   }
 
   aboutToDisappear(): void {
@@ -126,9 +129,18 @@ export struct GameVersionsView {
     }
   }
 
+  /**
+   * 该行是否正被编辑。实例名（`versions/` 下的目录名）只在**单个游戏目录内**唯一，
+   * 而编辑面板会跨目录保留（见 toggleEdit），故必须**同时**匹配实例名与其所属游戏目录——
+   * 否则另一个游戏目录下的同名实例会误判为"展开中"，状态串到那一行。
+   */
+  private isEditingIn(v: GameVersion, dirUri: string): boolean {
+    return this.editingId === v.id && this.editingDirUri === dirUri;
+  }
+
   /** 编辑按钮文案：该行未展开显示"编辑"，展开中显示"完成"。 */
-  private editLabel(versionId: string): Resource {
-    return this.editingId === versionId
+  private editLabel(v: GameVersion): Resource {
+    return this.isEditingIn(v, this.state.selected)
       ? $r('app.string.common_done')
       : $r('app.string.common_edit');
   }
@@ -138,8 +150,9 @@ export struct GameVersionsView {
    * 故同时缓存被编辑的 GameVersion 对象。
    */
   private toggleEdit(v: GameVersion): void {
-    if (this.editingId === v.id) {
+    if (this.isEditingIn(v, this.state.selected)) {
       this.editingId = '';
+      this.editingSettings = InstanceSettings.defaults();
       return;
     }
     this.editingId = v.id;
@@ -149,6 +162,41 @@ export struct GameVersionsView {
     this.editingRoot = resolveGameRoot(this.state.selected);
     const dir = this.state.dirs.find((d) => d.uri === this.state.selected);
     this.editingDirName = dir !== undefined ? dir.name : '';
+    // 面板三项设置锚 `editingRoot`（不是当前 selected 目录的镜像），打开时从该实例文件载入一份快照。
+    this.editingSettings = readInstanceSettings(this.editingRoot, v.id);
+  }
+
+  /** 写失败时从磁盘重读面板设置，把 UI 恢复成真实值（不"撒谎"）。 */
+  private reloadEditingSettings(): void {
+    if (this.editingId.length === 0) {
+      return;
+    }
+    this.editingSettings = readInstanceSettings(this.editingRoot, this.editingId);
+  }
+
+  /**
+   * 面板写成功后：仅当面板目录仍是当前选中目录时，才顺带刷新 state 的三个镜像
+   * （否则不动——免得把别的目录的镜像改错）。
+   */
+  private syncStateMirrors(): void {
+    if (this.editingDirUri !== this.state.selected) {
+      return;
+    }
+    const id = this.editing.id;
+    this.state.isolatedIds = this.editingSettings.isolation
+      ? (this.state.isolatedIds.includes(id)
+        ? this.state.isolatedIds : this.state.isolatedIds.concat(id))
+      : this.state.isolatedIds.filter((v: string) => v !== id);
+    const kept = this.state.overrides.filter((o: RendererOverride) => o.id !== id);
+    if (this.editingSettings.rendererBackend !== RENDERER_AUTO) {
+      kept.push({ id: id, backend: this.editingSettings.rendererBackend });
+    }
+    this.state.overrides = kept;
+    const off = this.state.glThreadOffIds.filter((v: string) => v !== id);
+    if (!this.editingSettings.glThreadEnabled) {
+      off.push(id);
+    }
+    this.state.glThreadOffIds = off;
   }
 
   /** 发行日期显示：releaseTime 为 ISO 串（如 2024-06-13T15:00:00+00:00），只取日期部分。 */
@@ -199,18 +247,32 @@ export struct GameVersionsView {
     return path;
   }
 
-  /** 切换某版本的版本隔离：落盘 Preferences 后回读，保证 UI 与持久化同源。 */
+  /**
+   * 切换某版本的版本隔离：写 `editingRoot` 下该实例的 .hmmcraft 文件 → 更新 `editingSettings`；
+   * 仅当面板目录仍是当前选中目录时顺带刷 state 镜像。写失败则从磁盘重读恢复 UI（不撒谎）。
+   */
   private setIsolation(versionId: string, on: boolean): void {
-    const settings = new SettingsTools(this.context());
-    settings.setVersionIsolation(versionId, on);
-    this.state.isolatedIds = settings.versionIsolationIds();
+    const root = this.editingRoot;
+    if (root.length === 0) {
+      return;
+    }
+    const next = new InstanceSettings(on, this.editingSettings.rendererBackend,
+      this.editingSettings.glThreadEnabled);
+    if (!writeInstanceSettings(root, versionId, next)) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'write isolation failed for %{public}s', versionId);
+      this.reloadEditingSettings();
+      return;
+    }
+    this.editingSettings = next;
+    this.syncStateMirrors();
     hilog.info(LOG_DOMAIN, LOG_TAG, 'isolation %{public}s = %{public}s',
       versionId, on ? 'on' : 'off');
   }
 
   /** 删除版本入口：二次确认（已启用隔离时额外告警存档/选项会一并删除）后再执行。 */
   private confirmDelete(v: GameVersion): void {
-    const isolated = this.state.isIsolated(v.id);
+    // v 恒为面板实例 → 隔离态与面板同源（editingSettings），不再查 selected 目录的镜像。
+    const isolated = this.editingSettings.isolation;
     this.getUIContext().showAlertDialog({
       title: $r('app.string.version_delete_title'),
       message: isolated
@@ -254,24 +316,15 @@ export struct GameVersionsView {
       return;
     }
     const settings = new SettingsTools(this.context());
-    // 逐版本设置（隔离 / 渲染后端 / 线程化渲染）**只按实例 id 存**，跨 .minecraft 根的同名实例会撞键。
-    // 故只有当**没有别的已授权目录**还留同名实例时才清；否则会把另一根那份的设置一并抹掉。
-    const elsewhere = this.state.dirs.some((d) =>
-      d.uri !== this.editingDirUri && versionDirExists(resolveGameRoot(d.uri), v.id));
-    if (elsewhere) {
-      hilog.info(LOG_DOMAIN, LOG_TAG,
-        'keep per-version settings for %{public}s (same id exists in another root)', v.id);
-    } else {
-      settings.clearVersion(v.id);
-    }
+    // 逐版本设置随实例目录一起删除（存 <gameRoot>/versions/<id>/.hmmcraft/），天然无孤儿键，
+    // 也无需再判断"别的根是否还有同名实例"（旧全局按 id 存才会有那个撞键问题）。
     // 若"上次启动"正是这个版本，一并清理记录（否则"继续上次"会指向已删版本）。
     settings.clearLastLaunchIf(this.editingDirUri, v.id);
     this.state.refreshLastLaunch(this.context());
-    this.state.isolatedIds = settings.versionIsolationIds();
-    this.overrides = settings.rendererOverrides();
-    this.glThreadOffIds = settings.glThreadOffIds();
-    if (this.editingId === v.id) {
+    // 面板目标实例已删 → 收起面板。用面板快照的目录比对（面板可能停在别的目录）。
+    if (this.isEditingIn(v, this.editingDirUri)) {
       this.editingId = '';
+      this.editingSettings = InstanceSettings.defaults();
     }
     this.state.refreshVersions();
     hilog.info(LOG_DOMAIN, LOG_TAG, 'deleted version %{public}s', v.id);
@@ -286,9 +339,9 @@ export struct GameVersionsView {
     ];
   }
 
-  /** 某版本当前渲染后端（auto/openglv4/gl4es）；无覆盖 = auto。 */
+  /** 某版本当前渲染后端（auto/openglv4/gl4es）；无覆盖 = auto。读 state 镜像（行 key 用）。 */
   private rendererBackend(versionId: string): string {
-    for (const o of this.overrides) {
+    for (const o of this.state.overrides) {
       if (o.id === versionId) {
         return o.backend;
       }
@@ -296,8 +349,9 @@ export struct GameVersionsView {
     return RENDERER_AUTO;
   }
 
-  private rendererIndex(versionId: string): number {
-    const b = this.rendererBackend(versionId);
+  /** 面板渲染后端下拉索引（锚 `editingSettings`，不查 selected 目录镜像）。 */
+  private editingRendererIndex(): number {
+    const b = this.editingSettings.rendererBackend;
     if (b === RENDERER_ENV) {
       return 1;
     }
@@ -307,8 +361,8 @@ export struct GameVersionsView {
     return 0;
   }
 
-  private rendererValue(versionId: string): Resource {
-    const i = this.rendererIndex(versionId);
+  private editingRendererValue(): Resource {
+    const i = this.editingRendererIndex();
     if (i === 1) {
       return $r('app.string.renderer_openglv4');
     }
@@ -318,31 +372,52 @@ export struct GameVersionsView {
     return $r('app.string.renderer_auto');
   }
 
-  /** 切换某版本的渲染后端：落盘 Preferences 后回读（游戏进程启动时读同一份）。 */
+  /**
+   * 切换某版本的渲染后端：写 `editingRoot` 下该实例的 .hmmcraft 文件 → 更新 `editingSettings`；
+   * 仅当面板目录仍是当前选中目录时顺带刷 state 镜像。写失败则从磁盘重读恢复 UI（不撒谎）。
+   */
   private setRenderer(versionId: string, index: number): void {
     const backend = index === 1 ? RENDERER_ENV
       : (index === 2 ? RENDERER_ENV_GL4ES : RENDERER_AUTO);
-    const settings = new SettingsTools(this.context());
-    settings.setRendererOverride(versionId, backend);
-    this.overrides = settings.rendererOverrides();
+    const root = this.editingRoot;
+    if (root.length === 0) {
+      return;
+    }
+    const next = new InstanceSettings(this.editingSettings.isolation, backend,
+      this.editingSettings.glThreadEnabled);
+    if (!writeInstanceSettings(root, versionId, next)) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'write renderer failed for %{public}s', versionId);
+      this.reloadEditingSettings();
+      return;
+    }
+    this.editingSettings = next;
+    this.syncStateMirrors();
     hilog.info(LOG_DOMAIN, LOG_TAG, 'renderer %{public}s = %{public}s', versionId, backend);
   }
 
   /** 该版本的「线程化渲染」是否可用：**只有 OpenGLv4（桌面 GL）后端**有效，其余后端灰化。 */
   private glThreadSupported(v: GameVersion): boolean {
-    return rendererForVersion(v.mcVersion, this.rendererBackend(v.id)).env === RENDERER_ENV;
+    return rendererForVersion(v.mcVersion, this.editingSettings.rendererBackend).env === RENDERER_ENV;
   }
 
-  /** 某版本是否启用「线程化渲染」（**默认开**）。 */
-  private glThreadEnabled(versionId: string): boolean {
-    return !this.glThreadOffIds.includes(versionId);
-  }
-
-  /** 切换某版本的「线程化渲染」：落盘 Preferences 后回读（游戏进程启动时读同一份）。 */
+  /**
+   * 切换某版本的「线程化渲染」：写 `editingRoot` 下该实例的 .hmmcraft 文件 → 更新 `editingSettings`；
+   * 仅当面板目录仍是当前选中目录时顺带刷 state 镜像。写失败则从磁盘重读恢复 UI（不撒谎）。
+   */
   private setGlThread(versionId: string, on: boolean): void {
-    const settings = new SettingsTools(this.context());
-    settings.setGlThreadEnabled(versionId, on);
-    this.glThreadOffIds = settings.glThreadOffIds();
+    const root = this.editingRoot;
+    if (root.length === 0) {
+      return;
+    }
+    const next = new InstanceSettings(this.editingSettings.isolation,
+      this.editingSettings.rendererBackend, on);
+    if (!writeInstanceSettings(root, versionId, next)) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'write glthread failed for %{public}s', versionId);
+      this.reloadEditingSettings();
+      return;
+    }
+    this.editingSettings = next;
+    this.syncStateMirrors();
     hilog.info(LOG_DOMAIN, LOG_TAG, 'glthread %{public}s = %{public}s', versionId, on ? 'on' : 'off');
   }
 
@@ -646,9 +721,12 @@ export struct GameVersionsView {
     const ok = await this.installer.install(root, remote, instanceName);
     if (ok) {
       // 与 HMCL 一致（enableIsolation）：新装实例默认开启版本隔离（游戏数据落 versions/<id>/）。
-      const settings = new SettingsTools(this.context());
-      settings.setVersionIsolation(instanceName, true);
-      this.state.isolatedIds = settings.versionIsolationIds();
+      // 写进实例自己的 .hmmcraft 文件；隔离镜像由随后的 refreshVersions() 重建。
+      const s = InstanceSettings.defaults();
+      s.isolation = true;
+      if (!writeInstanceSettings(root, instanceName, s)) {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'write default isolation failed for %{public}s', instanceName);
+      }
     }
     this.state.refreshVersions();
   }
@@ -671,9 +749,12 @@ export struct GameVersionsView {
     }
     const ok = await this.installer.installFabric(root, remote, instanceName);
     if (ok) {
-      const settings = new SettingsTools(this.context());
-      settings.setVersionIsolation(instanceName, true);
-      this.state.isolatedIds = settings.versionIsolationIds();
+      // 与 HMCL 一致（enableIsolation）：新装实例默认开启版本隔离；写实例自己的 .hmmcraft 文件。
+      const s = InstanceSettings.defaults();
+      s.isolation = true;
+      if (!writeInstanceSettings(root, instanceName, s)) {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'write default isolation failed for %{public}s', instanceName);
+      }
     }
     this.state.refreshVersions();
   }
@@ -723,7 +804,7 @@ export struct GameVersionsView {
         }
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start);
-        Toggle({ type: ToggleType.Switch, isOn: this.state.isIsolated(this.editing.id) })
+        Toggle({ type: ToggleType.Switch, isOn: this.editingSettings.isolation })
           .onChange((isOn: boolean) => {
             this.setIsolation(this.editing.id, isOn);
           });
@@ -742,8 +823,8 @@ export struct GameVersionsView {
         .alignItems(HorizontalAlign.Start);
         Select(this.rendererOptions())
           .width('auto')
-          .selected(this.rendererIndex(this.editing.id))
-          .value(this.rendererValue(this.editing.id))
+          .selected(this.editingRendererIndex())
+          .value(this.editingRendererValue())
           .onSelect((index: number) => {
             this.setRenderer(this.editing.id, index);
           })
@@ -763,7 +844,7 @@ export struct GameVersionsView {
         }
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start);
-        Toggle({ type: ToggleType.Switch, isOn: this.glThreadEnabled(this.editing.id) })
+        Toggle({ type: ToggleType.Switch, isOn: this.editingSettings.glThreadEnabled })
           .opacity(this.glThreadSupported(this.editing) ? 1 : OPACITY_SECONDARY)
           .onChange((isOn: boolean) => {
             this.setGlThread(this.editing.id, isOn);
@@ -867,7 +948,7 @@ export struct GameVersionsView {
                     .layoutWeight(1)
                     .alignItems(HorizontalAlign.Start);
                     // 行内操作：编辑 / 完成（展开该版本的编辑面板）
-                    Button(this.editLabel(obj.item.id))
+                    Button(this.editLabel(obj.item))
                       .onClick(() => {
                         this.toggleEdit(obj.item);
                       });
@@ -889,9 +970,9 @@ export struct GameVersionsView {
                 .alignItems(HorizontalAlign.Start);
               };
             })
-            // key 里带上 editingId：Repeat 按同 key 复用行时不重跑 item builder，
-            // 展开/收起（以及切换展开目标）必须让该行重建才会重新求值面板的 if。
-            .key((v: GameVersion) => `${v.id}:${this.state.versionEpoch}:${this.editingId === v.id ? 'edit' : ''}:${this.rendererBackend(v.id)}`);
+            // key 里带上所属游戏目录与"本行是否编辑中"：Repeat 按同 key 复用行时不重跑 item builder，
+            // 展开/收起（以及切换展开目标、切换游戏目录）必须让该行重建，才会重新求值按钮文案与面板的 if。
+            .key((v: GameVersion) => `${this.state.selected}:${v.id}:${this.state.versionEpoch}:${this.isEditingIn(v, this.state.selected) ? 'edit' : ''}:${this.rendererBackend(v.id)}`);
         }
         .width('100%')
         .alignItems(ItemAlign.Start);

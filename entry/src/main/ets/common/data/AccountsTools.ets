@@ -1,12 +1,13 @@
 import { common } from '@kit.AbilityKit';
-import { preferences } from '@kit.ArkData';
 import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { util } from '@kit.ArkTS';
-import { KEY_ACCOUNTS, KEY_MS_CLIENT_ID, KEY_SELECTED_ACCOUNT, STORE_NAME } from '../constants/Constants';
+import { loadAppSettings, loadAppSettingsOrDefault, loadAccounts, writeAccounts,
+  writeAppSettings, tryReadAccounts, accountsFileExists } from './AppSettings';
 import { ACCOUNTS_DIR, OFFLINE_TOKEN } from '../constants/LaunchDefaults';
 import { CredentialExpiredError, MicrosoftResult, refreshMicrosoft, validateMcToken } from './MicrosoftAuth';
+import { SettingsTools } from './SettingsTools';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'AccountsTools';
@@ -16,11 +17,18 @@ export const ACCOUNT_TYPE_OFFLINE: string = 'offline';
 export const ACCOUNT_TYPE_MICROSOFT: string = 'microsoft';
 
 /**
- * 账户条目（持久化于 Preferences；**不敏感**元数据）。
- * 敏感 token（微软 refresh/access）不入此处，见账户系统设计的 Asset Store 方案（P2）。
+ * 账户条目（**含微软 token，持久化于应用沙箱文件**）。
+ *
+ * 决策（2026-09-11，用户）：metadata 与 token（微软 access/refresh、notAfter、XSTS uhs）都持久化；
+ * 应用私有区（`/data/storage/el2`）其他应用读不到，但**不加密**（随备份可外泄），接受此权衡以简化实现。
+ * 2026-09-15 起从 Preferences 改为文件 `<filesDir>/meow-settings/accounts.json`（用户决定）；
+ * 2026-09-15 二轮决策连 Preferences 及迁移代码一并删除（无历史迁移，旧值弃用）。
+ * 日后若要更安全可换 **Asset Store**（`@ohos.security.asset`，`SECRET` ≤1024B，换签名证书会让旧资产读不到）。
+ * 见 `notes/20-design/launch/账户系统-设计与进度.md` §4.2 与
+ * `notes/20-design/launch/实例设置存储-方案.md` §3.3。
  */
 export interface Account {
-  /** 稳定内部 id（形如 'account:<uuid>'）。 */
+  /** 稳定内部 id（形如 'account:<毫秒时间戳>-<4位hex随机后缀>'，见 `newAccountId`）。 */
   id: string;
   /** offline | microsoft。 */
   type: string;
@@ -28,7 +36,7 @@ export interface Account {
   name: string;
   /** profileId（带横线 UUID）。离线留空 → 由 launcher 按名派生；微软为真实 UUID。 */
   uuid: string;
-  // ---- 仅 microsoft（token 按用户决策存 Preferences）----
+  // ---- 仅 microsoft（token 按用户决策存应用沙箱 accounts.json）----
   accessToken?: string;
   refreshToken?: string;
   /** MC access token 到期时间（epoch ms）。 */
@@ -97,58 +105,44 @@ export function formatExpiry(notAfter: number): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** 生成账户内部 id：`account:<毫秒时间戳>-<4 位 hex 随机后缀>`；后缀防同毫秒创建的两个账户撞 id 被去重覆盖。 */
+function newAccountId(): string {
+  const suffix = Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0');
+  return `account:${Date.now()}-${suffix}`;
+}
+
 /**
  * 账户管理数据层（纯逻辑，不碰 UI）。
- * - 账户列表与选中项持久化在 Preferences（同一 STORE_NAME，键 KEY_ACCOUNTS / KEY_SELECTED_ACCOUNT）。
+ * - 账户列表持久化在应用沙箱 `<filesDir>/meow-settings/accounts.json`；选中项指针
+ *   `selectedAccount` 与目录共用 `app-settings.json`（见 `AppSettings.ets`）；Preferences 已彻底移除。
  * - `writeAccountFile` 生成 launcher.jar 读取的账户档案 `<meow-home>/accounts/<name>.json`
  *   （JSON 键 accessToken/clientToken/profileId/username/xuid 是硬契约，勿改名）。
  */
 export class AccountsTools {
-  private store: preferences.Preferences | null = null;
+  /** 宿主上下文（解析应用沙箱路径，读全局设置里的 ms client_id）。 */
+  private context: common.Context;
 
   constructor(context: common.Context) {
-    try {
-      this.store = preferences.getPreferencesSync(context, { name: STORE_NAME });
-    } catch {
-      this.store = null;
-    }
+    this.context = context;
   }
 
   /** 账户列表；无记录/解析失败返回空数组。 */
   list(): Account[] {
-    if (this.store === null) {
+    const arr = loadAccounts<Account>(this.context);
+    if (arr === null) {
       return [];
     }
-    let raw = '';
-    try {
-      raw = this.store.getSync(KEY_ACCOUNTS, '') as string;
-    } catch {
-      return [];
-    }
-    if (raw.length === 0) {
-      return [];
-    }
-    try {
-      const arr = JSON.parse(raw) as Account[];
-      if (!Array.isArray(arr)) {
-        return [];
-      }
-      return arr.filter((a: Account) =>
-        typeof a.id === 'string' && typeof a.name === 'string' && typeof a.type === 'string');
-    } catch {
-      return [];
-    }
+    return arr.filter((a: Account) =>
+      typeof a.id === 'string' && typeof a.name === 'string' && typeof a.type === 'string');
   }
 
   private save(list: Account[]): void {
-    if (this.store === null) {
+    if (accountsFileExists(this.context) && tryReadAccounts<Account>(this.context) === null) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'accounts.json unreadable; accounts not written');
       return;
     }
-    try {
-      this.store.putSync(KEY_ACCOUNTS, JSON.stringify(list));
-      this.store.flushSync();
-    } catch {
-      return;
+    if (!writeAccounts<Account>(this.context, list)) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'write accounts failed');
     }
   }
 
@@ -163,7 +157,7 @@ export class AccountsTools {
   /** 创建离线账户（**创建即计算规范 UUID**）并落库；首个账户自动选中。 */
   createOffline(name: string): Account {
     const account: Account = {
-      id: `account:${Date.now()}`,
+      id: newAccountId(),
       type: ACCOUNT_TYPE_OFFLINE,
       name: name,
       uuid: offlineUuid(name),
@@ -194,7 +188,7 @@ export class AccountsTools {
   /** 由微软登录结果创建 microsoft 账户并落库；首个账户自动选中。 */
   createMicrosoft(r: MicrosoftResult): Account {
     const account: Account = {
-      id: `account:${Date.now()}`,
+      id: newAccountId(),
       type: ACCOUNT_TYPE_MICROSOFT,
       name: r.name,
       uuid: dashedUuid(r.uuid),
@@ -264,16 +258,9 @@ export class AccountsTools {
     return updated ?? account;
   }
 
-  /** 读用户自填的 Microsoft client_id（Preferences；空 = 未配置）。 */
+  /** 读用户自填的 Microsoft client_id（应用级全局设置；空 = 未配置）。 */
   private readMsClientId(): string {
-    if (this.store === null) {
-      return '';
-    }
-    try {
-      return this.store.getSync(KEY_MS_CLIENT_ID, '') as string;
-    } catch {
-      return '';
-    }
+    return new SettingsTools(this.context).msClientId();
   }
 
   /** 退出登录：清除该微软账户的 token（保留账户条目，可重新登录）。 */
@@ -301,25 +288,19 @@ export class AccountsTools {
   }
 
   selectedId(): string {
-    if (this.store === null) {
-      return '';
-    }
-    try {
-      return this.store.getSync(KEY_SELECTED_ACCOUNT, '') as string;
-    } catch {
-      return '';
-    }
+    const s = loadAppSettings(this.context);
+    return s === null ? '' : s.selectedAccount;
   }
 
   setSelectedId(id: string): void {
-    if (this.store === null) {
+    const s = loadAppSettingsOrDefault(this.context);
+    if (s === null) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'settings unreadable; selected account not written');
       return;
     }
-    try {
-      this.store.putSync(KEY_SELECTED_ACCOUNT, id);
-      this.store.flushSync();
-    } catch {
-      return;
+    s.selectedAccount = id;
+    if (!writeAppSettings(this.context, s)) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'write selected account failed');
     }
   }
 
@@ -337,7 +318,8 @@ export class AccountsTools {
   /**
    * 生成启动用账户档案 `<homeDir>/accounts/<name>.json`（launcher.jar 按文件名=玩家名加载）。
    * 离线：token 用离线常量、profileId 留空（launcher 派生 UUID）、xuid 空。
-   * 微软（P2）：token 取 Asset、profileId 真实、xuid=uhs。
+   * 微软：token 取自 Account 对象（随 accounts.json 落盘）、profileId 真实、xuid=uhs；
+   * Asset Store（@ohos.security.asset）为可选的更安全替代（见 `Account` 注释），当前未用。
    */
   writeAccountFile(homeDir: string, account: Account): void {
     const accountsDir = `${homeDir}/${ACCOUNTS_DIR}`;

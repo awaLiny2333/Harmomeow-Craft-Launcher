@@ -14,7 +14,7 @@ import { SettingsTools } from '../common/data/SettingsTools';
  *
  * P1：离线账户的增 / 删 / 选中（对标 HMCL 账户管理）。
  * P2 将在此加入微软登录（Device Code）入口。
- * 持久化经 AccountsTools（Preferences，跨进程：主进程写、游戏进程读）。
+ * 持久化经 AccountsTools（应用沙箱文件，跨进程：主进程写、游戏进程读）。
  */
 @ComponentV2
 export struct AccountView {

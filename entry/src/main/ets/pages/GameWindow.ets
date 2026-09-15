@@ -5,7 +5,7 @@ import { launchGame } from '../common/data/GameLauncher';
 import { JreLibModule, FullscreenRequest } from '../common/state/JvmLauncher';
 import { gameLaunchParams } from '../common/state/GameLaunchParams';
 import { isLegacyLwjgl, setWindowDisplaySize } from '../common/data/MinecraftLauncher';
-import { SettingsTools } from '../common/data/SettingsTools';
+import { readAppGlobalSettings } from '../common/data/AppSettings';
 import { LAYOUT_SPACE, OVERLAY_BG, LAUNCH_FALLBACK_MS } from '../common/constants/Constants';
 import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H } from '../common/constants/LaunchDefaults';
 import { GameInputController } from '../common/input/GameInputController';
@@ -70,9 +70,9 @@ struct GameWindow {
 
   /** 右下角 overlay：当前鼠标有效采样率（Hz）。 */
   @Local mouseRate: number = 0;
-  /** 高级选项：是否显示采样率 overlay（挂载时从 Preferences 读入）。 */
+  /** 应用级高级选项：是否显示采样率 overlay（挂载时从应用沙箱全局设置读入）。 */
   @Local showInputRate: boolean = false;
-  /** 高级选项：显示缩放 N（渲染分辨率 = 窗口/N；挂载时从 Preferences 读入，1=关闭）。 */
+  /** 应用级高级选项：显示缩放 N（渲染分辨率 = 窗口/N；挂载时从应用沙箱全局设置读入，1=关闭）。 */
   @Local renderScale: number = 1;
   /** 隐形 TextInput 文本（绑定 id('ime-input')；由 GameInputController 回写）。 */
   @Local imeText: string = '';
@@ -120,10 +120,11 @@ struct GameWindow {
       this.input?.dispose();
       this.requestCloseGame();
     });
-    // 采样率 overlay 由高级选项控制（主进程写、游戏进程读 Preferences）。
-    this.showInputRate = new SettingsTools(ctx).showInputRate();
-    // 显示缩放（游戏进程读 Preferences）：XComponent 按 1/S 布局 + .scale(S) 放大；渲染分辨率 = 窗口/S。
-    this.renderScale = new SettingsTools(ctx).renderScale();
+    // 采样率 overlay + 显示缩放（应用级高级选项，读应用沙箱全局设置；XComponent 按 1/S 布局 +
+    // .scale(S) 放大；渲染分辨率 = 窗口/S）。
+    const gs = readAppGlobalSettings(ctx);
+    this.showInputRate = gs.showInputRate;
+    this.renderScale = gs.renderScale;
     this.input.setRenderScale(this.renderScale);
     this.input.start(this.showInputRate);
     // 轮询 MC 的全屏切换请求（GLFW stub → native 桥 → 这里驱动真实窗口）。

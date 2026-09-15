@@ -147,7 +147,7 @@ export class GameInputController {
 
   /** 启动 grab 轮询 + 采样率 overlay（页面挂载时调用）。 */
   start(showInputRate: boolean): void {
-    // 滚轮速度（高级选项，跨进程 Preferences）；窗口存活期内固定，改后下次开窗生效。
+    // 滚轮速度（高级选项，读应用级全局设置）；窗口存活期内固定，改后下次开窗生效。
     this.scrollScale = new SettingsTools(this.ctx).scrollSpeedPercent() / 100;
     this.grabPollTimer = setInterval(() => {
       this.pollGrabbing();

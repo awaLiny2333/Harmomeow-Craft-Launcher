@@ -1,6 +1,10 @@
-import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
-import { STORE_NAME, KEY_DIRS, KEY_SELECTED } from '../constants/Constants';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { AppDir, AppSettings, loadAppSettings, loadAppSettingsOrDefault, writeAppSettings,
+  tryReadAppSettings, appSettingsFileExists } from './AppSettings';
+
+const LOG_DOMAIN = 0x0001;
+const LOG_TAG = 'GameDirsTools';
 
 /**
  * 可观察的游戏目录条目。
@@ -10,7 +14,7 @@ import { STORE_NAME, KEY_DIRS, KEY_SELECTED } from '../constants/Constants';
  * Text）会精确刷新，无需像 V1 那样把变化字段拼进 ForEach key 强制整行重建。
  *
  * 注意：本类实例只应作为"运行时数据"存在（list() 产出、UI 持有），
- * 不能直接 JSON.stringify 序列化——见下方 GameDirData 的说明。
+ * 不能直接 JSON.stringify 序列化——持久化统一经过 AppDir 普通对象。
  */
 @ObservedV2
 export class GameDir {
@@ -24,18 +28,6 @@ export class GameDir {
     this.uri = uri;
     this.name = name;
   }
-}
-
-/**
- * 序列化用的普通数据结构。
- *
- * 为什么需要它：@Trace 装饰的属性在编译后以访问器（getter/setter）形式存在，
- * 默认不可枚举，导致 JSON.stringify 拿不到这些字段。因此持久化 / 反序列化时
- * 统一经过 { uri, name } 普通对象，禁止直接对 GameDir 实例做 JSON 操作。
- */
-interface GameDirData {
-  uri: string;
-  name: string;
 }
 
 /**
@@ -61,82 +53,81 @@ function defaultName(uri: string): string {
  * - 因此本类只负责持久化"记住了哪些目录"及"上次选中的目录"，
  *   绝不持久化授权状态——需要使用时由 UI 层重新拉起授权 Picker。
  *
- * 存储介质：Preferences（@kit.ArkData），键名集中在 Constants.ets。
- * 写入规则：putSync 只更新内存缓存，必须紧跟 flushSync() 才会落盘，
- * 否则 App 重启后数据丢失（官方文档明确标注的坑）。
+ * 存储介质（2026-09-15 起）：应用沙箱 `<filesDir>/meow-settings/app-settings.json`（见
+ * `AppSettings.ets`），不再写 Preferences（Preferences 已彻底移除，无历史迁移）。
  */
 export class GameDirsTools {
-  /** Preferences 实例。构造失败（如目录不可写）时为 null，后续所有方法都需判空兜底。 */
-  private store: preferences.Preferences | null = null;
+  /** 宿主上下文（解析应用沙箱路径）。 */
+  private context: common.Context;
 
   constructor(context: common.Context) {
-    try {
-      this.store = preferences.getPreferencesSync(context, { name: STORE_NAME });
-    } catch {
-      // 初始化失败时保持 null，让上层以"空列表"降级运行，而不是抛异常。
-      this.store = null;
-    }
+    this.context = context;
   }
 
   /**
    * 读取全部已记住的目录，并重建为可观察的 GameDir 实例列表。
    * 兜底逻辑：
-   * - Preferences 不可用 / 读取失败 / JSON 损坏 → 返回空数组；
+   * - 文件缺失 / 读取失败 / JSON 损坏 → 返回空数组；
    * - 历史数据缺少 name（或为空串）→ 用 defaultName(uri) 补默认昵称。
    */
   list(): GameDir[] {
-    if (this.store === null) {
+    const s = loadAppSettings(this.context);
+    if (s === null) {
       return [];
     }
-    let raw = '[]';
-    try {
-      raw = this.store.getSync(KEY_DIRS, '[]') as string;
-    } catch {
-      return [];
-    }
-    try {
-      const arr = JSON.parse(raw) as GameDirData[];
-      return arr.map((d: GameDirData): GameDir => {
-        const name = d.name && d.name.length > 0 ? d.name : defaultName(d.uri);
-        return new GameDir(d.uri, name);
-      });
-    } catch {
-      // JSON 结构不符预期（例如被旧版本写成纯字符串数组）时丢弃，视为空。
-      return [];
-    }
+    return s.dirs.map((d: AppDir): GameDir => {
+      const name = d.name && d.name.length > 0 ? d.name : defaultName(d.uri);
+      return new GameDir(d.uri, name);
+    });
   }
 
   /**
-   * 将目录列表整体写盘。
-   * 先 map 成 GameDirData 普通对象再 stringify（原因见 GameDirData 注释），
-   * putSync 后立即 flushSync 落盘。
+   * 将目录列表整体写盘（以磁盘现有 JSON 为底 merge，保留未知键）。
+   * 若文件存在却读不出（坏 / 异格式），拒绝写入以避免把未知键删掉。
    */
-  private save(dirs: GameDir[]): void {
-    if (this.store === null) {
+  private save(s: AppSettings): void {
+    if (this.readUnreadable()) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'app-settings.json unreadable; dirs not written');
       return;
     }
-    const data: GameDirData[] = dirs.map((d: GameDir): GameDirData => ({ uri: d.uri, name: d.name }));
-    try {
-      this.store.putSync(KEY_DIRS, JSON.stringify(data));
-      this.store.flushSync();
-    } catch {
-      // 写入失败静默忽略：属于尽力而为的持久化，失败不应中断用户操作。
-      return;
+    if (!writeAppSettings(this.context, s)) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'write app-settings failed');
     }
+  }
+
+  /** 文件存在但解析不出（坏 / 异格式）→ 不允许覆盖。 */
+  private readUnreadable(): boolean {
+    return appSettingsFileExists(this.context) && tryReadAppSettings(this.context) === null;
   }
 
   /** 添加目录（自动生成默认昵称）。按 uri 去重，重复添加不生效。 */
   add(uri: string): void {
-    const dirs = this.list();
-    if (!dirs.some((d) => d.uri === uri)) {
-      dirs.push(new GameDir(uri, defaultName(uri)));
-      this.save(dirs);
+    const s = loadAppSettingsOrDefault(this.context);
+    if (s === null) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'settings unreadable; dir not added');
+      return;
+    }
+    if (!s.dirs.some((d: AppDir) => d.uri === uri)) {
+      const entry: AppDir = { uri: uri, name: defaultName(uri) };
+      s.dirs.push(entry);
+      this.save(s);
     }
   }
 
-  /** 按 uri 移除目录。uri 是唯一键，未命中时 save 原列表（无副作用）。 */
+  /** 按 uri 移除目录。uri 是唯一键；未命中且设置文件本就不存在时不落盘（不新建空 `app-settings.json`）。 */
   remove(uri: string): void {
-    this.save(this.list().filter((d) => d.uri !== uri));
+    const s = loadAppSettingsOrDefault(this.context);
+    if (s === null) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'settings unreadable; dir not removed');
+      return;
+    }
+    const before = s.dirs.length;
+    s.dirs = s.dirs.filter((d: AppDir) => d.uri !== uri);
+    if (s.dirs.length === before && !appSettingsFileExists(this.context)) {
+      // 未命中且文件不存在：无可写内容，跳过 save（避免为一次无效移除新建设置文件）。
+      return;
+    }
+    this.save(s);
   }
 
   /**
@@ -149,11 +140,15 @@ export class GameDirsTools {
     if (trimmed.length === 0) {
       return;
     }
-    const dirs = this.list();
-    const target = dirs.find((d) => d.uri === uri);
+    const s = loadAppSettingsOrDefault(this.context);
+    if (s === null) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'settings unreadable; dir not renamed');
+      return;
+    }
+    const target = s.dirs.find((d: AppDir) => d.uri === uri);
     if (target) {
       target.name = trimmed;
-      this.save(dirs);
+      this.save(s);
     }
   }
 
@@ -163,26 +158,18 @@ export class GameDirsTools {
    * 调用方仍需让用户重新授权后才可访问目录内容。
    */
   selected(): string {
-    if (this.store === null) {
-      return '';
-    }
-    try {
-      return this.store.getSync(KEY_SELECTED, '') as string;
-    } catch {
-      return '';
-    }
+    const s = loadAppSettings(this.context);
+    return s === null ? '' : s.selectedDir;
   }
 
   /** 记录当前选中的目录 URI，供下次启动恢复（同 selected() 的"纯记忆"语义）。 */
   setSelected(uri: string): void {
-    if (this.store === null) {
+    const s = loadAppSettingsOrDefault(this.context);
+    if (s === null) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'settings unreadable; selected dir not written');
       return;
     }
-    try {
-      this.store.putSync(KEY_SELECTED, uri);
-      this.store.flushSync();
-    } catch {
-      return;
-    }
+    s.selectedDir = uri;
+    this.save(s);
   }
 }

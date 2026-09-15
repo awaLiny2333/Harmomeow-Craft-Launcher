@@ -2,10 +2,12 @@ import { AppStorageV2 } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { GameDir } from '../data/GameDirsTools';
-import { GameVersion, scanVersions } from '../data/VersionScanner';
+import { GameVersion, scanVersions, resolveGameRoot } from '../data/VersionScanner';
 import { scanJavaEnv } from '../data/JavaEnvScanner';
 import { isGameProcessRunning } from '../data/GameProcessScanner';
 import { SettingsTools } from '../data/SettingsTools';
+import { RendererOverride, readInstanceSettings } from '../data/InstanceSettings';
+import { RENDERER_AUTO } from '../constants/LaunchDefaults';
 
 /**
  * 启动器应用级共享状态（跨组件通过 AppStorageV2 共享同一实例）。
@@ -23,8 +25,9 @@ import { SettingsTools } from '../data/SettingsTools';
  * - 任一处修改 @Trace 字段，所有 connect 到该 key 的组件 UI 都会同步刷新。
  *
  * 注意：本 class 是纯运行时状态，不做序列化持久化。
- * 持久化在别处：目录列表 / 上次选中项见 GameDirsTools；高级选项与版本隔离见 SettingsTools。
- * isolatedIds 只是 SettingsTools 的运行时镜像，供版本区展示与切换。
+ * 持久化在别处：目录列表 / 上次选中项见 GameDirsTools；高级选项见 SettingsTools；
+ * 逐版本设置（隔离 / 渲染后端 / 线程化渲染）在**各实例目录**的 `.hmmcraft/instance-settings.json`
+ * （见 InstanceSettings）。isolatedIds 只是该实例文件的运行时镜像，供版本区展示与切换。
  */
 @ObservedV2
 export class LauncherState {
@@ -54,10 +57,16 @@ export class LauncherState {
   /** 游戏 Ability 独立进程是否在运行（版本区据此禁用"启动"，避免重复开游戏）。 */
   @Trace gameRunning: boolean = false;
 
-  /** 已启用版本隔离的版本 id 列表（镜像 Preferences，见 SettingsTools.versionIsolationIds）。 */
+  /** 已启用版本隔离的版本 id 列表（镜像各实例目录内的 .hmmcraft 文件；见 InstanceSettings）。 */
   @Trace isolatedIds: string[] = [];
 
-  /** 上次启动的目录 URI / 版本 id / jsonPath（镜像 Preferences KEY_LAST_LAUNCH，供"继续上次"按钮）。 */
+  /** 逐版本渲染后端覆盖镜像（id → backend；未列入 = auto）。与 isolatedIds 同源同目录，一次遍历重建。 */
+  @Trace overrides: RendererOverride[] = [];
+
+  /** 逐版本「线程化渲染」**关闭**镜像（未列入 = 开）。与 isolatedIds 同源同目录，一次遍历重建。 */
+  @Trace glThreadOffIds: string[] = [];
+
+  /** 上次启动的目录 URI / 版本 id / jsonPath（镜像应用级全局设置的 lastLaunch，供"继续上次"按钮）。 */
   @Trace lastLaunchDir: string = '';
   @Trace lastLaunchVersion: string = '';
   @Trace lastLaunchJsonPath: string = '';
@@ -83,10 +92,45 @@ export class LauncherState {
   refreshVersions(): void {
     if (this.selected.length === 0 || !this.isSelectedActivated()) {
       this.versions = [];
+      this.isolatedIds = [];
+      this.overrides = [];
+      this.glThreadOffIds = [];
     } else {
       this.versions = scanVersions(this.selected);
+      this.recomputeInstanceMirrors();
     }
+    // 全局设置为应用级、不随目录变化，无需失效缓存或触发依赖视图重载。
     this.versionEpoch++; // 使版本区行 key 失效重建，同 id 的新内容才会刷新
+  }
+
+  /**
+   * **一次遍历**当前选中目录下各实例，每个实例只读一次 `.hmmcraft/instance-settings.json`，
+   * 同时得出隔离 / 渲染后端 / glthread 三个镜像（消除分散重复读取与"锚错目录"）。
+   * 数据源是**实例文件**（不是 Preferences）：本来就在单目录列表内，天然带目录维度，
+   * 所以不同游戏目录下的同名实例不会串键。
+   */
+  private recomputeInstanceMirrors(): void {
+    const root = resolveGameRoot(this.selected);
+    const isolated: string[] = [];
+    const overrides: RendererOverride[] = [];
+    const glOff: string[] = [];
+    if (root.length > 0) {
+      for (const v of this.versions) {
+        const s = readInstanceSettings(root, v.id);
+        if (s.isolation) {
+          isolated.push(v.id);
+        }
+        if (s.rendererBackend !== RENDERER_AUTO) {
+          overrides.push({ id: v.id, backend: s.rendererBackend });
+        }
+        if (!s.glThreadEnabled) {
+          glOff.push(v.id);
+        }
+      }
+    }
+    this.isolatedIds = isolated;
+    this.overrides = overrides;
+    this.glThreadOffIds = glOff;
   }
 
   /**

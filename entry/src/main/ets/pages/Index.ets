@@ -20,18 +20,18 @@ import { getLauncherState, LauncherState } from '../common/state/LauncherState';
  * 应用入口页（@Entry + 状态管理 V2）。
  *
  * 设计原则：页面壳保持极薄——只负责整体布局与组合区块，不放业务逻辑。
- * 区块：
+ * 区块（主列顺序 = 常用优先；Java 环境最不常用，排最后）：
  * 1. GameDirsView   （游戏目录管理）
  * 2. GameVersionsView（版本列表 + 启动）
- * 3. JavaEnvView    （Java 环境状态：内置 JRE 与解压就绪情况）
- * 4. AdvancedOptionsView（高级选项：调试/进阶开关）
- * 5. AccountView    （账户区：窄屏在主列内；宽屏左移为独立侧栏）
+ * 3. AccountView    （账户区：窄屏在主列内；宽屏左移为独立侧栏）
+ * 4. AdvancedOptionsView（高级选项：调试/进阶开关，**应用级全局唯一**）
+ * 5. JavaEnvView    （Java 环境状态：内置 JRE 与解压就绪情况）
  * 目录区与版本区通过共享 LauncherState（AppStorageV2）协同。
  *
  * 响应式：窗口宽度 ≥ LAYOUT_WIDE_MIN_W 时，账户区左移为固定宽侧栏，主区保持原样单独滚动，
  * 形成左右分栏；否则维持单列原始布局。断点用官方 mediaquery 监听（分屏/旋转会实时更新）。
  *
- * 「继续上次」按钮：上次成功启动的版本（记录见 SettingsTools.KEY_LAST_LAUNCH），文案
+ * 「继续上次」按钮：上次成功启动的版本（记录见 SettingsTools.lastLaunch()），文案
  * `<目录昵称> - <版本>`；作为滚动区的**兄弟**置于底部（宽屏在左栏账户 Scroll 下方，窄屏在主区 Scroll 下方）。
  */
 @Entry
@@ -76,9 +76,10 @@ struct Index {
       AccountView();
     }
     Divider();
-    JavaEnvView();
-    Divider();
+    // 高级选项（应用级全局唯一）排在 Java 环境之前 —— 后者最不常用，放最下面。
     AdvancedOptionsView();
+    Divider();
+    JavaEnvView();
   }
 
   /** 「继续上次」是否可点（与单版本启动同门槛：JRE 就绪 + 有账户 + 未在运行）。 */

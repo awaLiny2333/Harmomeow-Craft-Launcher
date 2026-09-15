@@ -37,6 +37,26 @@
       "value": "未激活"
     },
     {
+      "name": "settings_export",
+      "value": "导出设置"
+    },
+    {
+      "name": "settings_export_confirm_message",
+      "value": "将把应用设置（游戏目录、账户列表与高级选项）导出到你选择的目录。其中包含微软登录凭据（access/refresh token），请妥善保管、勿分享给他人。"
+    },
+    {
+      "name": "settings_export_success",
+      "value": "已导出到：%s"
+    },
+    {
+      "name": "settings_export_failed",
+      "value": "导出失败：请检查目标目录是否可写，或换个目录重试"
+    },
+    {
+      "name": "settings_export_partial",
+      "value": "已导出，但部分内容无法读取，已跳过：%s"
+    },
+    {
       "name": "common_activate",
       "value": "激活"
     },
@@ -255,6 +275,10 @@
     {
       "name": "advanced_title",
       "value": "高级选项"
+    },
+    {
+      "name": "advanced_scope_hint",
+      "value": "这些选项对整个启动器生效；存在应用私有目录中，可用「导出设置」带走"
     },
     {
       "name": "advanced_show_input_rate",

@@ -7,11 +7,11 @@ import { http } from '@kit.NetworkKit';
  * → entitlements/mcstore + minecraft/profile。见 notes/20-design/账户系统-离线与微软登录.md。
  *
  * client_id：先复用公开的 MC 客户端 id 跑通；正式发布建议自注册 Azure 公有客户端替换。
- * token 由调用方按用户决策存 Preferences（本文件不发请求之外的持久化）。
+ * token 由调用方按用户决策存应用沙箱文件（`filesDir/meow-settings/accounts.json`；本文件不发请求之外的持久化）。
  */
 
 /**
- * Microsoft client_id **不预置**：由用户在「高级选项」自填（存 Preferences，见 `SettingsTools.msClientId`）。
+ * Microsoft client_id **不预置**：由用户在「高级选项」自填（存应用级全局设置，见 `GlobalSettings` / `SettingsTools.msClientId`）。
  * 用户需自注册 Azure 公有客户端：Supported account types = Personal Microsoft accounts only；
  * Allow public client flows = Yes。本文件所有登录/续期函数都必须收到非空 `clientId`。
  */

@@ -38,7 +38,7 @@ export class AccountState {
     return this.selectedId === id;
   }
 
-  /** 从 Preferences 重读列表与选中项（增删改 / 切选后调用）。 */
+  /** 从应用设置文件重读列表与选中项（增删改 / 切选后调用）。 */
   reload(ctx: common.Context): void {
     const tools = new AccountsTools(ctx);
     this.accounts = tools.list();

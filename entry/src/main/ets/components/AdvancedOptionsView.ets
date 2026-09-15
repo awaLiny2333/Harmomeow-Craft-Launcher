@@ -1,5 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { SettingsTools } from '../common/data/SettingsTools';
+import { exportSettings } from '../common/data/AppSettings';
+import { pickDirectory, authorizeDirectory } from '../common/access/FileAccess';
 import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY,
   SCROLL_SPEED_DEFAULT_PERCENT, RENDER_SCALE_OPTIONS } from '../common/constants/Constants';
 
@@ -9,8 +11,8 @@ import native from 'libmeowassets.so';
 /**
  * 高级选项区块（与 GameDirsView / GameVersionsView / JavaEnvView 平级，由 Index 挂载）。
  *
- * 承载不常用、偏调试/进阶的开关与启动参数覆盖。所有值经 SettingsTools 落盘到 Preferences，
- * 供游戏进程（:game）在启动时读取；跨进程共享因此不走 AppStorageV2。
+ * 承载不常用、偏调试/进阶的开关与启动参数覆盖。所有值经 SettingsTools 落盘到**应用级全局设置**
+ * （`<filesDir>/meow-settings/app-settings.json` 的 `global` 段），供游戏进程（:game）在启动时读取；跨进程共享因此不走 AppStorageV2。
  * 约定：数字项留空 = 自动（用 LaunchDefaults 默认）；改动在下次打开游戏窗口生效。
  */
 @ComponentV2
@@ -41,6 +43,16 @@ export struct AdvancedOptionsView {
   }
 
   aboutToAppear(): void {
+    this.reloadFromSettings();
+    try {
+      this.detectedCpus = native.getCpuCount();
+    } catch (e) {
+      this.detectedCpus = 0;
+    }
+  }
+
+  /** 从应用级全局设置刷新本地编辑态（只读，不写盘）。挂载时读一次即可（设置不随目录变化）。 */
+  private reloadFromSettings(): void {
     const s = new SettingsTools(this.context());
     this.settings = s;
     this.showInputRate = s.showInputRate();
@@ -55,11 +67,11 @@ export struct AdvancedOptionsView {
     this.msClientIdText = s.msClientId();
     this.renderEnvText = s.renderEnv();
     this.jvmArgsText = s.jvmArgs();
-    try {
-      this.detectedCpus = native.getCpuCount();
-    } catch (e) {
-      this.detectedCpus = 0;
-    }
+  }
+
+  /** 作用域提示：本区选项**对整个启动器生效**（应用私有目录内，全局唯一）。 */
+  private scopeHint(): Resource {
+    return $r('app.string.advanced_scope_hint');
   }
 
   /** 解析非负整数；空/非法 → 0（自动）。 */
@@ -94,10 +106,66 @@ export struct AdvancedOptionsView {
     this.settings?.setRenderScale(RENDER_SCALE_OPTIONS[index]);
   }
 
+  /**
+   * 导出设置入口：先弹窗确认（文案明确提示含微软登录凭据、勿分享），确认后选目录并导出。
+   * 导出的是**应用级数据**（目录列表 + 账户列表 + 高级选项；账户含 token）——故放在本区（应用级设置区）最下面。
+   */
+  private confirmExport(): void {
+    this.getUIContext().showAlertDialog({
+      title: $r('app.string.settings_export'),
+      message: $r('app.string.settings_export_confirm_message'),
+      primaryButton: {
+        value: $r('app.string.common_cancel'),
+        action: () => {
+        },
+      },
+      secondaryButton: {
+        value: $r('app.string.settings_export'),
+        action: () => {
+          this.doExport();
+        },
+      },
+    });
+  }
+
+  /** 选目标目录（授权一次，一次性导出不持久化）→ 写两份 JSON 到带时间戳子目录；取消静默；部分读不出则提示跳过。 */
+  private async doExport(): Promise<void> {
+    const ctx = this.context();
+    const picked = await pickDirectory(ctx);
+    if (picked === null) {
+      return;
+    }
+    const authorized = await authorizeDirectory(ctx, picked);
+    if (!authorized) {
+      // 授权失败也给出可见提示（与导出失败一致），不再静默返回。
+      this.getUIContext().showAlertDialog({ message: $r('app.string.settings_export_failed') });
+      return;
+    }
+    const result = exportSettings(ctx, picked);
+    if (result.outDir === null) {
+      this.getUIContext().showAlertDialog({ message: $r('app.string.settings_export_failed') });
+      return;
+    }
+    if (result.skipped.length > 0) {
+      // 有文件存在但读不出 → 不假成功：列出被跳过的文件。
+      this.getUIContext().showAlertDialog({
+        message: $r('app.string.settings_export_partial', result.skipped.join('、')),
+      });
+      return;
+    }
+    this.getUIContext().showAlertDialog({
+      message: $r('app.string.settings_export_success', result.outDir),
+    });
+  }
+
   build() {
     Column({ space: LAYOUT_SPACE }) {
       Text($r('app.string.advanced_title'))
         .fontWeight(FontWeight.Bold);
+
+      // 作用域说明：本区设置为**应用级、全局唯一**（存应用私有目录，不随游戏目录变化）。
+      Text(this.scopeHint())
+        .opacity(OPACITY_SECONDARY);
 
       // 显示鼠标采样率 overlay
       Row({ space: LAYOUT_SPACE }) {
@@ -275,6 +343,10 @@ export struct AdvancedOptionsView {
       }
       .width('100%')
       .alignItems(VerticalAlign.Center);
+
+      // 最下面的次要入口：导出应用设置（目录 + 账户 + 高级选项；账户含凭据）到用户选择的目录。
+      Button($r('app.string.settings_export'))
+        .onClick(() => this.confirmExport());
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start);

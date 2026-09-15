@@ -34,7 +34,7 @@ export struct GameDirsView {
   /** 惰性初始化的数据层实例。ArkTS 不支持确定赋值断言，故用可空 + getter 首次创建。 */
   private tools: GameDirsTools | null = null;
 
-  /** 从组件获取 UIAbilityContext（Picker 与 Preferences 都需要）。 */
+  /** 从组件获取 UIAbilityContext（Picker 与数据层都需要）。 */
   private context(): common.UIAbilityContext {
     return this.getUIContext().getHostContext() as common.UIAbilityContext;
   }
@@ -103,6 +103,9 @@ export struct GameDirsView {
     if (!st.activated.includes(uri)) {
       st.activated = st.activated.concat(uri);
       st.refreshVersions();
+      // 手动激活成功后同样补校验「继续上次」（与 autoActivate 的二次刷新对齐）：
+      // 否则"外部删版本 → 手动激活"后按钮残留。
+      st.refreshLastLaunch(this.context());
     }
   }
 
