@@ -250,14 +250,14 @@ cp stuffs/research/meowcraft_extras.tar.gz entry/src/main/resources/rawfile/
 `finalize_for_meowcraft.sh` (the old single-`lwjgl.jar` swapper) is **retired** —
 `pack_extras.py` replaces it.
 
-## 4. Artifacts & digests (jar/tar re-measured 2026-09-15; natives 2026-09-10)
+## 4. Artifacts & digests (jar/tar re-measured 2026-09-16; natives 2026-09-10)
 
 | artifact | sha256 |
 |---|---|
-| `lwjgl-3.4.3.jar` (carries the 5 3.4.x compat shims) | `7783219a6011a115781ea7abc38fc5967db1c8a8fc294308973b717c865088bf` |
+| `lwjgl-3.4.3.jar` (carries the 5 3.4.x compat shims; no `Multi-Release` claim) | `b9b54d372187c0bb7e483d1eb004b3ce80af72a27851df33d64783260f3d1cdb` |
 | `liblwjgl_343.so` / `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (3.4.3) | `16298280…` / `e1f1413b…` / `8eb4a1b8…` |
 | `libffi.a` (3.8.0, aarch64-linux-ohos) | `238cadb7bfa70ca5b4f718cc66878f1f3d26107bc6f6b0e272380c3f3f1fda5b` |
-| `meowcraft_extras.tar.gz` (shipped; single modern generation) | `b76f45f78a3af9bb279aa7e881a3d4794f65f2522fdef04204a93890ba8592eb` |
+| `meowcraft_extras.tar.gz` (shipped; single modern generation) | `61d4b2d43a1282a51e51f1685618b3a1106df331aed0c221d9d33277c96a2b26` |
 
 Reproducibility caveats (verified 2026-09-10):
 - **Native builds are byte-reproducible only when the absolute `--src`/`--out` paths are

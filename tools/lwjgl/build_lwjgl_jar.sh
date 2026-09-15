@@ -230,6 +230,13 @@ if [ -z "$MANIFEST" ]; then
   unzip -p "$CORE_JAR" META-INF/MANIFEST.MF > "$MANIFEST" 2>/dev/null || \
     printf 'Manifest-Version: 1.0\n\n' > "$MANIFEST"
 fi
+# 不自洽防御（2026-09-16 实测事故）：上游 LWJGL 的 MANIFEST 声明 `Multi-Release: true`，
+# 但本脚本随后会**剥掉 META-INF/**（除 MANIFEST）**，于是「声称多版本 jar、却没有
+# META-INF/versions/」→ bootstraplauncher 1.1.2（NeoForge 1.20.2 用）在 SecureJar.from 里
+# Files.walk 该目录会抛 UnionFileSystem$NoSuchFileException（启动即崩）；2.0.2 有防护所以 1.21.1 无症状。
+# 故这里统一去掉该属性（我们的 jar 里确实没有版本化条目）。
+grep -v -i '^Multi-Release:' "$MANIFEST" > "$MANIFEST.fixed" && mv "$MANIFEST.fixed" "$MANIFEST"
+
 python3 "$PACK_JAR" "$WORK/merge" "$MANIFEST" "$OUT/lwjgl.jar"
 
 echo "=== 5/5 sanity ==="

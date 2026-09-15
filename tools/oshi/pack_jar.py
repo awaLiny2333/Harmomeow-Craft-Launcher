@@ -19,6 +19,19 @@ def main():
     with open(manifest, 'rb') as f:
         mf = f.read()
 
+    # 自洽守卫（2026-09-16）：本打包器只装 classes 目录 ⇒ **永远不会有 `META-INF/versions/**`**。
+    # 若传入的 MANIFEST 声明了 `Multi-Release: true`，产出就是「声称多版本 jar 却没有版本化条目」的
+    # 坏件 —— bootstraplauncher 1.1.2（NeoForge 1.20.2）会在 SecureJar.from 里 Files.walk 该目录
+    # 抛异常、启动即崩（实测事故）。这里统一剥掉并告警，防任何调用方复发。
+    mf_txt = mf.decode('utf-8', 'replace')
+    mf_lines = mf_txt.splitlines(keepends=True)
+    kept = [l for l in mf_lines if not l.lstrip().lower().startswith('multi-release:')]
+    if len(kept) != len(mf_lines):
+        print("  pack_jar: stripped bogus 'Multi-Release' (jar has no META-INF/versions)",
+              file=sys.stderr)
+        # 字节级保留其余行的行尾（含末尾换行）——否则同输入产出会与历史值差几字节。
+        mf = ''.join(kept).encode('utf-8')
+
     entries = []
     for root, _dirs, files in os.walk(classes):
         for name in files:

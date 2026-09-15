@@ -35,6 +35,22 @@ import sys
 import tarfile
 import zipfile
 
+# 上游 gson 的 MANIFEST 声明 `Multi-Release: true`（配套 META-INF/versions/**）；本工具会剥掉
+# 除 MANIFEST 之外的 META-INF 条目 ⇒ 必须同时去掉该属性，否则产出「不自洽的多版本 jar」。
+# 该缺陷曾让 NeoForge 1.20.2 的 bootstraplauncher 1.1.2 在 SecureJar.from 时崩（2026-09-16 实测）。
+def _strip_multi_release(raw: bytes) -> bytes:
+    """去掉 MANIFEST 的 `Multi-Release` 行；**没有该属性时原样返回**（字节级，含行尾）。
+    必须 `splitlines(keepends=True)` + `''.join`：早期用 `splitlines()` + `'\n'.join()` 会
+    **丢掉末尾换行**，导致「同一输入、脚本产出与已发布 tar 差 1~3 字节」⇒ 可复现性断言不成立
+    （2026-09-16 由独立复核发现）。另外**只在确有该行时改写**，避免对不含它的 jar（如 launcher.jar）
+    做无谓重写。CRLF / LF 两种行尾都被覆盖。"""
+    txt = raw.decode('utf-8', 'replace')
+    lines = txt.splitlines(keepends=True)
+    kept = [l for l in lines if not l.lstrip().lower().startswith('multi-release:')]
+    if len(kept) == len(lines):
+        return raw
+    return ''.join(kept).encode('utf-8')
+
 DEFAULT_TAR = "entry/src/main/resources/rawfile/meowcraft_extras.tar.gz"
 OLD_GSON = "gson-2.13.1.jar"
 NEW_GSON = "gson-for-launcher.jar"
@@ -115,6 +131,8 @@ def rewrite_jar(jar_bytes, drop=()):
             if info.filename.endswith(".class"):
                 raw, n = relocate_class(raw)
                 hits += n
+            if name == 'META-INF/MANIFEST.MF':
+                raw = _strip_multi_release(raw)
             zout.writestr(_new_info(info, name), raw)
     return out.getvalue(), hits
 
@@ -178,7 +196,15 @@ def main():
     t = tarfile.open(fileobj=io.BytesIO(new), mode="r:gz")
     names = [n[2:] if n.startswith("./") else n for n in t.getnames()]
     assert NEW_GSON in names and OLD_GSON not in names, names
-    assert sha(t.extractfile("./lwjgl.jar").read()) == sha(members["lwjgl.jar"]), "lwjgl changed"
+    # 其余成员必须**逐一逐字节不变**。历史上这里硬编码断言 `lwjgl.jar`（未带版本号的旧名），
+    # 2026-09-14 改名 `lwjgl-3.4.3.jar` 后该断言会 KeyError ⇒ 改为名字无关的通用校验。
+    for m in t.getmembers():
+        if not m.isfile():
+            continue
+        n = m.name[2:] if m.name.startswith("./") else m.name
+        if n in (NEW_GSON, "launcher.jar"):
+            continue
+        assert sha(t.extractfile(m).read()) == sha(members[n]), "%s changed" % n
     gz2 = zipfile.ZipFile(io.BytesIO(t.extractfile("./" + NEW_GSON).read()))
     gnames = gz2.namelist()
     assert "meow/gson/Gson.class" in gnames and "com/google/gson/Gson.class" not in gnames

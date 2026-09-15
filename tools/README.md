@@ -114,6 +114,13 @@ devecocli run --module entry meowjre --device <serial>
 - **natives 必须随包**：平台只对随包 native 打 fs-verity；运行时写入数据区的文件 `dlopen` 一律 EINVAL。
   故多版本 natives 同放一个随包目录、**世代号紧跟基名**区分（见 `tools/lwjgl/README.md`）。
 - **确定性**：`pack_jar.py`（固定时间戳 + 排序）、`pack_extras.py`（gzip mtime=0 + 排序）→ 逐字节可复现。
+- **jar 的 MANIFEST 必须自洽（2026-09-16 事故）**：凡**剥掉 `META-INF/**`** 的打包（我们全部打包器都这么做），
+  **必须同时去掉 MANIFEST 的 `Multi-Release: true`** —— 否则产出「声称多版本 jar 却没有 `META-INF/versions/**`」
+  的坏件；bootstraplauncher 1.1.2（NeoForge 1.20.2 用）会因此在 `SecureJar.from` 里 `Files.walk` 该目录抛异常、启动即崩。
+  已在三处根治：`tools/lwjgl/build_lwjgl_jar.sh`、`tools/relocate_gson.py`、**共用打包器 `tools/oshi/pack_jar.py`（统一守卫 + 告警）**。
+- **extras tar 组包配方（可复现，逐字节已验证）**：基座 tar 需含 `launcher.jar` + **未 shade 的** `gson-<v>.jar`（可另含 lwjgl jar，`pack_extras.py` 会丢弃同名 `lwjgl*`），然后
+  `python3 tools/relocate_gson.py <base.tar.gz>` → `python3 tools/lwjgl/pack_extras.py --base-tar <base.tar.gz> --jar lwjgl-3.4.3.jar=<built> --require lwjgl-3.4.3.jar --out <final>`
+  → 覆盖 `entry/.../rawfile/meowcraft_extras.tar.gz` 并**升 `EXTRAS_VERSION`**。
 - **JRE 可复现**：`libc6.so`/`libjli.so`、官方 26 件魔改、数据 tar（`tools/jre26/pack_jre_data.py`）均**逐字节**；自编 `libjvm` 同 OS/工具链/源/**同路径** + `SOURCE_DATE_EPOCH=1784133400`（`jdk-26.0.2.1-ga` 提交）**2× cmp 一致**（`d28164cd…`；`linux_verify_jvm_repro.sh` 默认 2，`MEOW_REPRO_N` 可调高。见 `tools/jre26/README.md` §可复现性）。
 - **native 可复现**：同 tag + 同 SDK + **同 `--src`/`--out` 绝对路径** → 逐字节一致（链接器把输出路径写进 `.dynstr`；换路径同功能、哈希不同）。本工具链的新原生已 **3× 干净重建 `cmp` 一致**（对照 2026-09-11 盘上随包件）：`libSDL3.so`(`241bbfef…`)、`libshaderc.so`(`0cff3465…`)、`libspirv-cross.so`(`93ad9907…`)、`liblwjgl.so`(`df886466…`)；其中 `spirv-cross` 需 `SOURCE_DATE_EPOCH`（`tools/shaderc/build_shaderc_meow.sh` 已内置，取 pinned 提交时间）。`libgl4es.so`(`90c6ff6b…`) 同路径下**预期**可复现（见 `tools/gl4es/README.md`，尚未 3× 验证）。
 - **构建期断言（缺件在发包时拦下，运行期不加防护）**：`pack_extras.py --require <member>`（断言 tar 成员齐，如 `lwjgl-3.4.3.jar`）；
