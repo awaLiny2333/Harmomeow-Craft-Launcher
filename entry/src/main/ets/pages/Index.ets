@@ -129,17 +129,20 @@ struct Index {
   @Builder
   continueLastButton() {
     if (this.state.lastLaunchVersion.length > 0) {
-      Button($r('app.string.launch_last', this.lastLaunchLabel()))
-        .enabled(this.canLaunchLast())
-        .width('100%')
-        .onClick(() => {
-          this.launchLast();
-        });
+      Row() {
+        Button($r('app.string.launch_last', this.lastLaunchLabel()))
+          .enabled(this.canLaunchLast())
+          .width('100%')
+          .onClick(() => {
+            this.launchLast();
+          });
+      }
+      .padding(this.wide ? 0 : { left: LAYOUT_PADDING, right: LAYOUT_PADDING, bottom: LAYOUT_PADDING });
     }
   }
 
   build() {
-    Row({ space: LAYOUT_SPACE }) {
+    Row() {
       if (this.wide) {
         // 左侧栏：账户区（可滚动）+ 底部「继续上次」按钮（与账户 Scroll 并列）
         Column({ space: LAYOUT_SPACE }) {
@@ -156,6 +159,7 @@ struct Index {
           .align(Alignment.TopStart);
           this.continueLastButton();
         }
+        .padding({ left: LAYOUT_PADDING, top: LAYOUT_PADDING, bottom: LAYOUT_PADDING })
         .width(LAYOUT_ACCOUNT_PANEL_W)
         .height('100%');
       }
@@ -165,6 +169,7 @@ struct Index {
           Column({ space: LAYOUT_SPACE }) {
             this.mainSections();
           }
+          .padding(LAYOUT_PADDING)
           .width('100%')
           .alignItems(HorizontalAlign.Start);
         }
@@ -180,7 +185,6 @@ struct Index {
       .height('100%');
     }
     .width('100%')
-    .height('100%')
-    .padding(LAYOUT_PADDING);
+    .height('100%');
   }
 }
