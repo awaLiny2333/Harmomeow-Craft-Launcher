@@ -118,12 +118,16 @@ export struct AdvancedOptionsView {
         value: $r('app.string.common_cancel'),
         action: () => {
         },
+        fontColor: $r('sys.color.white'),
+        backgroundColor: $r('app.color.brand')
       },
       secondaryButton: {
         value: $r('app.string.settings_export'),
         action: () => {
           this.doExport();
         },
+        fontColor: $r('sys.color.white'),
+        backgroundColor: $r('app.color.danger')
       },
     });
   }

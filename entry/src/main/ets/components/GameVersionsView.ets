@@ -282,13 +282,16 @@ export struct GameVersionsView {
         value: $r('app.string.common_cancel'),
         action: () => {
         },
+        fontColor: $r('sys.color.white'),
+        backgroundColor: $r('app.color.brand')
       },
       secondaryButton: {
         value: $r('app.string.common_delete'),
-        fontColor: $r('app.color.danger'),
         action: () => {
           this.deleteVersion(v);
         },
+        fontColor: $r('sys.color.white'),
+        backgroundColor: $r('app.color.danger')
       },
     });
   }
