@@ -113,6 +113,24 @@ bool GetStringArray(napi_env env, napi_value arr, std::vector<std::string>& out)
     return true;
 }
 
+/**
+ * headless（NeoForge 安装期）JVM 的**跨进程结果通道**：把阶段标记/退出码追加到
+ * <filesDir>/meow-neo-jvm-result.txt。现状 native 只有 hilog + _exit（主进程拿不到退出码），
+ * 安装编排需要它来判断 processor 成败。仅 headless 模式写；游戏路径零影响。
+ */
+void WriteHeadlessResult(const std::string& filesDir, const std::string& line) {
+    if (filesDir.empty()) {
+        return;
+    }
+    FILE* f = fopen((filesDir + "/meow-neo-jvm-result.txt").c_str(), "a");
+    if (f == nullptr) {
+        return;
+    }
+    fprintf(f, "%s\n", line.c_str());
+    fflush(f);
+    fclose(f);
+}
+
 napi_value LaunchJvm(napi_env env, napi_callback_info info) {
     size_t argc = 8;
     napi_value args[8] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
@@ -169,11 +187,17 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         getStr(args[4], rendererSo);
         getStr(args[5], rendererEnv);
     }
-    if (rendererSo.empty() || rendererEnv.empty()) {
+    // 渲染器可**整段省略**：rendererSo 为空即「headless 模式」（由 NeoForge 安装编排驱动，通用能力）
+    // （无窗口、无 surface、不需要 GL/Mesa 环境）。该模式下跳过渲染器预 dlopen、渲染相关 env 与
+    // glthread 失效安全，并把 JVM 退出码落到 <filesDir>/meow-neo-jvm-result.txt（跨进程回报；现状只有 hilog）。
+    const bool headless = rendererSo.empty();
+    if (!headless && rendererEnv.empty()) {
         OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG,
-                     "launchJvm: renderer args missing (so=%{public}s env=%{public}s), abort",
-                     rendererSo.c_str(), rendererEnv.c_str());
+                     "launchJvm: renderer so=%{public}s but env empty, abort", rendererSo.c_str());
         return nullptr;
+    }
+    if (headless) {
+        OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG, "launchJvm: headless mode (no renderer)");
     }
     // GL profile：ArkTS 按 MC 版本传（<1.17 → "compat" 固定管线；否则 "core"）。
     std::string glProfile = "core";
@@ -194,7 +218,7 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
     // 必须在独立线程跑；任何局部 std::thread 都不能在 joinable 时析构
     // （否则 ~thread -> terminate -> SIGABRT）。全部用 detach 线程。
     std::thread([filesDir, javaArgs, jreHome, jreLibs, rendererSo, rendererEnv, glProfile,
-                 extraRenderEnv]() mutable {
+                 extraRenderEnv, headless]() mutable {
         std::string libsDir = SelfDir(); // meowcraftlib libs（meowcraftbridge 等自研 so）
         // java.home（数据目录）与 JRE 运行时 el1 libs（libjli/libjvm…）由调用方指定，
         // 桥与 JRE 版本解耦。缺省回退旧布局（兼容）。
@@ -227,14 +251,35 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
             }
         }
         setenv("HOME", filesDir.c_str(), 1);
+        // 进程 CWD：能力进程的 CWD 通常是 "/"，而 MC（log4j 的 logs/latest.log、部分库）用**相对路径**。
+        // 官方启动器/HMCL 都以「游戏运行目录」为 CWD ⇒ 这里按 argv 的 -Duser.dir=<gameDir> 切过去
+        // （best-effort；失败仅告警）。headless（安装期）argv 无该参数 → 不动 CWD。
+        {
+            const std::string udPrefix = "-Duser.dir=";
+            for (const auto& a : javaArgs) {
+                if (a.compare(0, udPrefix.size(), udPrefix) == 0) {
+                    const std::string ud = a.substr(udPrefix.size());
+                    if (!ud.empty()) {
+                        const bool cwdOk = (chdir(ud.c_str()) == 0);
+                        OH_LOG_Print(LOG_APP, cwdOk ? LOG_INFO : LOG_WARN, LOG_DOMAIN, LOG_TAG,
+                                     cwdOk ? "cwd -> %{public}s" : "chdir(%{public}s) failed",
+                                     ud.c_str());
+                    }
+                    break;
+                }
+            }
+        }
         // 渲染后端按 MC 版本选（ArkTS RendererPolicy）：桌面 GL(openglv4) 或 GLES+gl4es(gl4es)。
-        setenv("MEOWCRAFT_RENDERER", rendererEnv.c_str(), 1);
-        setenv("MEOWCRAFT_GL_PROFILE", glProfile.c_str(), 1);
-        setenv("MEOWCRAFT_NATIVEDIR", libsDir.c_str(), 1);
-        setenv("NGG_DIR_PATH", (cacheDir + "/").c_str(), 1);
+        // headless（安装期）不需要任何渲染 env：跳过，避免把 Mesa/GL 配置带进纯工具 JVM。
+        if (!headless) {
+            setenv("MEOWCRAFT_RENDERER", rendererEnv.c_str(), 1);
+            setenv("MEOWCRAFT_GL_PROFILE", glProfile.c_str(), 1);
+            setenv("MEOWCRAFT_NATIVEDIR", libsDir.c_str(), 1);
+            setenv("NGG_DIR_PATH", (cacheDir + "/").c_str(), 1);
+        }
         // gl4es 专用环境（仅 ≤1.16 后端消费；桌面 GL 路径忽略这些 LIBGL_*）：
         // ES2 后端、声称 GL 2.1（gl4es 能力上限，勿谎报 3.x）、规避已知驱动坑。
-        if (rendererEnv == "gl4es") {
+        if (!headless && rendererEnv == "gl4es") {
             setenv("LIBGL_GL", "21", 1);
             setenv("LIBGL_ES", "2", 1);
             setenv("LIBGL_NORMALIZE", "1", 1);
@@ -247,13 +292,17 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         // present 配置（A+B）：让 Mesa/Zink 走非 vsync present（vblank_mode=0 → interval 0
         // 映射 IMMEDIATE，否则 MAILBOX），并去掉 threaded-context 中转线程。
         // 必须在预 dlopen libGLv4 之前设置（Mesa 在 screen init 时读 env）。
-        setenv("vblank_mode", "0", 1);
+        if (!headless) {
+            setenv("vblank_mode", "0", 1);
+        }
         // GALLIUM_THREAD 基值 = 0（**关**）。要用 glthread 由**上层**覆盖（高级选项「线程化渲染」
         // 默认开 → launcher 拼 `GALLIUM_THREAD=1`，仅现代路径）。本平台 glthread 会触发 Mesa
         // `tc_texture_subdata` 的 UAF，由随包 **GL guard**（libmeowglguard.so）对 `glTexSubImage2D`
         // 加后置同步兜底修复；**下方 pre-dlopen 后有失效安全**（guard 未武装则强制回 0）。
         // 详见 notes 20-design/glthread-B方案-GL-guard.md。
-        setenv("GALLIUM_THREAD", "0", 1);
+        if (!headless) {
+            setenv("GALLIUM_THREAD", "0", 1);
+        }
         // 额外渲染 env（实验/调优）：最后应用，覆盖以上默认；**必须在预 dlopen 渲染器之前**
         // （Mesa 在 screen init 时读 env）。格式 "K=V"，换行/';' 分隔，逐个 setenv。
         if (!extraRenderEnv.empty()) {
@@ -295,17 +344,20 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         // ---- 预 dlopen 渲染器（历史件行为：dl_open 在 JVM 前）----
         // RTLD_GLOBAL 使 meowcraftbridge 随后能 dlsym 到渲染器的 GL/EGL 符号。
         // libGLv4 是系统库 → 按名；gl4es(libgl4es.so) 随包在模块 libs → 先按名、失败再按绝对路径。
-        void* rlib = dlopen(rendererSo.c_str(), RTLD_NOW | RTLD_GLOBAL);
-        if (rlib == nullptr && rendererSo.find('/') == std::string::npos) {
-            std::string abs = libsDir + "/" + rendererSo;
-            rlib = dlopen(abs.c_str(), RTLD_NOW | RTLD_GLOBAL);
-        }
-        if (rlib == nullptr) {
-            OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG,
-                         "pre-dlopen %{public}s failed: %{public}s", rendererSo.c_str(), dlerror());
-        } else {
-            OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
-                         "pre-dlopen %{public}s ok", rendererSo.c_str());
+        void* rlib = nullptr;
+        if (!headless) {
+            rlib = dlopen(rendererSo.c_str(), RTLD_NOW | RTLD_GLOBAL);
+            if (rlib == nullptr && rendererSo.find('/') == std::string::npos) {
+                std::string abs = libsDir + "/" + rendererSo;
+                rlib = dlopen(abs.c_str(), RTLD_NOW | RTLD_GLOBAL);
+            }
+            if (rlib == nullptr) {
+                OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG,
+                             "pre-dlopen %{public}s failed: %{public}s", rendererSo.c_str(), dlerror());
+            } else {
+                OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
+                             "pre-dlopen %{public}s ok", rendererSo.c_str());
+            }
         }
 
         // 失效安全：现代路径（openglv4）且 glthread 为开时，**只有"已武装的 GL guard"**才安全。
@@ -320,7 +372,9 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
                 armed = reinterpret_cast<int (*)(void)>(dlsym(rlib, "meow_glguard_armed"));
             }
             if (glthreadOn && (armed == nullptr || armed() == 0)) {
-                setenv("GALLIUM_THREAD", "0", 1);
+                if (!headless) {
+            setenv("GALLIUM_THREAD", "0", 1);
+        }
                 OH_LOG_Print(LOG_APP, LOG_WARN, LOG_DOMAIN, LOG_TAG,
                              "glthread requested but GL guard not armed (so=%{public}s) -> forced GALLIUM_THREAD=0",
                              rendererSo.c_str());
@@ -441,12 +495,18 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
                      "JLI_Launch begin (%{public}zu args) full=%{public}s dot=%{public}s",
                      javaArgs.size(), fullVersion.c_str(), dotVersion.c_str());
+        if (headless) {
+            WriteHeadlessResult(filesDir, "JLI_BEGIN args=" + std::to_string(javaArgs.size()));
+        }
         jint code = launch(static_cast<int>(argv.size() - 1), argv.data(),
                            0, nullptr, 0, nullptr,
                            fullVersion.c_str(), dotVersion.c_str(), argv[0], argv[0],
                            JNI_FALSE, JNI_TRUE, JNI_FALSE, 0);
         OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
                      "JLI_Launch returned %{public}d", code);
+        if (headless) {
+            WriteHeadlessResult(filesDir, "JLI_RETURNED code=" + std::to_string(static_cast<int>(code)));
+        }
         // 老版本：JLI_Launch 跑完会内部 exit() 直接带走整个 :game 进程（窗口随之消失，
         // 启动器探测到进程结束）。26.2 起改为「正常返回」→ 若这里只关管道就返回，
         // :game 进程与游戏窗口会残留，启动器误判"仍在运行"。

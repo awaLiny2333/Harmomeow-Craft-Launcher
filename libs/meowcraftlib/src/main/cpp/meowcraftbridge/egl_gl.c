@@ -586,6 +586,19 @@ void meowMakeCurrent(void *window) {
     meow_qos_apply_current_thread();
     meow_bt_install_once();
     g_boundWindow = window;
+    if (window == NULL) {
+        /*
+         * GLFW/LWJGL 语义：glfwMakeContextCurrent(NULL) = 在**调用线程上解除**上下文绑定。
+         * 必须真的 release —— 曾把 NULL 当成"再绑一次"，导致上下文一直留在调用线程上。
+         * 实测（NeoForge 1.21.1 / FML 早窗口）：其 GL 线程做完后 release（NULL），我们却把它
+         * 重新绑回该线程 → MC 的 Render thread 再 makeCurrent 时 EGL_BAD_ACCESS(0x3002) →
+         * GL.createCapabilities() 拿不到上下文 → 启动即崩（Window.<init>）。
+         */
+        if (g_egl.display != EGL_NO_DISPLAY) {
+            eglMakeCurrent(g_egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        }
+        return;
+    }
     if (!egl_bind()) {
         MEOWLOGW("meowMakeCurrent: no GL context/surface available");
     }
