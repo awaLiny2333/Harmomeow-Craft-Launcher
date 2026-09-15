@@ -29,12 +29,20 @@
       "value": "添加文件夹"
     },
     {
-      "name": "game_dirs_activated",
-      "value": "已激活"
+      "name": "game_dirs_open_folder",
+      "value": "󰃅"
     },
     {
       "name": "game_dirs_inactive",
       "value": "未激活"
+    },
+    {
+      "name": "game_dirs_remove_title",
+      "value": "移除目录"
+    },
+    {
+      "name": "game_dirs_remove_message",
+      "value": "确定移除游戏目录 %s ？只解除记忆与授权，目录里的文件都不会被动。"
     },
     {
       "name": "settings_export",
@@ -202,7 +210,7 @@
     },
     {
       "name": "version_open_folder",
-      "value": "打开文件夹"
+      "value": "󰃅"
     },
     {
       "name": "version_delete_title",

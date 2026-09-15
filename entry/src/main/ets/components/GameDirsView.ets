@@ -1,9 +1,11 @@
 import { common } from '@kit.AbilityKit';
 import { GameDirsTools, GameDir } from '../common/data/GameDirsTools';
-import { pickDirectory, authorizeDirectory, persistDirectory, activateDirectory,
-  revokeDirectory } from '../common/access/FileAccess';
+import {
+  pickDirectory, authorizeDirectory, persistDirectory, activateDirectory,
+  revokeDirectory, showInFiles
+} from '../common/access/FileAccess';
 import { LauncherState, getLauncherState } from '../common/state/LauncherState';
-import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY } from '../common/constants/Constants';
+import { LAYOUT_PADDING_SMALL, BORDER_RADIUS, LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY } from '../common/constants/Constants';
 
 /**
  * 游戏目录管理区块（页面级组件，由 Index 挂载）。
@@ -11,7 +13,7 @@ import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY } from '../common/c
  * 职责：
  * 1. 展示用户已记住的游戏目录列表（昵称 + 完整 URI）；
  * 2. 下拉 Select 切换"当前要用的目录"（写入共享 LauncherState.selected，供版本区使用）；
- * 3. 每个目录提供：改名（点击昵称进入行内编辑）、授权（激活）、移除。
+ * 3. 每个目录提供：改名（点击昵称进入行内编辑）、授权（激活）、在系统文件管理器中打开（已激活时）、移除。
  *
  * 状态归属（与 GameVersionsView 共享，见 common/state/LauncherState.ets）：
  * - dirs / selected / activated 放在 LauncherState（@ObservedV2），通过 AppStorageV2
@@ -133,6 +135,29 @@ export struct GameDirsView {
     st.refreshLastLaunch(this.context());
   }
 
+  /** 移除目录入口：二次确认（与「删除版本」同款弹窗；移除只解除记忆，不动文件）后再执行。 */
+  private confirmRemove(dir: GameDir): void {
+    this.getUIContext().showAlertDialog({
+      title: $r('app.string.game_dirs_remove_title'),
+      message: $r('app.string.game_dirs_remove_message', dir.name),
+      primaryButton: {
+        value: $r('app.string.common_cancel'),
+        action: () => {
+        },
+        fontColor: $r('sys.color.white'),
+        backgroundColor: $r('app.color.brand')
+      },
+      secondaryButton: {
+        value: $r('app.string.common_remove'),
+        action: () => {
+          this.removeDir(dir.uri);
+        },
+        fontColor: $r('sys.color.white'),
+        backgroundColor: $r('app.color.danger')
+      }
+    });
+  }
+
   /**
    * 移除目录：删除持久化记录、清理共享列表与授权标记；
    * 若移除的是当前选中目录，则回退到第一个；
@@ -243,18 +268,22 @@ export struct GameDirsView {
               .layoutWeight(1)
               .alignItems(HorizontalAlign.Start);
             }
-            // 授权状态总显式展示（已激活 / 未激活），避免歧义
-            Text(this.state.activated.includes(obj.item.uri)
-              ? $r('app.string.game_dirs_activated')
-              : $r('app.string.game_dirs_inactive'));
-            // 仅在未激活时提供「激活」按钮（已激活无需再授权）
-            if (!this.state.activated.includes(obj.item.uri)) {
+            // 已激活：显示「打开文件夹」按钮（在系统文件管理器中打开该目录）；
+            // 未激活：提示文字 + 「激活」按钮（已激活无需再授权）。
+            if (this.state.activated.includes(obj.item.uri)) {
+              Button($r('app.string.game_dirs_open_folder'))
+                .onClick(() => showInFiles(obj.item.uri, this.context()));
+            } else {
+              Text($r('app.string.game_dirs_inactive'));
               Button($r('app.string.common_activate'))
                 .onClick(() => this.activate(obj.item.uri));
             }
             Button($r('app.string.common_remove'))
-              .onClick(() => this.removeDir(obj.item.uri));
+              .onClick(() => this.confirmRemove(obj.item));
           }
+          .padding(LAYOUT_PADDING_SMALL)
+          .backgroundColor($r('app.color.brand_bg'))
+          .borderRadius(BORDER_RADIUS)
           .width('100%')
           .alignItems(VerticalAlign.Center);
         })
