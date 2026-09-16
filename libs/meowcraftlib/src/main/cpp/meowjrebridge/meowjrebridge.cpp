@@ -409,15 +409,16 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
                 }
                 return s;
             };
+            const size_t kChunk = 1024;        // 远低于 hilog 的单条上限（4096 字节）
+            const size_t kMaxPending = 65536;  // 无换行时的缓冲上界（见 pump 内的冲刷）
             auto emit = [sanitize](const char* tag, const std::string& raw) {
-                const size_t chunk = 1024;
                 std::string line = sanitize(raw);
                 if (line.empty()) {
                     OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG, "[%{public}s]", tag);
                     return;
                 }
-                for (size_t off = 0; off < line.size(); off += chunk) {
-                    std::string part = line.substr(off, chunk);
+                for (size_t off = 0; off < line.size(); off += kChunk) {
+                    std::string part = line.substr(off, kChunk);
                     if (off == 0) {
                         OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
                                      "[%{public}s] %{public}s", tag, part.c_str());
@@ -445,6 +446,16 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
                         pos = nl + 1;
                     }
                     pending.erase(0, pos);  // 保留未换行的残段
+                    // 有界化（2026-09-16 独立复核发现）：换行迟迟不来时 pending 会**无限增长** ✗ ——
+                    // 一段无换行的巨量输出足以把游戏进程撑爆。超限就**带标记冲刷**并清空；
+                    // 内容不丢，只是这条"行"被打断一次 ✓。
+                    if (pending.size() > kMaxPending) {
+                        OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
+                                     "[%{public}s] (no newline within %{public}d bytes; flushing)",
+                                     tag, static_cast<int>(kMaxPending));
+                        emit(tag, pending);
+                        pending.clear();
+                    }
                 }
                 if (!pending.empty()) {
                     emit(tag, pending);

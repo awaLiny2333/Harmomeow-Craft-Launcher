@@ -18,20 +18,22 @@ Our overlay differs from the official file by exactly six deterministic edits:
   1. inject  RendererInit.onCreateCapabilities(provider);  as the first statement
      of the package-private capabilities constructor (hooks our renderer/GL init)
   2. keep every advertised-vs-resolvable guard, but make it RUNTIME-conditional, and
-     split the two kinds (their sources of truth differ on this stack):
+     split the two kinds (their sources of truth differ):
          version group:  if (!ext.contains("OpenGL42")) { ... }
            -> if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 4, 2)) { ... }
          extension:      if (!ext.contains("GL_ARB_x")) { ... }
            -> if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_x")) { ... }
-     Why the split: Mesa (Zink) never advertises the "OpenGLxy" pseudo-extension names, so
-     the advertised-name test alone makes EVERY version group false (measured 2026-09-16:
-     under-report - this context really is 4.2), while deleting the guards made them all true
-     (over-report - 4.2 claimed as 4.6, which is what sent Flywheel down the compute path and
-     into the driver bug). allowsVersionGroup() accepts the advertised name OR the parsed
-     GL_VERSION, so the reported version groups match the context. Extensions keep the
-     upstream contract (advertised name + resolvable entry points), which holds here because
-     Mesa does advertise them. Both are skipped on the gl4es compat path (strict = OFF),
-     whose context advertises a low version while the higher entry points still resolve.
+     Why the split: LWJGL itself synthesises the ext set - GL.createCapabilities adds exactly
+     ONE version name, "OpenGL" + major + minor, from GL_MAJOR_VERSION/GL_MINOR_VERSION
+     (ref/lwjgl3: org/lwjgl/opengl/GL.java). So on a GL 4.2 context that family contains only
+     "OpenGL42": the guard made OpenGL43..46 false (correct - this is what kills Flywheel's
+     `if (CAPABILITIES.OpenGL46) return true;` shortcut) but ALSO made OpenGL11..41 false
+     (wrong: the context supports them). Deleting the guards had the opposite error (4.2
+     claimed as 4.6). allowsVersionGroup() therefore accepts the advertised name OR the parsed
+     GL_VERSION. Extensions keep the upstream contract (advertised name + resolvable entry
+     points), which holds because Mesa does advertise them. Both are skipped on the gl4es
+     compat path (strict = OFF), whose context advertises a low version while the higher entry
+     points still resolve.
   3. force every capability probe to evaluate (no short-circuit):
          `||` -> `|`   and   `&&` -> `&`
   4. neutralise the pure-logging call `reportMissing("GL","...")` -> `false`.
@@ -48,24 +50,26 @@ Our overlay differs from the official file by exactly six deterministic edits:
   6. make EVERY capability flag maskable:
          FIELD = check_X(...);            -> FIELD = check_X(...)         && !RendererInit.isMasked("FIELD");
          FIELD = ext.contains("GL_X");    -> FIELD = ext.contains("GL_X") && !RendererInit.isMasked("FIELD");
-     Same reason as edit 2's counterpart for probes: a probe such as
-     `check_ARB_compute_shader` is a pure function-slot test
-     (`checkFunctions(...) | false`) with NO `ext.contains(...)` term, so masking
-     the extension set (edit 5) cannot reach it - nor can the Mesa layer
-     (`MESA_EXTENSION_OVERRIDE`) nor a GL-layer filter over glGetStringi (all three
-     measured INERT on 2026-09-16: Zink does export glDispatchCompute, so the flag
-     stays true and the mod still takes the compute path). The `&&` keeps the left
-     operand evaluated, so the function slots still load and the native
-     address-slot contract is untouched; only the flag is forced false.
+     What this level buys (note it is NOT the "only" working level - edits 2/5 also reach the
+     extension probes when strict is ON): edit 6 is what makes the VERSION GROUPS maskable
+     (allowsVersionGroup consults the parsed GL_VERSION, which knows nothing about the deny
+     list) and what keeps masking effective when strict is OFF (gl4es). For the record, the
+     three things that were measured INERT on 2026-09-16 were measured against the *old*
+     guard-deleted overlay: filtering `ext` (edit 5), `MESA_EXTENSION_OVERRIDE`, and a
+     GL-layer filter over glGetStringi - none of them can reach a pure
+     `checkFunctions(...) | false` probe. The `&&` keeps the left operand evaluated, so the
+     function slots still load and the native address-slot contract is untouched; only the
+     flag is forced false.
 
 Note the division of labour: edits 2/3/4 make our LWJGL report the TRUTH about the
 context; edits 5/6 are the runtime POLICY that lets us declare a capability
 unusable on a specific device (and take it back without a rebuild).
 
-Edits 1/3/4 applied to the official LWJGL 3.4.3 file reproduced the historical
-shipped overlay byte-for-byte (verified 2026-09-16 against tag 3.4.3 of the LWJGL
-tree); edits 5+6 are one injected line plus one wrapper per capability flag; edit
-2 is 234 in-place guard rewrites.
+The historical (pre-campaign) shipped overlay is reproduced byte-for-byte by the OLD
+four-edit recipe (hook, DROP the guards, de-short-circuit, reportMissing->false),
+re-verified 2026-09-16 against tag 3.4.3 of the LWJGL tree. The current recipe is that
+plus: edit 2 keeps the 234 guards runtime-conditional (18 of them via GL_VERSION),
+edits 5/6 add the mask interface.
 
 Usage:
     gen_glcap.py <official-GLCapabilities.java> <out-GLCapabilities.java>
@@ -85,13 +89,12 @@ def transform(src: str) -> str:
     src = re.sub(r'reportMissing\("[^"]*"\s*,\s*"[^"]*"\)', 'false', src)
 
     # (2) keep the advertised-vs-resolvable guards, but decide at runtime - and SPLIT them,
-    #     because the two kinds have different sources of truth on this stack:
-    #       * version groups (`OpenGL42`): Mesa never advertises those pseudo-extension names,
-    #         so `ext.contains(...)` alone makes every version group false (measured 2026-09-16:
-    #         under-report - the context really is 4.2), while deleting the guard made them all
-    #         true (over-report - 4.2 claimed as 4.6, which sent Flywheel down the compute path).
-    #         RendererInit.allowsVersionGroup() therefore accepts the advertised name OR the
-    #         parsed GL_VERSION.
+    #     because the two kinds have different sources of truth:
+    #       * version groups (`OpenGL42`): LWJGL's own GL.createCapabilities adds exactly ONE
+    #         version name ("OpenGL" + major + minor) taken from GL_MAJOR_VERSION/MINOR_VERSION,
+    #         so on a 4.2 context the guard made 43..46 false (correct) but also 11..41 false
+    #         (wrong - the context supports them). RendererInit.allowsVersionGroup() therefore
+    #         accepts the advertised name OR the parsed GL_VERSION.
     #       * extensions (`GL_ARB_*`): "advertised name + resolvable entry points" is the
     #         upstream contract and it holds here, because Mesa does advertise them.
     expected = len(re.findall(r'if \(!ext\.contains\("', src))
@@ -107,8 +110,10 @@ def transform(src: str) -> str:
         return 'if (RendererInit.strictCapabilities() && !ext.contains("%s")) {' % name
 
     src, guarded = re.subn(r'if \(!ext\.contains\("([^"]+)"\)\) \{', _conditional, src)
-    assert guarded == expected and guarded > 0, (
-        'guard rewrite mismatch: expected %d, rewrote %d' % (expected, guarded))
+    # Hard failures (not `assert`, which `python3 -O` strips): a shape change must not silently
+    # produce an unverified file whose slot indices could be wrong.
+    if guarded != expected or guarded == 0:
+        raise SystemExit('guard rewrite mismatch: expected %d, rewrote %d' % (expected, guarded))
     print('  edit 2: %d guards made runtime-conditional (%d version groups take GL_VERSION)'
           % (guarded, version_guards), file=sys.stderr)
 
@@ -117,7 +122,8 @@ def transform(src: str) -> str:
     #     an assignment to the `ext` parameter (legal, and the caller's set is untouched).
     anchor = ('GLCapabilities(FunctionProvider provider, Set<String> ext, '
               'boolean fc, IntFunction<PointerBuffer> bufferFactory) {\n')
-    assert anchor in src, 'constructor anchor not found'
+    if anchor not in src:
+        raise SystemExit('constructor anchor not found: did the generated shape change?')
     src = src.replace(
         anchor,
         anchor
@@ -126,10 +132,13 @@ def transform(src: str) -> str:
         1,
     )
 
-    # (6) make every capability flag maskable - the edit that reaches the function-slot
-    #     probes (see the module docstring: edit 5 / Mesa / GL-layer are all inert for
-    #     them). Only single-line assignments are wrapped; the assert keeps the recipe
-    #     honest if a future LWJGL version changes the generated shape.
+    # (6) make every capability flag maskable. What this level buys: the VERSION GROUPS
+    #     (allowsVersionGroup consults the parsed GL_VERSION, which knows nothing about the
+    #     deny-list) and masking on the strict-OFF gl4es path. For the record, the three
+    #     approaches measured INERT on 2026-09-16 - filtering `ext` (edit 5),
+    #     MESA_EXTENSION_OVERRIDE, and a GL-layer filter over glGetStringi - were measured
+    #     against the *old* guard-deleted overlay, where a pure `checkFunctions(...) | false`
+    #     probe could not be reached by any of them. Only single-line assignments are wrapped.
     probe = re.compile(
         r'^(        )([A-Za-z0-9_]+) = '
         r'(check_[A-Za-z0-9_]+\([^\n]*\)|ext\.contains\("[^"]+"\));$',
@@ -141,7 +150,8 @@ def transform(src: str) -> str:
         return '%s%s = %s && !RendererInit.isMasked("%s");' % (indent, field, expr, field)
 
     src, wrapped = probe.subn(_maskable, src)
-    assert wrapped > 0, 'no capability flags found - did the generated shape change?'
+    if wrapped == 0:
+        raise SystemExit('no capability flags found: did the generated shape change?')
     print('  edit 6: %d capability flags made maskable' % wrapped, file=sys.stderr)
     return src
 

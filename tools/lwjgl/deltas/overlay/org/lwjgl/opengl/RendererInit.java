@@ -12,19 +12,19 @@ import org.lwjgl.system.SharedLibrary;
 
 public final class RendererInit {
 
-    /** Parsed capability deny-list (null until first use). */
-    private static Set<String> deniedNames;
+    /** Parsed capability deny-list (published once; null until then). */
+    private static volatile Set<String> deniedNames;
 
-    /** Cached strict-capabilities decision (null until first use). */
-    private static Boolean strictMode;
+    /** Cached strict-capabilities decision (published once; null until then). */
+    private static volatile Boolean strictMode;
 
-    /** The provider handed in by the capabilities constructor (source of the GL version query). */
-    private static FunctionProvider capsProvider;
+    /** Provider handed in by the capabilities constructor (source of the GL version query). */
+    private static volatile FunctionProvider capsProvider;
 
-    /** GL_VERSION, once read (-1 = unknown, i.e. version groups are reported as unsupported). */
-    private static int versionMajor = -1;
-    private static int versionMinor = -1;
-    private static boolean versionParsed;
+    /** GL version: published only after a SUCCESSFUL parse (a failure stays retry-able). */
+    private static volatile int versionMajor = -1;
+    private static volatile int versionMinor = -1;
+    private static volatile boolean versionReady;
 
     private RendererInit() {
     }
@@ -43,6 +43,8 @@ public final class RendererInit {
                     + "renderer-specific initialization is skipped");
             return;
         }
+        // NOTE: the app ships "libgl4es.so" (LaunchDefaults), not "libng_gl4es.so", so this
+        // branch is inert for the current gl4es path; kept for the historical HNP name.
         if (rendererName.endsWith("libng_gl4es.so")) {
             nativeInitGl4esInternals(provider);
         }
@@ -56,7 +58,7 @@ public final class RendererInit {
      * points to resolve. Our overlay used to delete those guards process-wide, which made a
      * version group - and an extension - report "supported" merely because Mesa's dispatch table
      * resolves the symbol: on this GL 4.2 device {@code OpenGL46} came out true and Flywheel's
-     * {@code if (CAPABILITIES.OpenGL46) return true;} shortcut took the compute path
+     * {@code if (CAPABILITIES.OpenGL46) return true;} shortcut therefore took the compute path
      * (measured 2026-09-16). So the guards stay, but they are runtime-conditional.</p>
      *
      * <p>Strict = ON for every renderer except {@code MEOWCRAFT_RENDERER=gl4es}, whose compat
@@ -69,32 +71,41 @@ public final class RendererInit {
         if (cached != null) {
             return cached;
         }
-        String override = System.getProperty("meow.strictCaps");
-        if (!isValid(override)) {
-            override = System.getenv("MEOW_STRICT_CAPS");
+        synchronized (RendererInit.class) {
+            cached = strictMode;
+            if (cached != null) {
+                return cached;
+            }
+            String override = System.getProperty("meow.strictCaps");
+            if (!isValid(override)) {
+                override = System.getenv("MEOW_STRICT_CAPS");
+            }
+            boolean value;
+            if (isValid(override)) {
+                value = !"0".equals(override) && !"false".equalsIgnoreCase(override);
+            } else {
+                value = !"gl4es".equals(System.getenv("MEOWCRAFT_RENDERER"));
+            }
+            System.out.println("RendererInit: capability guards " + (value
+                    ? "ON (advertised + resolvable: honest version groups)"
+                    : "OFF (resolvable only - gl4es compat context)"));
+            strictMode = value;
+            return value;
         }
-        boolean value;
-        if (isValid(override)) {
-            value = !"0".equals(override) && !"false".equalsIgnoreCase(override);
-        } else {
-            value = !"gl4es".equals(System.getenv("MEOWCRAFT_RENDERER"));
-        }
-        System.out.println("RendererInit: capability guards " + (value
-                ? "ON (advertised + resolvable: honest version groups)"
-                : "OFF (resolvable only - gl4es compat context)"));
-        strictMode = value;
-        return value;
     }
 
     /**
      * Version-group decision for the generated guards (gen_glcap.py edit 2).
      *
-     * <p>Neither of the two extremes is honest on this stack, and both were measured: Mesa
-     * (Zink) never advertises the {@code "OpenGLxy"} pseudo-extension names, so upstream's
-     * guard makes every version group false (under-report: the context really is 4.2), while
-     * deleting the guards makes them all true (over-report: 4.2 claimed as 4.6). The truth is
-     * the context's own {@code GL_VERSION} string, so a group is allowed when the driver
-     * advertises it OR the parsed version is at least that group.</p>
+     * <p>LWJGL synthesises the ext set itself: {@code GL.createCapabilities} adds exactly ONE
+     * version name, {@code "OpenGL" + major + minor}, taken from GL_MAJOR_VERSION /
+     * GL_MINOR_VERSION (reference: ref/lwjgl3, org/lwjgl/opengl/GL.java). So on this GL 4.2
+     * context that family contains {@code "OpenGL42"} and nothing else, and upstream's guard
+     * made {@code OpenGL43..46} false - correct, and that is what kills Flywheel's
+     * {@code if (CAPABILITIES.OpenGL46) return true;} shortcut - but ALSO made
+     * {@code OpenGL11..41} false, which is wrong: the context does support them. Deleting the
+     * guards had the opposite error (4.2 claimed as 4.6). Hence: a group is allowed when the
+     * driver advertises its name OR the parsed GL_VERSION is at least that group.</p>
      */
     public static boolean allowsVersionGroup(Set<String> ext, int major, int minor) {
         if (ext.contains("OpenGL" + major + minor)) {
@@ -109,64 +120,88 @@ public final class RendererInit {
         return versionMajor > major || (versionMajor == major && versionMinor >= minor);
     }
 
-    /** Read and log GL_VERSION once (safe: no context -> the call returns NULL and we say so). */
+    /**
+     * Read and log GL_VERSION once, thread-safely.
+     *
+     * <p>Two capabilities constructions can happen in a session (and not necessarily on the same
+     * thread), so the values are computed into locals and only published - values first, then the
+     * ready flag - inside the lock. A FAILURE (no current context, unresolvable
+     * {@code glGetString}, unparseable string) leaves {@code versionReady == false} so the next
+     * construction retries, instead of caching a bogus "GL 1.0" for the whole session.</p>
+     */
     private static void parseVersion() {
-        if (versionParsed) {
+        if (versionReady) {
             return;
         }
-        versionParsed = true;
-        String raw = null;
-        try {
-            FunctionProvider provider = capsProvider;
-            long addr = provider == null ? 0L : provider.getFunctionAddress("glGetString");
-            if (addr != 0L) {
-                long ptr = JNI.invokeP(0x1F02 /* GL_VERSION */, addr);
-                if (ptr != 0L) {
-                    // NB: the bounded variant decodes `length` BYTES, so it can carry the
-                    // terminator and whatever follows it in memory. Cut at the first NUL - an
-                    // embedded NUL used to survive into our log line and the forwarder's `%s`
-                    // then silently dropped everything after it (measured: 142 chars -> 85).
-                    raw = MemoryUtil.memASCII(ptr, 64);
-                    int nul = raw.indexOf('\0');
-                    if (nul >= 0) {
-                        raw = raw.substring(0, nul);
+        synchronized (RendererInit.class) {
+            if (versionReady) {
+                return;
+            }
+            String raw = null;
+            int major = -1;
+            int minor = -1;
+            try {
+                FunctionProvider provider = capsProvider;
+                long addr = provider == null ? 0L : provider.getFunctionAddress("glGetString");
+                if (addr != 0L) {
+                    long ptr = JNI.invokeP(0x1F02 /* GL_VERSION */, addr);
+                    if (ptr != 0L) {
+                        // NB: the bounded variant decodes `length` BYTES, so it can carry the
+                        // terminator and whatever follows it in memory. Cut at the first NUL -
+                        // an embedded NUL used to survive into our log line and the forwarder's
+                        // `%s` then dropped everything after it (measured: 142 chars -> 85).
+                        raw = MemoryUtil.memASCII(ptr, 64);
+                        int nul = raw.indexOf('\0');
+                        if (nul >= 0) {
+                            raw = raw.substring(0, nul);
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                System.out.println("RendererInit: GL_VERSION query failed: " + t);
+            }
+            if (raw != null) {
+                Matcher matcher = Pattern.compile("(\\d+)\\.(\\d+)").matcher(raw);
+                if (matcher.find()) {
+                    try {
+                        major = Integer.parseInt(matcher.group(1));
+                        minor = Integer.parseInt(matcher.group(2));
+                    } catch (NumberFormatException ignored) {
+                        // leave -1/-1 -> not ready -> a later construction may retry
                     }
                 }
             }
-        } catch (Throwable t) {
-            System.out.println("RendererInit: GL_VERSION query failed: " + t);
+            versionMajor = major;
+            versionMinor = minor;
+            versionReady = major >= 0;
+            // Short lines on purpose: a single hilog message is capped at 4096 bytes (documented)
+            // and short lines also survive any forwarder-side surprise.
+            System.out.println("RendererInit: GL_VERSION len=" + (raw == null ? -1 : raw.length()));
+            System.out.println("RendererInit: GL_VERSION=["
+                    + (raw == null ? "unavailable" : raw) + "]");
+            System.out.println("RendererInit: groups " + (major < 0
+                    ? "not known yet (this construction reports no version groups)"
+                    : major + "." + minor + "; " + groupRange(major, minor)));
         }
-        if (raw != null) {
-            Matcher matcher = Pattern.compile("(\\d+)\\.(\\d+)").matcher(raw);
-            if (matcher.find()) {
-                try {
-                    versionMajor = Integer.parseInt(matcher.group(1));
-                    versionMinor = Integer.parseInt(matcher.group(2));
-                } catch (NumberFormatException ignored) {
-                    // keep -1/-1
-                }
-            }
-        }
-        // Short lines on purpose: a single hilog message is capped at 4096 bytes (documented) and
-        // short lines also survive any forwarder-side surprise.
-        System.out.println("RendererInit: GL_VERSION len=" + (raw == null ? -1 : raw.length()));
-        System.out.println("RendererInit: GL_VERSION=["
-                + (raw == null ? "unavailable" : raw) + "]");
-        System.out.println("RendererInit: groups " + (versionMajor < 0
-                ? "unsupported (no version known)"
-                : versionMajor + "." + versionMinor + "; " + groupRange()));
     }
 
-    /** Self-evidence: which generated version groups the parsed GL version turns on. */
-    private static String groupRange() {
-        if (versionMajor > 4) {
+    /** Self-evidence: which generated version groups a GL version turns on. */
+    private static String groupRange(int major, int minor) {
+        if (major > 4) {
             return "OpenGL11..OpenGL46 on (all of them)";
         }
-        if (versionMajor < 1) {
+        if (major < 1) {
             return "none";
         }
-        int minor = versionMajor == 1 ? Math.min(versionMinor, 5) : Math.min(versionMinor, 9);
-        return "OpenGL11..OpenGL" + versionMajor + minor + " on, higher off";
+        int capped;
+        if (major == 1) {
+            capped = Math.min(minor, 5);
+        } else if (major == 4) {
+            capped = Math.min(minor, 6);   // there is no OpenGL47
+        } else {
+            capped = Math.min(minor, 9);
+        }
+        return "OpenGL11..OpenGL" + major + capped + " on, higher off";
     }
 
     /**
@@ -175,22 +210,16 @@ public final class RendererInit {
      * <p>Wired in by {@code gen_glcap.py}: edit 6 wraps each capability assignment
      * ({@code FIELD = check_X(...);} and {@code FIELD = ext.contains("...");}) with
      * {@code && !RendererInit.isMasked("FIELD")}, and edit 5 rebinds the constructor's
-     * {@code ext} parameter through {@link #filterCapabilities(Set)} for the probes that
-     * consult nothing but that set.</p>
+     * {@code ext} parameter through {@link #filterCapabilities(Set)}.</p>
      *
-     * <p>The policy is DATA, not code: {@code -Dmeow.maskExtensions=GL_A,GL_B} or the
-     * {@code MEOW_MASK_EXTENSIONS} environment variable (the property wins) names the
-     * capabilities to report as absent, so one can hide - and un-hide - without a rebuild.
-     * The same names also drive the Mesa layer ({@code MESA_EXTENSION_OVERRIDE}), so one list
-     * masks both consumers.</p>
+     * <p>Edit 6 is what makes the VERSION GROUPS maskable (they are computed from the parsed
+     * GL_VERSION, which knows nothing about the deny-list) and what keeps masking effective on
+     * the strict-OFF gl4es path; edit 5 alone cannot reach either.</p>
      *
-     * <p>Why the probe-level hook is the one that matters (measured 2026-09-16): a probe such
-     * as {@code check_ARB_compute_shader} is a pure function-slot test with no
-     * {@code ext.contains(...)} term, so neither filtering {@code ext}, nor the Mesa layer
-     * ({@code MESA_EXTENSION_OVERRIDE}), nor a GL-layer filter can reach it - the flag stays
-     * true because Zink does export {@code glDispatchCompute}. The wrapper keeps the left
-     * operand evaluated (the slots still load, so the native address-slot contract is
-     * untouched) and only forces the flag to false.</p>
+     * <p>The policy is DATA, not code: {@code -Dmeow.maskExtensions=GL_A,GL_B} and the
+     * {@code MEOW_MASK_EXTENSIONS} environment variable are UNIONed here. NOTE the asymmetry:
+     * only the environment variable also drives the Mesa layer ({@code MESA_EXTENSION_OVERRIDE},
+     * set by the launcher from the same list) - a {@code -D} masks the LWJGL view only.</p>
      *
      * <p>Masking (true -&gt; false) is all we do on purpose: faking a capability
      * (false -&gt; true) would also need the driver to resolve that capability's entry
@@ -200,28 +229,37 @@ public final class RendererInit {
         return denied().contains(name);
     }
 
-    /** The deny-list, parsed once from the property/env (empty = masking disabled). */
+    /** The deny-list: property and env unioned, parsed once (empty = masking disabled). */
     private static Set<String> denied() {
         Set<String> cached = deniedNames;
         if (cached != null) {
             return cached;
         }
-        String spec = System.getProperty("meow.maskExtensions");
-        if (!isValid(spec)) {
-            spec = System.getenv("MEOW_MASK_EXTENSIONS");
+        synchronized (RendererInit.class) {
+            cached = deniedNames;
+            if (cached != null) {
+                return cached;
+            }
+            Set<String> denied = new LinkedHashSet<>();
+            collect(denied, System.getProperty("meow.maskExtensions"));
+            collect(denied, System.getenv("MEOW_MASK_EXTENSIONS"));
+            System.out.println("RendererInit: capability mask "
+                    + (denied.isEmpty() ? "off" : "armed") + ": [" + String.join(" ", denied)
+                    + "] (consulted by every capability probe)");
+            deniedNames = denied;
+            return denied;
         }
-        Set<String> denied = new LinkedHashSet<>();
-        if (isValid(spec)) {
-            for (String name : spec.split("[,\\s]+")) {
-                if (!name.isEmpty()) {
-                    denied.add(name);
-                }
+    }
+
+    private static void collect(Set<String> into, String spec) {
+        if (!isValid(spec)) {
+            return;
+        }
+        for (String name : spec.split("[,\\s]+")) {
+            if (!name.isEmpty()) {
+                into.add(name);
             }
         }
-        System.out.println("RendererInit: capability mask " + (denied.isEmpty() ? "off" : "armed")
-                + ": [" + String.join(" ", denied) + "] (every capability probe consults it)");
-        deniedNames = denied;
-        return denied;
     }
 
     /** Drop the denied names from the extension set (probes that only test {@code ext}). */
