@@ -180,7 +180,12 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     // `if (!ext.contains("...")) return false;` 守卫，导致版本组/扩展在 Mesa 派发表上"恒真" ✗。
     // 根因已修（`gen_glcap.py` 第 2 条改为**运行时条件守卫** + `RendererInit.strictCapabilities()`：
     // 现代路径保留守卫 ⇒ 版本组诚实；gl4es 兼容上下文才放行）⇒ 这里不再需要钉假版本组 ✓。
-    ? ['GL_ARB_compute_shader'] : [];
+    // ★逐版本开关「**屏蔽** GL_ARB_compute_shader」（默认**开** = 屏蔽该能力，与 `MEOW_MASK_EXTENSIONS`
+    //   的"设/不设"对齐）：用户关掉 = 不屏蔽 ⇒ 模组可用 compute，但本机驱动不稳**可能直接崩** ⇒ 知情承担。
+    //   ⚠️ 它只决定**默认清单**：用户若在「额外渲染环境变量」写了 `MEOW_MASK_EXTENSIONS`，下一行会**整份
+    //   覆盖**它 ⇒ 开关**影响不到**用户在 env 区设置的任何屏蔽 ✓。将来若默认清单里还有别的能力，
+    //   这里要改成"只去掉 compute"（别整体置空 ✗）。
+    ? (instance.computeShaderMasked ? ['GL_ARB_compute_shader'] : []) : [];
   // ⚠️ 若将来某设备又出现"门控绕过了本清单"，可在「额外渲染环境变量」里写
   // `MEOW_MASK_EXTENSIONS=GL_X,OpenGL46` 临时兜底（无需重编）✓。
   const maskOverride = parseMaskOverride(userRenderEnv);
@@ -204,9 +209,10 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
       'extra render env forces MEOW_GUARD_SYNC=none on a version that needs the guard sync (UAF risk)');
   }
   hilog.info(LOG_DOMAIN, LOG_TAG,
-    'glthread=%{public}s guardSync=%{public}s renderer=%{public}s capMask=%{public}s',
+    'glthread=%{public}s guardSync=%{public}s renderer=%{public}s capMask=%{public}s computeShader=%{public}s',
     glthread ? 'on' : 'off', guardSyncNone ? 'none(auto)' : 'per-call', renderer.env,
-    capMask.length > 0 ? `on(${capMask.join(',')})` : 'off');
+    capMask.length > 0 ? `on(${capMask.join(',')})` : 'off',
+    instance.computeShaderMasked ? 'on(default)' : 'off(user)');
   await startJvm(ctx, [java, ...argv], renderer.lib, renderer.env, renderer.glProfile, renderEnv);
 }
 

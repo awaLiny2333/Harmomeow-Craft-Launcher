@@ -194,7 +194,7 @@
     },
     {
       "name": "version_renderer_label",
-      "value": "渲染后端"
+      "value": "渲染后端 MEOWCRAFT_RENDERER"
     },
     {
       "name": "version_renderer_hint",
@@ -202,11 +202,19 @@
     },
     {
       "name": "version_glthread_label",
-      "value": "线程化渲染"
+      "value": "线程化渲染 GALLIUM_THREAD"
     },
     {
       "name": "version_glthread_hint",
       "value": "GPU 调用交独立线程，帧数更高、加载稍慢；仅 OpenGLv4 后端生效（选其它后端不生效）"
+    },
+    {
+      "name": "version_compute_label",
+      "value": "屏蔽 GL_ARB_compute_shader"
+    },
+    {
+      "name": "version_compute_hint",
+      "value": "本质置 MEOW_MASK_EXTENSIONS=GL_ARB_compute_shader；提高稳定性；默认开启"
     },
     {
       "name": "version_delete",
@@ -434,7 +442,7 @@
     },
     {
       "name": "advanced_render_env_hint",
-      "value": "K=V，换行或 ; 分隔，启动前注入（可覆盖默认）。例：GALLIUM_THREAD=1；留空 = 不改。改动下次开游戏生效"
+      "value": "K=V，英文分号分隔，启动前注入；原样追加到实例设置；留空 = 遵守版本实例设置；改动下次游戏生效"
     },
     {
       "name": "advanced_jvm_args",
@@ -442,7 +450,7 @@
     },
     {
       "name": "advanced_jvm_args_hint",
-      "value": "空格或换行分隔，原样追加到启动参数。例：-XX:+UnlockDiagnosticVMOptions -XX:-ImplicitNullChecks；留空 = 不传。改动下次开游戏生效"
+      "value": "空格分隔，原样追加到启动参数；留空 = 不传；改动下次游戏生效"
     },
     {
       "name": "advanced_ms_client_id",

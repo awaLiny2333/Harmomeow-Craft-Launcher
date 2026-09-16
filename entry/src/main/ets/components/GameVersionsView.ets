@@ -263,7 +263,7 @@ export struct GameVersionsView {
       return;
     }
     const next = new InstanceSettings(on, this.editingSettings.rendererBackend,
-      this.editingSettings.glThreadEnabled);
+      this.editingSettings.glThreadEnabled, this.editingSettings.computeShaderMasked);
     if (!writeInstanceSettings(root, versionId, next)) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'write isolation failed for %{public}s', versionId);
       this.reloadEditingSettings();
@@ -393,7 +393,7 @@ export struct GameVersionsView {
       return;
     }
     const next = new InstanceSettings(this.editingSettings.isolation, backend,
-      this.editingSettings.glThreadEnabled);
+      this.editingSettings.glThreadEnabled, this.editingSettings.computeShaderMasked);
     if (!writeInstanceSettings(root, versionId, next)) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'write renderer failed for %{public}s', versionId);
       this.reloadEditingSettings();
@@ -409,6 +409,25 @@ export struct GameVersionsView {
     return rendererForVersion(v.mcVersion, this.editingSettings.rendererBackend).env === RENDERER_ENV;
   }
 
+  /** 切换「屏蔽 GL_ARB_compute_shader」（默认**开** = 屏蔽；关掉 = 用户知情承担崩溃风险）。 */
+  private setComputeShader(versionId: string, on: boolean): void {
+    const root = this.editingRoot;
+    if (root.length === 0) {
+      return;
+    }
+    const next = new InstanceSettings(this.editingSettings.isolation,
+      this.editingSettings.rendererBackend, this.editingSettings.glThreadEnabled, on);
+    if (!writeInstanceSettings(root, versionId, next)) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'write compute-shader failed for %{public}s', versionId);
+      this.reloadEditingSettings();
+      return;
+    }
+    this.editingSettings = next;
+    this.syncStateMirrors();
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'compute-shader mask %{public}s = %{public}s',
+      versionId, on ? 'on' : 'off');
+  }
+
   /**
    * 切换某版本的「线程化渲染」：写 `editingRoot` 下该实例的 .hmmcraft 文件 → 更新 `editingSettings`；
    * 仅当面板目录仍是当前选中目录时顺带刷 state 镜像。写失败则从磁盘重读恢复 UI（不撒谎）。
@@ -419,7 +438,7 @@ export struct GameVersionsView {
       return;
     }
     const next = new InstanceSettings(this.editingSettings.isolation,
-      this.editingSettings.rendererBackend, on);
+      this.editingSettings.rendererBackend, on, this.editingSettings.computeShaderMasked);
     if (!writeInstanceSettings(root, versionId, next)) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'write glthread failed for %{public}s', versionId);
       this.reloadEditingSettings();
@@ -932,16 +951,38 @@ export struct GameVersionsView {
       // 值照存；只是启动时不会生效，见 GameLauncher 的 renderer.env 门控）。
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
-          Text($r('app.string.version_glthread_label'));
+          Text($r('app.string.version_glthread_label'))
+            .opacity(this.glThreadSupported(this.editing) ? 1 : OPACITY_SECONDARY);
           Text($r('app.string.version_glthread_hint'))
             .opacity(OPACITY_SECONDARY);
         }
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start);
         Toggle({ type: ToggleType.Switch, isOn: this.editingSettings.glThreadEnabled })
-          .opacity(this.glThreadSupported(this.editing) ? 1 : OPACITY_SECONDARY)
           .onChange((isOn: boolean) => {
             this.setGlThread(this.editing.id, isOn);
+          });
+      }
+      .opacity(this.glThreadSupported(this.editing) ? 1 : OPACITY_SECONDARY)
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      // 屏蔽 GL_ARB_compute_shader（逐版本）：**默认开 = 屏蔽该能力**（本机驱动编译 compute 着色器不稳，
+      // 见 notes 20-design/render/1.21.1-崩溃-两条链与随包规避.md §6）。关掉 = 不屏蔽（两层都不下发），
+      // 模组可用 compute，但本机可能直接崩 ⇒ 用户知情承担。开关状态与 `MEOW_MASK_EXTENSIONS` 的"设/不设"
+      // 一致；仅在"本该屏蔽"的场景（Kirin + 现代渲染路径）有区别，其它场景值照存、不生效（与上面 glthread
+      // 同一种"灰化提示不禁用"的处理方式）。
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.version_compute_label'));
+          Text($r('app.string.version_compute_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+        Toggle({ type: ToggleType.Switch, isOn: this.editingSettings.computeShaderMasked })
+          .onChange((isOn: boolean) => {
+            this.setComputeShader(this.editing.id, isOn);
           });
       }
       .width('100%')

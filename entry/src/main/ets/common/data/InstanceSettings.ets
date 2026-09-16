@@ -44,6 +44,8 @@ const KEY_OVERRIDE_PROPERTIES: string = 'overrideProperties';
 const KEY_RENDERER_BACKEND: string = 'hmmcraftRendererBackend';
 /** 线程化渲染键名（仅显式 false 才写）。 */
 const KEY_GL_THREAD: string = 'hmmcraftGlThreadEnabled';
+/** GL_ARB_compute_shader 屏蔽键名（**仅显式 false 才写**：默认 = 屏蔽该能力，与 glthread 同构）。 */
+const KEY_COMPUTE_SHADER: string = 'hmmcraftComputeShaderMasked';
 
 /** 逐版本渲染后端覆盖条目（编辑面板镜像用；与实例文件同源）。 */
 export interface RendererOverride {
@@ -58,6 +60,7 @@ interface InstanceSettingsJson {
   runningDirectory?: string;
   hmmcraftRendererBackend?: string;
   hmmcraftGlThreadEnabled?: boolean;
+  hmmcraftComputeShaderMasked?: boolean;
 }
 
 /**
@@ -74,22 +77,28 @@ export class InstanceSettings {
   rendererBackend: string;
   /** 是否启用线程化渲染（glthread，默认开）。 */
   glThreadEnabled: boolean;
+  /** 是否**屏蔽** GL_ARB_compute_shader（**默认开**；关掉 = 允许使用该能力，见 notes §6 操作规范）。 */
+  computeShaderMasked: boolean;
 
-  constructor(isolation: boolean, rendererBackend: string, glThreadEnabled: boolean) {
+  constructor(isolation: boolean, rendererBackend: string, glThreadEnabled: boolean,
+    computeShaderMasked: boolean) {
     this.isolation = isolation;
     this.rendererBackend = rendererBackend;
     this.glThreadEnabled = glThreadEnabled;
+    this.computeShaderMasked = computeShaderMasked;
   }
 
   /**
-   * 默认值工厂（**隔离开** / 后端 auto / glthread 开）。
+   * 默认值工厂（**隔离开** / 后端 auto / glthread 开 / **compute 关**）。
    *
    * 隔离默认**开**是三态语义的一半（用户 2026-09-15 定）：**没有设置文件 = 从未配置 → 取默认（开）**；
    * 文件存在但 `overrideProperties` **不含** `runningDirectory` = **显式关**。所以"关"必须落盘才算数
    * （关隔离时只写 `format`，文件存在本身即"已配置为关"）。
+   *
+   * compute 默认**屏蔽**（表里即默认开）：本机 GPU 驱动编译 compute 着色器不稳会崩，只有用户显式关掉才不屏蔽。
    */
   static defaults(): InstanceSettings {
-    return new InstanceSettings(true, RENDERER_AUTO, true);
+    return new InstanceSettings(true, RENDERER_AUTO, true, true);
   }
 }
 
@@ -130,7 +139,9 @@ export function readInstanceSettings(gameRoot: string, id: string): InstanceSett
     }
     // glthread：默认开，只有显式 false 才关。
     const glThread = raw.hmmcraftGlThreadEnabled === false ? false : true;
-    return new InstanceSettings(isolated, backend, glThread);
+    // compute：默认**屏蔽**（与 glthread 的"默认开、显式关"同构 —— 只有显式 false 才关屏蔽）。
+    const computeShader = raw.hmmcraftComputeShaderMasked === false ? false : true;
+    return new InstanceSettings(isolated, backend, glThread, computeShader);
   } catch {
     hilog.warn(LOG_DOMAIN, LOG_TAG, 'parse failed for %{public}s (use defaults)', id);
     return InstanceSettings.defaults();
@@ -245,6 +256,7 @@ export function writeInstanceSettings(gameRoot: string, id: string, data: Instan
   base[KEY_RUNNING_DIRECTORY] = undefined;
   base[KEY_RENDERER_BACKEND] = undefined;
   base[KEY_GL_THREAD] = undefined;
+  base[KEY_COMPUTE_SHADER] = undefined;
   const props = readOverrideProperties(base);
   if (data.isolation) {
     // 开隔离：确保 overrideProperties **含** runningDirectory（保留其余项）。
@@ -261,6 +273,8 @@ export function writeInstanceSettings(gameRoot: string, id: string, data: Instan
   const backend = normalizeRendererBackend(data.rendererBackend);
   base[KEY_RENDERER_BACKEND] = backend !== RENDERER_AUTO ? backend : undefined;
   base[KEY_GL_THREAD] = data.glThreadEnabled ? undefined : false;
+  // compute：默认**屏蔽**（与 glthread 同构）⇒ 只在"用户显式关掉屏蔽"时才写键（缺键 = 按默认屏蔽 ✓）。
+  base[KEY_COMPUTE_SHADER] = data.computeShaderMasked ? undefined : false;
   base['$schema'] = undefined;
   base['format'] = INSTANCE_SETTINGS_FORMAT;
   // 写**多行缩进**（2 空格）：实例设置文件会跟着实例目录走、可能被用户直接看/改，可读性优先。
