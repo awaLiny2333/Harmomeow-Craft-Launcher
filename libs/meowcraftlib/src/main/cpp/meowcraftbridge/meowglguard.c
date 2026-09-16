@@ -252,6 +252,14 @@ static unsigned char g_loggedUnwrapped[UNWRAPPED_N];
  * （进程级、一致）⇒ 那一轮日志显示 Flywheel **退回了 INSTANCING 且稳定** ✓✓。
  * 现由启动器按芯片（Kirin/Maleoon）在渲染 env 里注入（见 `GameLauncher.ets`）。
  *
+ * ⚠️ **机制更正（2026-09-16，3/3 复现）**：Mesa 层的有效**不是**"模组看不见能力后主动降级"——
+ * Flywheel 的 `GlCompat.isIndirectSupported()`（字节码已核：确查 `GL_ARB_compute_shader`）**仍为真**，
+ * 它照常选 INDIRECT 并去编译 compute 程序，是 **Zink 拒绝创建该着色器**（`GL_INVALID_VALUE in
+ * glShaderSourceARB/glCompileShader`）后由 `BackendManagerImpl` **捕获该失败**才 `fell back from
+ * 'flywheel:indirect' to 'flywheel:instancing'`。⇒ 兜底靠**模组的错误处理**；不捕获编译错误的
+ * compute 模组会抛异常（今天进程内只有 Flywheel 与 Iris 用 compute，Iris 无光影包 ⇒ 无暴露）。
+ * GL 层那条路与此**同源**：LWJGL 既不吃我们改过的扩展表、也不受其约束。
+ *
  * 代码已删（保计数/占位名的实现也一并删除：既然到不了消费者，留着只是负担）。
  * ------------------------------------------------------------------------- */
 

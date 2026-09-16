@@ -159,10 +159,15 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   // **本机 GPU 是 Maleoon（Kirin）时，在 Mesa 层"谎报"掉 compute 能力**：本机 Bisheng 编译器在编译
   // **合法** compute SPIR-V 时空指针/无效地址崩溃（4 次复现；见 notes `20-design/render/1.21.1-崩溃-两条链
   // 与随包规避.md` §1），而 compute 在 Vulkan 里是**核心特性、硬件其实支持** ⇒ 这是"对一台出 bug 的设备
-  // 撒谎"的权宜之计：能力不可见后，模组（Flywheel 的 INDIRECT 等）会走各自**已写好的**降级路径
-  // ⇒ **一次拦截覆盖所有模组**（不必逐模组打补丁）。代价 = 本机丢掉 GPU 驱动渲染（纯性能，无功能缺失）。
+  // 撒谎"的权宜之计。代价 = 本机丢掉 GPU 驱动渲染（纯性能，无功能缺失）。
   // 实测依据：走 **GL 层**（guard 过滤扩展表）**到不了 LWJGL** ✗；走 **Mesa 层**才有效 ✓（可自证：游戏
   // DEBUG 日志里 Flywheel 由 `Compiled culling/…` 变回 `Compiled pipeline/instancing/…`）。
+  // ⚠️ **机制更正（2026-09-16，3/3 复现）**：有效的**不是**"模组看不见能力后主动降级"—— LWJGL 的能力集
+  // **仍看得到**该扩展，Flywheel 照常选 INDIRECT 并去编译 compute 程序，是 **Zink 拒绝创建该着色器**
+  // （`GL_INVALID_VALUE`）后**模组自己捕获该失败**才回退（`fell back from 'flywheel:indirect' to
+  // 'flywheel:instancing'`）。⇒ 一次拦截把"驱动崩溃"变成"干净的 GL 错误"（覆盖所有模组、不必逐模组打
+  // 补丁），但**兜底靠模组的错误处理**：不捕获编译错误的 compute 模组会抛异常（今天进程内只有 Flywheel
+  // 与 Iris 用 compute，Iris 无光影包 ⇒ 无暴露）。
   // 只对**现代渲染路径**（openglv4/Zink）注入；拼接在用户 env **之前** ⇒ 用户可显式覆盖 ✓。
   const hideComputeEnv = (/Kirin/i.test(cpuChip) && renderer.env === RENDERER_ENV)
     ? 'MESA_EXTENSION_OVERRIDE=-GL_ARB_compute_shader' : '';
