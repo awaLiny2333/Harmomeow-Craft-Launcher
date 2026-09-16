@@ -122,8 +122,15 @@ public final class RendererInit {
             if (addr != 0L) {
                 long ptr = JNI.invokeP(0x1F02 /* GL_VERSION */, addr);
                 if (ptr != 0L) {
-                    // Bounded read: we only need the leading "major.minor".
+                    // NB: the bounded variant decodes `length` BYTES, so it can carry the
+                    // terminator and whatever follows it in memory. Cut at the first NUL - an
+                    // embedded NUL used to survive into our log line and the forwarder's `%s`
+                    // then silently dropped everything after it (measured: 142 chars -> 85).
                     raw = MemoryUtil.memASCII(ptr, 64);
+                    int nul = raw.indexOf('\0');
+                    if (nul >= 0) {
+                        raw = raw.substring(0, nul);
+                    }
                 }
             }
         } catch (Throwable t) {
@@ -140,10 +147,14 @@ public final class RendererInit {
                 }
             }
         }
-        System.out.println("RendererInit: GL_VERSION=[" + (raw == null ? "unavailable" : raw)
-                + "] -> " + (versionMajor < 0
-                ? "unknown; version groups are reported unsupported"
-                : versionMajor + "." + versionMinor + "; version groups " + groupRange()));
+        // Short lines on purpose: a single hilog message is capped at 4096 bytes (documented) and
+        // short lines also survive any forwarder-side surprise.
+        System.out.println("RendererInit: GL_VERSION len=" + (raw == null ? -1 : raw.length()));
+        System.out.println("RendererInit: GL_VERSION=["
+                + (raw == null ? "unavailable" : raw) + "]");
+        System.out.println("RendererInit: groups " + (versionMajor < 0
+                ? "unsupported (no version known)"
+                : versionMajor + "." + versionMinor + "; " + groupRange()));
     }
 
     /** Self-evidence: which generated version groups the parsed GL version turns on. */

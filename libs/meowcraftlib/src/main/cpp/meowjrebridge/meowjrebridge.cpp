@@ -394,7 +394,41 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
             close(outPipe[1]);
             // 行缓冲 reader：按 \n 切分逐行上抛，保证每行都带前缀；
             // 不完整行留到下次 read，避免"有的行有前缀有的没有"。
-            auto pump = [](int fd, const char* tag) {
+            // 两处健壮化（2026-09-16，实测踩到）：
+            //   ① 清洗控制符：Java 侧若打印了含 NUL 的字符串（例：`MemoryUtil.memASCII(addr, len)`
+            //      会连 NUL 终止符与其后的字节一起解出来），`%s` 会在 NUL 处**静默截断**——实测一行
+            //      142 字符只剩 85、后面的内容整段丢失 ✗。这里把控制符换成空格，绝不吞后续内容。
+            //   ② 按 hilog 的单条上限分段（平台文档 faqs-performance-analysis-kit-58：最多 4096 字节，
+            //      超出截断）；取 1024 一块，给前缀留余量。
+            auto sanitize = [](std::string s) {
+                for (char& c : s) {
+                    unsigned char u = static_cast<unsigned char>(c);
+                    if (u < 0x20 && c != '\t') {
+                        c = ' ';
+                    }
+                }
+                return s;
+            };
+            auto emit = [sanitize](const char* tag, const std::string& raw) {
+                const size_t chunk = 1024;
+                std::string line = sanitize(raw);
+                if (line.empty()) {
+                    OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG, "[%{public}s]", tag);
+                    return;
+                }
+                for (size_t off = 0; off < line.size(); off += chunk) {
+                    std::string part = line.substr(off, chunk);
+                    if (off == 0) {
+                        OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
+                                     "[%{public}s] %{public}s", tag, part.c_str());
+                    } else {
+                        OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
+                                     "[%{public}s] +%{public}d %{public}s", tag,
+                                     static_cast<int>(off), part.c_str());
+                    }
+                }
+            };
+            auto pump = [emit](int fd, const char* tag) {
                 std::string pending;
                 char buf[2048] = {0};
                 ssize_t n = 0;
@@ -407,15 +441,13 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
                         if (!line.empty() && line.back() == '\r') {
                             line.pop_back();
                         }
-                        OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
-                                     "[%{public}s] %{public}s", tag, line.c_str());
+                        emit(tag, line);
                         pos = nl + 1;
                     }
                     pending.erase(0, pos);  // 保留未换行的残段
                 }
                 if (!pending.empty()) {
-                    OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
-                                 "[%{public}s] %{public}s", tag, pending.c_str());
+                    emit(tag, pending);
                 }
                 close(fd);
             };
