@@ -437,6 +437,10 @@ static void meow_gl_info_once(void) {
     typedef const unsigned char *(*GetStringFn)(unsigned int);
     typedef void (*GetIntegervFn)(unsigned int, int *);
     typedef const unsigned char *(*GetStringiFn)(unsigned int, unsigned int);
+    /* 用 `eglGetProcAddress` 直连（= 驱动/Mesa 真值）。**这是对的**：能力过滤现在走 **Mesa 层**
+     * （`MESA_EXTENSION_OVERRIDE`，进程级生效）⇒ 直连也能看到"被藏掉"的结果 ✓。
+     * （2026-09-16 教训：曾以为必须走 guard 的 `glXGetProcAddress`；实测 GL 层过滤**到不了 LWJGL** ✗
+     *  ⇒ 那条路已撤销，见 `meowglguard.c` 顶部注释。） */
     GetStringFn getString = (GetStringFn)eglGetProcAddress("glGetString");
     GetIntegervFn getIntegerv = (GetIntegervFn)eglGetProcAddress("glGetIntegerv");
     GetStringiFn getStringi = (GetStringiFn)eglGetProcAddress("glGetStringi");
@@ -453,7 +457,13 @@ static void meow_gl_info_once(void) {
     static const char *keys[] = {
         "GL_ARB_buffer_storage", "GL_ARB_direct_state_access", "GL_ARB_multi_draw_indirect",
         "GL_ARB_draw_indirect", "GL_ARB_base_instance", "GL_ARB_vertex_attrib_binding",
-        "GL_ARB_clip_control", "GL_ARB_shader_draw_parameters", "GL_ARB_debug_output", NULL
+        "GL_ARB_clip_control", "GL_ARB_shader_draw_parameters", "GL_ARB_debug_output",
+        /* compute 家族：Flywheel INDIRECT 的 gating 项。用来验证「用 MESA_EXTENSION_OVERRIDE 把 compute
+         * 藏掉」是否真的生效（2026-09-16：本机驱动 Bisheng 编译器在编译合法 compute SPIR-V 时会空指针崩溃，
+         * 见 notes 20-design/render/1.21.1-崩溃-两条链与随包规避.md §1）。 */
+        "GL_ARB_compute_shader", "GL_ARB_shader_storage_buffer_object",
+        "GL_ARB_shader_image_load_store", "GL_ARB_shader_image_size",
+        "GL_ARB_shader_atomic_counters", "GL_ARB_gpu_shader5", NULL
     };
     for (int k = 0; keys[k] != NULL; ++k) {
         int found = 0;

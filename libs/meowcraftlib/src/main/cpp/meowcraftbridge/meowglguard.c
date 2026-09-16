@@ -236,6 +236,25 @@ static const char *const kUnwrappedClientMem[] = {
 #define UNWRAPPED_N (sizeof(kUnwrappedClientMem) / sizeof(kUnwrappedClientMem[0]))
 static unsigned char g_loggedUnwrapped[UNWRAPPED_N];
 
+/* ------------------------------------------------------------------------- *
+ * 【已撤销】GL 层"谎报能力"实验（2026-09-16，结论：对本消费者无效，勿重试）
+ *
+ * 目标：本机 Maleoon 的 Bisheng 编译器在编译**合法 compute SPIR-V** 时空指针崩溃
+ * （见 notes 20-design/render/1.21.1-崩溃-两条链与随包规避.md §1），于是想从 GL 层把
+ * `GL_ARB_compute_shader` 从扩展表里藏掉，让模组（Flywheel 的 INDIRECT）自动降级。
+ *
+ * **实测结论：无效** ✗。用 DEBUG 日志按轮次判后端（`Compiled culling/…` = INDIRECT vs
+ * `Compiled pipeline/instancing/…` = INSTANCING）证明：即使本 guard 的过滤表已生效
+ * （它自己的日志会打"已隐藏 …"），**Flywheel 仍然选择了 INDIRECT** ⇒ 说明 LWJGL 的能力集
+ * **不是**从我们的 `glGetStringi`/`glGetIntegerv` 包装里取的。
+ *
+ * **有效的是 Mesa 层**：渲染 env 里 `MESA_EXTENSION_OVERRIDE=-GL_ARB_compute_shader`
+ * （进程级、一致）⇒ 那一轮日志显示 Flywheel **退回了 INSTANCING 且稳定** ✓✓。
+ * 现由启动器按芯片（Kirin/Maleoon）在渲染 env 里注入（见 `GameLauncher.ets`）。
+ *
+ * 代码已删（保计数/占位名的实现也一并删除：既然到不了消费者，留着只是负担）。
+ * ------------------------------------------------------------------------- */
+
 /* Exported so the bridge can verify (before JLI_Launch) that the guard is armed
  * and, if not, force GALLIUM_THREAD=0 rather than leave glthread unprotected. */
 int meow_glguard_armed(void) {
