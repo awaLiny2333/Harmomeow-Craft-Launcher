@@ -13,8 +13,9 @@
  *     never calls into the loader).
  *   - HotSpot poll/guard faults (a constant PROT_NONE page, hit during safe
  *     points) are BENIGN and frequent; they must not be mistaken for the crash.
- *     We treat addr==0 / addr<64 KB as benign, collapse repeats of the same
- *     address to one compact line, and label 4 KB unnamed PROT_NONE pages.
+ *     We treat addr==0 / addr<64 KB as benign (unless MEOW_BT_LOW=1), collapse
+ *     repeats of the same address to one compact line, and label 4 KB unnamed
+ *     PROT_NONE pages.
  *   - Install from the bridge render thread (after HotSpot installs SIGSEGV) and
  *     chain to the previous handler, so crash semantics are unchanged.
  */
@@ -29,15 +30,31 @@
 #include <string.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <time.h>
+#include <fcntl.h>
 #include <ucontext.h>
 
 #define BT_MAX_DUMPS 16
 /* Faults below this are HotSpot's implicit-null-check range: benign. */
 #define BT_BENIGN_MAX 0x10000UL
 
+/* 近空地址（< BT_BENIGN_MAX）默认被当作 HotSpot 的隐式空指针探测而**静默跳过**；
+ * 但"真崩溃"也可能是低地址（实测有一次 si_code=1 的致命 fault 就被这层过滤器吞了），
+ * 所以给一个开关：MEOW_BT_LOW=1 时不再过滤（实测一轮的低地址 fault 只有几十条，不会刷屏）。
+ * ⚠️ 在**安装时**解析一次并缓存：POSIX 未把 getenv 列为信号安全，handler 里不调它。 */
+static int g_bt_low = 0;
+static int meow_bt_low(void) {
+    return g_bt_low;
+}
+static void meow_bt_low_init(void) {
+    const char *e = getenv("MEOW_BT_LOW");
+    g_bt_low = (e != NULL && e[0] == '1') ? 1 : 0;
+}
+
 #define MAP_MAX 16384
 #define MAP_NAME_MAX 72
 #define SEEN_MAX 64
+#define SEEN_PC_MAX 4 /* 每地址记录多少个不同 pc（判 safepoint 噪声）*/
 
 typedef struct {
     unsigned long start;
@@ -51,6 +68,10 @@ static int g_mapc = 0;
 
 static unsigned long g_seen_addr[SEEN_MAX];
 static int g_seen_count[SEEN_MAX];
+/* 同一地址上出现过的**不同 pc**（最多 SEEN_PC_MAX 个）：用来把 HotSpot safepoint 轮询页的
+ * 噪声（同址、**pc 各异**、进程照样活着）与真 UAF（同址、**pc 相同**）区分开。 */
+static unsigned long g_seen_pc[SEEN_MAX][SEEN_PC_MAX];
+static int g_seen_pcn[SEEN_MAX];
 static int g_seen_n = 0;
 
 static struct sigaction g_prev[3]; /* 0 = SEGV, 1 = BUS, 2 = ABRT */
@@ -87,18 +108,21 @@ static char *put_hex(char *p, unsigned long v) {
 }
 
 static char *put_dec(char *p, long v) {
+    unsigned long u;
     if (v < 0) {
         *p++ = '-';
-        v = -v;
+        u = (unsigned long)(-(v + 1)) + 1UL; /* 避免对 LONG_MIN 取负的 UB */
+    } else {
+        u = (unsigned long)v;
     }
-    char t[16];
+    char t[24]; /* 64 位十进制最多 20 位 */
     int i = 0;
-    if (v == 0) {
+    if (u == 0) {
         t[i++] = '0';
     }
-    while (v != 0) {
-        t[i++] = (char)('0' + (v % 10));
-        v /= 10;
+    while (u != 0) {
+        t[i++] = (char)('0' + (int)(u % 10UL));
+        u /= 10UL;
     }
     while (i > 0) {
         *p++ = t[--i];
@@ -106,10 +130,50 @@ static char *put_dec(char *p, long v) {
     return p;
 }
 
+/* 除 stderr 外**可选**再落一个文件：.logs 是环形快照、且会被大量 stdout 挤掉，
+ * 转储常常读不到（2026-09-16 教训）。**默认不落盘**——铁律：不污染硬盘；
+ * 需要一份可离线核对的 dump 时，显式给 env `MEOW_BT_FILE=<path>`
+ * （启动器侧的默认落点 = `<实例>/.hmmcraft/logs/`，也可直接指到那里）。
+ * open/write 在信号上下文里安全。 */
+static int g_dump_fd = -2;
+static int dump_fd(void) {
+    if (g_dump_fd != -2) {
+        return g_dump_fd;
+    }
+    const char *p = getenv("MEOW_BT_FILE");
+    if (p == NULL || p[0] == '\0') {
+        g_dump_fd = -1; /* 未显式给路径 ⇒ 只打 stderr（目录不存在时同理回退） */
+        return g_dump_fd;
+    }
+    int fd = open(p, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    g_dump_fd = (fd >= 0) ? fd : -1;
+    if (g_dump_fd < 0) {
+        /* 静默丢失会让操作者以为文件已写好 ⇒ 明说一句（父目录不存在是最常见原因）。 */
+        static const char w[] = "[meowbt] MEOW_BT_FILE open failed; stderr only\n";
+        (void)write(2, w, sizeof(w) - 1);
+    }
+    return g_dump_fd;
+}
+
+/* 每条 fault/repeat 行前缀一个 epoch 秒时间戳：dump 文件没有时间信息，
+ * 而平台捕获(.logs)里 DFX 行有 ⇒ 靠它对上"最后那条 = 致命那条"（2026-09-16 教训）。 */
+static char *meow_ts(char *p) {
+    long t = (long)time(NULL);
+    p = put_str(p, "T=");
+    p = put_dec(p, t);
+    p = put_str(p, " ");
+    return p;
+}
+
 static void write_buf(const char *b, int len) {
     if (len > 0) {
         ssize_t r = write(STDERR_FILENO, b, (size_t)len);
         (void)r;
+        int fd = dump_fd();
+        if (fd >= 0) {
+            ssize_t r2 = write(fd, b, (size_t)len);
+            (void)r2;
+        }
     }
 }
 
@@ -209,6 +273,58 @@ static const MapEntry *find_map(unsigned long a) {
         }
     }
     return NULL;
+}
+
+/* 打印地址所在区间**及其前后邻居**（-2/-1/=/+1/+2）。匿名区没有名字 ⇒ 只有邻居能说清
+ * 这块是谁的：紧邻的下方区间若是 `[anon:stack:tid]` 就是栈守卫页；若是某 .so 的 end 就是
+ * 该库的守卫页；若两侧都是大片 PROT_NONE 则多半是「未提交的保留区」（如 JVM 堆/code cache 尾巴）。
+ * 表是**安装时**的快照（信号上下文里不能重读 /proc/self/maps）。 */
+static void print_maps_around(const char *label, unsigned long a) {
+    if (a == 0) {
+        return;
+    }
+    int idx = -1;
+    for (int i = 0; i < g_mapc; ++i) {
+        if (a >= g_maps[i].start && a < g_maps[i].end) {
+            idx = i;
+            break;
+        }
+    }
+    char *p = g_buf;
+    p = put_str(p, "[meowbt]   ");
+    p = put_str(p, label);
+    p = put_str(p, "=");
+    p = put_hex(p, a);
+    if (idx < 0) {
+        p = put_str(p, " <UNMAPPED>\n");
+        write_buf(g_buf, (int)(p - g_buf));
+        return;
+    }
+    p = put_str(p, " (neighbours, snapshot@install)\n");
+    write_buf(g_buf, (int)(p - g_buf));
+    for (int d = -2; d <= 2; ++d) {
+        int i = idx + d;
+        if (i < 0 || i >= g_mapc) {
+            continue;
+        }
+        const MapEntry *m = &g_maps[i];
+        p = g_buf;
+        p = put_str(p, "[meowbt]     ");
+        p = put_str(p, (d < 0) ? "-" : (d > 0 ? "+" : "="));
+        p = put_dec(p, (d < 0) ? -d : d);
+        p = put_str(p, " ");
+        p = put_hex(p, m->start);
+        p = put_str(p, "-");
+        p = put_hex(p, m->end);
+        p = put_str(p, " [");
+        p = put_str(p, m->perms);
+        p = put_str(p, " size=");
+        p = put_hex(p, m->end - m->start);
+        p = put_str(p, "] ");
+        p = put_str(p, (m->name[0] != '\0') ? m->name : "<anon>");
+        p = put_str(p, "\n");
+        write_buf(g_buf, (int)(p - g_buf));
+    }
 }
 
 static void print_mapping_of(const char *label, unsigned long a) {
@@ -429,8 +545,9 @@ static void handler(int signo, siginfo_t *si, void *uctx) {
         }
     }
 
-    /* addr==0 (null) and the low implicit-null-check range are benign. */
-    int benign = (addr < BT_BENIGN_MAX);
+    /* addr==0 (null) and the low implicit-null-check range are benign
+     * （`MEOW_BT_LOW=1` 时不过滤，低地址也 dump/折叠）。 */
+    int benign = (addr < BT_BENIGN_MAX) && (meow_bt_low() == 0);
     if (!benign) {
         /* Collapse repeats of the same address (HotSpot poll/guard page faults). */
         int seen = -1;
@@ -443,20 +560,44 @@ static void handler(int signo, siginfo_t *si, void *uctx) {
         long tid = (long)syscall(SYS_gettid);
         if (seen >= 0) {
             g_seen_count[seen]++;
+            /* pc 多样性统计：出现**新 pc** ⇒ 极可能是 safepoint 轮询页（谁跑到检查点就在哪儿停住）。 */
+            int known = 0;
+            for (int i = 0; i < g_seen_pcn[seen]; ++i) {
+                if (g_seen_pc[seen][i] == pc) {
+                    known = 1;
+                    break;
+                }
+            }
+            if (!known && g_seen_pcn[seen] < SEEN_PC_MAX) {
+                g_seen_pc[seen][g_seen_pcn[seen]++] = pc;
+            }
             char *p = g_buf;
+            p = meow_ts(p);
             p = put_str(p, "[meowbt] repeat addr=");
             p = put_hex(p, addr);
             p = put_str(p, " x");
             p = put_dec(p, g_seen_count[seen]);
+            p = put_str(p, " pc=");
+            p = put_hex(p, pc);
             p = put_str(p, " tid=");
             p = put_dec(p, tid);
-            p = put_str(p, "\n");
+            {
+                /* 每个 fault 都带线程名（之前只有第一个有）——「几十个线程一起撞」时，
+                 * 名字能直接说出是哪些池。 */
+                char tn[32] = {0};
+                (void)syscall(SYS_prctl, 16 /* PR_GET_NAME */, tn);
+                p = put_str(p, " thr=");
+                p = put_str(p, (tn[0] != '\0') ? tn : "?");
+            }
+            p = put_str(p, (g_seen_pcn[seen] > 1) ? " [same-addr-diff-pc => safepoint-poll-like]\n" : "\n");
             write_buf(g_buf, (int)(p - g_buf));
         } else if (g_dumps < BT_MAX_DUMPS) {
             g_dumps++;
             if (g_seen_n < SEEN_MAX) {
                 g_seen_addr[g_seen_n] = addr;
                 g_seen_count[g_seen_n] = 1;
+                g_seen_pcn[g_seen_n] = 1;
+                g_seen_pc[g_seen_n][0] = pc;
                 g_seen_n++;
             }
             char tname[32] = {0};
@@ -465,6 +606,7 @@ static void handler(int signo, siginfo_t *si, void *uctx) {
             (void)syscall(SYS_prctl, 16 /* PR_GET_NAME */, tname);
 
             char *p = g_buf;
+            p = meow_ts(p);
             p = put_str(p, "[meowbt] FAULT#");
             p = put_dec(p, g_dumps);
             p = put_str(p, " sig=");
@@ -491,8 +633,8 @@ static void handler(int signo, siginfo_t *si, void *uctx) {
             p = put_hex(p, fp);
             append_regs(p, regs);
 
-            print_mapping_of("addr->", addr);
-            print_mapping_of("pc  ->", pc);
+            print_maps_around("addr->", addr);
+            print_maps_around("pc  ->", pc);
             print_mapping_of("lr  ->", lr);
             /* 受限 fp 链回溯：抓 caller（Mesa 常省 fp，尽力而为）。 */
             if (fp != 0) {
@@ -514,8 +656,10 @@ void meow_bt_install_once(void) {
     }
     g_installed = 1;
 
+    meow_bt_low_init();
     load_map();
-    const char *hdr = "[meowbt] installed (SEGV/BUS/ABRT); maps follow\n";
+    const char *hdr = "[meowbt] installed v5 (per-fault pc/thread, epoch 时间戳, same-addr-diff-pc 标注,"
+                      " MEOW_BT_LOW=1 关近空过滤, MEOW_BT_FILE=<path> 才落盘；否则只打 stderr); maps follow\n";
     write_buf(hdr, (int)strlen(hdr));
     print_map();
 

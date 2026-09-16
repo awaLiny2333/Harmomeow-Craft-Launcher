@@ -90,6 +90,11 @@ export interface LaunchOptions {
   gameDir?: string;
   /** versions/<id>/<id>.json 物理路径。 */
   jsonPath: string;
+  /** 落盘物证目录（best-effort：由 `ensureInstanceLogsDir` 尝试创建，失败返回空串）。
+   *  非空时用作 `-XX:ErrorFile` 的落点（hs_err 不落游戏目录；用户自有 ErrorFile 时不覆盖）。
+   *  注意：`meowbt` 转储与 `-XX:+Log*` 输出**不**走这里——前者默认只打 stderr（要落盘须显式 `MEOW_BT_FILE`），
+   *  后者是诊断参数、随包默认不设。 */
+  logsDir?: string;
   /** 完整 classpath（可选）：通常平铺后用 "<dir>/*" 通配，规避超长 -cp 失效。 */
   classpath?: string;
   /** 平铺目录（可选）：NeoForge 走真 maven 树 classpath，但随包 LWJGL3 jar 只能从这里取。 */
@@ -280,6 +285,16 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     // CPU 线程数覆盖（高级选项）；0/未设 = 不传，由 JVM 自动探测（sysconf）。
     if (opts.activeProcessorCount !== undefined && opts.activeProcessorCount > 0) {
       argv.push(`-XX:ActiveProcessorCount=${opts.activeProcessorCount}`);
+    }
+    // 崩喷落点统一到实例的 `.hmmcraft/logs`：`-XX:ErrorFile` 是**产品**参数（可直接用），
+    // JVM 的 hs_err 默认落 cwd（= 游戏目录）⇒ 指到这里。沿用本文件「用户额外参数优先」的约定：
+    // 用户自己给了 `-XX:ErrorFile` 就不覆盖。
+    // ⚠️ 这里**不要**加 `-XX:LogFile=`：它是**诊断**参数，未开 `-XX:+UnlockDiagnosticVMOptions`
+    //    会让 JVM 直接拒启（2026-09-16 实测："VM option 'LogFile' is diagnostic …" → 启动失败，
+    //    且**没有** hs_err、MC 的 latest.log 也不更新）。需要 Log* 时由用户自己在额外参数里连 unlock 一起给。
+    const userArgs = opts.jvmArgs !== undefined ? opts.jvmArgs : '';
+    if (opts.logsDir !== undefined && opts.logsDir.length > 0 && !/-\s*XX:ErrorFile\s*=/.test(userArgs)) {
+      argv.push(`-XX:ErrorFile=${opts.logsDir}/hs_err_pid%p.log`);
     }
     argv.push(`-Duser.language=${LOCALE_LANGUAGE}`);
     argv.push(`-Duser.country=${LOCALE_COUNTRY}`);

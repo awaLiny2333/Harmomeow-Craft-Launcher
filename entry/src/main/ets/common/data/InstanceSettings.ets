@@ -9,6 +9,26 @@ const LOG_TAG = 'InstanceSettings';
 
 /** 实例设置 dot-dir（实例目录内，随实例目录跨机迁移）。 */
 const INSTANCE_SETTINGS_DIR: string = '.hmmcraft';
+
+/** 逐实例**落盘物证目录**：`<dir>/.hmmcraft/logs`（本启动器与随包 JVM 共用）。
+ *  目的：让**游戏目录（= 进程 cwd）保持干净**（铁律：不污染硬盘）。
+ *  ⚠️ 返回**空串 = 建目录失败**（实例目录不可写等）。调用方**必须**退回沙箱目录，
+ *  **绝不能**把 `-XX:ErrorFile` 指到不存在的路径——那时 JVM 会把 `hs_err_pid*.log` 静默写回
+ *  cwd（即游戏目录），正是我们要消除的污染（见 notes `20-design/render/1.21.1-崩溃-两条链与随包规避.md`）。 */
+export function ensureInstanceLogsDir(dir: string): string {
+  const root = dir.endsWith('/') ? dir.substring(0, dir.length - 1) : dir;
+  if (root.length === 0) {
+    return '';
+  }
+  const logs = `${root}/${INSTANCE_SETTINGS_DIR}/logs`;
+  try {
+    fileIo.mkdirSync(logs, true);
+    return logs;
+  } catch (e) {
+    hilog.warn(LOG_DOMAIN, LOG_TAG, 'mkdir %{public}s failed: %{public}s', logs, (e as BusinessError).message);
+    return '';
+  }
+}
 /** 实例设置文件名（一个文件装全部逐版本设置）。 */
 const INSTANCE_SETTINGS_FILE: string = 'instance-settings.json';
 /** 文件格式版本（plain JSON，不用 JSON Schema；与全局设置文件同一种约定）。 */

@@ -7,7 +7,7 @@ import { startJvm } from '../state/JvmLauncher';
 import { stageClasspathDir } from './ClasspathStager';
 import { Account, AccountsTools, ACCOUNT_TYPE_MICROSOFT } from './AccountsTools';
 import { readAppGlobalSettings } from './AppSettings';
-import { readInstanceSettings } from './InstanceSettings';
+import { readInstanceSettings, ensureInstanceLogsDir } from './InstanceSettings';
 import { MEOW_HOME_DIR, MC_RUN_DIR_PREFIX, NATIVES_DIR, jreHomeDir,
   hspLibsDir, versionDir } from '../constants/Paths';
 import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H, RENDERER_ENV } from '../constants/LaunchDefaults';
@@ -89,6 +89,19 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   // 存档/选项/日志/资源包落版本目录，与其它版本互不干扰；assets/libraries 仍是共享根（不随隔离变）。
   const isolated = instance.isolation;
   const gameDir = isolated ? versionDir(gameRoot, versionId) : gameRoot;
+  // 落盘物证统一到**实例**的 `.hmmcraft/logs`（游戏目录 = 进程 cwd 保持干净，铁律：不污染硬盘）：
+  // **即使未开隔离也按 `versions/<id>` 归位**（各实例不混、hs_err 不互相覆盖）；建不出目录则退沙箱，
+  // 绝不退回游戏目录（否则 JVM 又会把 hs_err 写到 cwd）。见 ensureInstanceLogsDir 的注释。
+  let logsDir = ensureInstanceLogsDir(versionDir(gameRoot, versionId));
+  if (logsDir.length === 0) {
+    logsDir = `${runDir}-logs`;
+    try {
+      fileIo.mkdirSync(logsDir, true);
+    } catch (e) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG, 'fallback logs dir unavailable: %{public}s', logsDir);
+      logsDir = '';
+    }
+  }
   hilog.info(LOG_DOMAIN, LOG_TAG, 'version %{public}s isolation=%{public}s',
     versionId, isolated ? 'on' : 'off');
   const cpuChip = readCpuChip();
@@ -120,6 +133,7 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     cpuChip: cpuChip,
     rendererLib: renderer.lib,
     jvmArgs: settings.jvmArgs,
+    logsDir: logsDir,
   });
   if (argv.length === 0) {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'launch abort: empty argv for %{public}s', versionId);
