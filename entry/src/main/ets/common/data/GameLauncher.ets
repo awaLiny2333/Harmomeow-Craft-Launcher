@@ -156,8 +156,19 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   // glthread 收益照拿）。见 notes 20-design/lwjgl3-并代可行性.md / glthread-B方案-GL-guard.md §2。
   const guardSyncNone = glthread && !guardNeedsSync(mcVersion);
   const userRenderEnv = settings.renderEnv;
+  // **本机 GPU 是 Maleoon（Kirin）时，在 Mesa 层"谎报"掉 compute 能力**：本机 Bisheng 编译器在编译
+  // **合法** compute SPIR-V 时空指针/无效地址崩溃（4 次复现；见 notes `20-design/render/1.21.1-崩溃-两条链
+  // 与随包规避.md` §1），而 compute 在 Vulkan 里是**核心特性、硬件其实支持** ⇒ 这是"对一台出 bug 的设备
+  // 撒谎"的权宜之计：能力不可见后，模组（Flywheel 的 INDIRECT 等）会走各自**已写好的**降级路径
+  // ⇒ **一次拦截覆盖所有模组**（不必逐模组打补丁）。代价 = 本机丢掉 GPU 驱动渲染（纯性能，无功能缺失）。
+  // 实测依据：走 **GL 层**（guard 过滤扩展表）**到不了 LWJGL** ✗；走 **Mesa 层**才有效 ✓（可自证：游戏
+  // DEBUG 日志里 Flywheel 由 `Compiled culling/…` 变回 `Compiled pipeline/instancing/…`）。
+  // 只对**现代渲染路径**（openglv4/Zink）注入；拼接在用户 env **之前** ⇒ 用户可显式覆盖 ✓。
+  const hideComputeEnv = (/Kirin/i.test(cpuChip) && renderer.env === RENDERER_ENV)
+    ? 'MESA_EXTENSION_OVERRIDE=-GL_ARB_compute_shader' : '';
   const renderEnv = `GALLIUM_THREAD=${glthread ? '1' : '0'}`
     + (guardSyncNone ? '\nMEOW_GUARD_SYNC=none' : '')
+    + (hideComputeEnv.length > 0 ? `\n${hideComputeEnv}` : '')
     + `\n${userRenderEnv}`;
   // 用户「额外渲染环境变量」里若**显式**写 none，会让守卫对"本需要同步的版本"也纯透传（fail-open）——
   // 不改用户语义（用户优先），但记一条 WARN 便于实机排障（见 notes 00-current/运行时环境变量.md 回滚阶梯）。
@@ -165,8 +176,10 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     hilog.warn(LOG_DOMAIN, LOG_TAG,
       'extra render env forces MEOW_GUARD_SYNC=none on a version that needs the guard sync (UAF risk)');
   }
-  hilog.info(LOG_DOMAIN, LOG_TAG, 'glthread=%{public}s guardSync=%{public}s renderer=%{public}s',
-    glthread ? 'on' : 'off', guardSyncNone ? 'none(auto)' : 'per-call', renderer.env);
+  hilog.info(LOG_DOMAIN, LOG_TAG,
+    'glthread=%{public}s guardSync=%{public}s renderer=%{public}s computeHide=%{public}s',
+    glthread ? 'on' : 'off', guardSyncNone ? 'none(auto)' : 'per-call', renderer.env,
+    hideComputeEnv.length > 0 ? 'on(MESA_EXTENSION_OVERRIDE)' : 'off');
   await startJvm(ctx, [java, ...argv], renderer.lib, renderer.env, renderer.glProfile, renderEnv);
 }
 
