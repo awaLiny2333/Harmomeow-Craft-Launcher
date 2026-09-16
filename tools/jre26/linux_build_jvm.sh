@@ -50,6 +50,21 @@ else
     echo "  ⚠️ 找不到补丁: $PATCH"; exit 2
 fi
 
+echo; echo "========== 2.7) 注入 MEOW_MALLOC_SLACK（随包规避：os::malloc 尾部富余） =========="
+# ⚠️ **这不是诊断 patch，是随包规避**：Flywheel 光照 `LightDataCollector.write()` 的 18³ 越界
+# （每次写最多越过本条 ~1.7KB）在 OHOS/musl 的紧凑分配下会砸进相邻的 **JVM C 堆对象**
+# （实测打坏 SymbolTable ⇒ 复现性崩溃）。实机单变量 A/B（2026-09-16）：关掉 → 4 分钟内两次崩；
+# 开着 → 9 分钟干净。理由与阈值详见 `inject_malloc_slack.py` 文档注释。
+# 收窄策略：**默认全尺寸生效**（曾收窄为 ≥1KB，实机在加载 16s 仍崩 ⇒ 被越界的目标不限于大块）。
+# 自证只在 stderr 打一行（→ hilog，**不落盘**）；要给可离线核对的凭证时才显式设
+# `MEOW_MALLOC_SLACK_MARKER=<path>`（铁律：不污染硬盘）。
+python3 "$SHARE/Harmomeow-Craft-Launcher/tools/jre26/inject_malloc_slack.py" "$WORK/src/src/hotspot"
+IRC=$?
+if [ "$IRC" -ne 0 ]; then
+    echo ">> 注入失败 rc=$IRC（2=找不到源 3=锚点不匹配 4=注入后半成品）——拒绝继续构建"
+    exit "$IRC"
+fi
+
 echo; echo "========== 3) configure（aarch64-linux-gnu 原生） =========="
 rm -rf "$WORK/build"; mkdir -p "$WORK/build"; cd "$WORK/build" || exit 2
 bash "$WORK/src/configure" \
@@ -57,6 +72,7 @@ bash "$WORK/src/configure" \
     --with-conf-name=meow-linux \
     --with-stdc++lib=static \
     --with-native-debug-symbols=none \
+    --with-debug-level=release \
     --disable-warnings-as-errors \
     > configure.log 2>&1
 rc=$?
@@ -72,6 +88,45 @@ if [ "$rc" -ne 0 ]; then
     grep -nE "error:|Error|\*\*\*|No rule" make.log | head -20
     exit "$rc"
 fi
+
+echo; echo "========== 4.5) 守卫：确认构建类型是 release =========="
+# 目的：防止随包 JVM 变成断言构建（fastdebug/slowdebug）——那种件会跑极少被验证的 assert 路径，
+# 且性能/内存都吃亏。注意判据：**只有 ASSERT 专属物**才算证据；
+# 2026-09-16 曾把 StressCCP/PrintOptoAssembly 误当 develop（JDK26 里它们是 product+DIAGNOSTIC），
+# 据此错判过一次构建类型 ⇒ 见 notes「判 HotSpot 构建类型的正确判据」。
+SPEC=$(find "$WORK/build" -name spec.gmk | head -1)
+# ⚠️ spec.gmk 是 make 语法：写的是 `DEBUG_LEVEL := release`（冒号等号），**不是** `DEBUG_LEVEL=release`。
+# 所以必须同时认 `=` 与 `:=`；但又不能误配 `DEBUG_LEVEL_PDB := …` ⇒ 用 `[[:space:]]*[:=]`。
+# （2026-09-16 教训：曾把这里"加固"成只认 `=`，结果 LVL 为空、把好构建拒了。）
+LVL=$(grep -m1 -E "^DEBUG_LEVEL[[:space:]]*[:=]" "$SPEC" 2>/dev/null | cut -d= -f2 | tr -d ' ')
+echo "  构建目录: $SPEC"
+echo "  DEBUG_LEVEL=$LVL"
+if [ "$LVL" != "release" ]; then
+    echo ">> 拒绝收件：DEBUG_LEVEL=$LVL（必须是 release；否则随包 JVM 带断言）"
+    exit 3
+fi
+# 判据只用**已验证**的 ASSERT 专属物：develop 开关的数据符号（CheckCompressedOops/VerifyOops）
+# 与 ASSERT 专属函数（Metaspace::verify / report_assertion_failure / check_for_non_bad_heap_word_value）。
+# ⚠️ 别用 StressCCP / PrintOptoAssembly —— JDK26 里它们是 product(...DIAGNOSTIC)，release 也有（会误报）。
+LJVM_CHECK=$(find "$WORK/build" -name libjvm.so | head -1)
+NSYM=0
+if [ -n "$LJVM_CHECK" ]; then
+    NSYM=$(nm "$LJVM_CHECK" 2>/dev/null | wc -l | tr -d ' ')
+fi
+# ⚠️ nm 无输出时**不能**算通过：那可能是产物缺失/被 strip，此时本检查毫无判别力（假安全感）。
+# 本配方用 `--with-native-debug-symbols=none` 但符号表仍在（实测 6 万+ 个）⇒ 空表即异常，硬拒。
+if [ -z "$LJVM_CHECK" ] || [ "$NSYM" = "0" ]; then
+    echo ">> 拒绝收件：产物缺失或符号表不可读（nm 无输出）⇒ 无法判 ASSERT 专属物"
+    exit 3
+fi
+ASSERT_HIT=$(nm "$LJVM_CHECK" 2>/dev/null | grep -E " (CheckCompressedOops|VerifyOops)$" | head -1)
+[ -z "$ASSERT_HIT" ] && ASSERT_HIT=$(nm -C "$LJVM_CHECK" 2>/dev/null \
+    | grep -E " (VMError::report_assertion_failure|Metaspace::verify|GCHeap::check_for_non_bad_heap_word_value)" | head -1)
+if [ -n "$ASSERT_HIT" ]; then
+    echo ">> 拒绝收件：$LJVM_CHECK 含 ASSERT 专属符号（仍是断言构建）：$ASSERT_HIT"
+    exit 3
+fi
+echo "  产物检查: $(basename "$LJVM_CHECK")（nm 符号 $NSYM 个；无 ASSERT 专属符号）"
 
 echo; echo "========== 5) 收 libjvm.so 回共享目录 =========="
 LJVM=$(find "$WORK/build" -name libjvm.so | head -1)

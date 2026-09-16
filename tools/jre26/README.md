@@ -121,8 +121,12 @@ rm -rf libs/meowjre/build entry/build && devecocli build --modules entry meowjre
 | 对象 | sha256 |
 |---|---|
 | 官方 JDK tar | `b96b265a4a1a36c02454148891aa58ca63303cbc2d1b7979c33b4fe99e09117b` |
-| 自编 glibc `libjvm.so`（未魔改，27,707,544 B） | `d28164cdc728b8a4860b539c410a1cdbffa08e35096b567447e44a0c9438f5f0` |
-| 随包 `libjvm.so`（魔改后） | `9736402dade1c059064b8087ec3fbc2870684bb8c97af17e60f0f50b6e7ab579` |
+| 自编 glibc `libjvm.so`（未魔改 + `MEOW_MALLOC_SLACK`，27,707,752 B） | `03ff9334767e644cf307e5a1c3f4bc2f2ab48054d0134c46bcd947b4e3f3f4b1` |
+| 随包 `libjvm.so`（魔改后） | `8d8a7eeef43507d6cb66b0d6c0bc748adc06b2a60f4ca750db94808be8048464` |
+
+> ⚠️ 上表是**配方产物 / 仓库树里的件**的 digests。**HSP 打包时 native 库会被 strip**，所以 `.hsp` 里的副本
+> 尺寸/哈希与之**不同**（预期，非损坏）：实测 `libjvm.so` 27,707,752 → **22,264,392 B**、符号 64681 → **0**
+> （symbol table 被去掉；功能不受影响，只是 hs_err 里只显示 `libjvm.so+0x…` 偏移）。核对时请对**仓库件**取值。
 | 随包 `libc6.so` | `c8b06fadd6f074b8bab3069bddb537bf503ac815575b46021b6ef05121a5a723` |
 | 随包 `libjli.so` | `bedc743c54d0d9acd37a5d841963b87e79659063f5d5e4222a8433cad637d089` |
 | `modules.slim`（jlink 产物，43 模块） | `d7486973d16eccc577ac86a96531089184c69c6be284b5c712d30d7da1d8f0c0`（42,748,043 B） |
