@@ -118,11 +118,25 @@ Why those two are version-pinned:
   ```sh
   python3 tools/lwjgl/gen_glcap.py <official GLCapabilities.java> <out>
   ```
-  our **four** deterministic edits (inject `RendererInit.onCreateCapabilities`, drop the
-  `if(!ext.contains(...)) return false;` guards, de-short-circuit `||`/`&&`, and neutralise the
-  pure-logging `reportMissing("GL","…")` → `false` — without the last one the de-short-circuit makes
-  LWJGL log `[GL] … an entry point is missing` for **every** probe); it reproduces the
-  shipped 3.4.3 overlay **byte-for-byte** from the official file.
+  our **six** deterministic edits:
+  1. inject `RendererInit.onCreateCapabilities(provider);`;
+  2. keep every advertised-vs-resolvable guard, but make it **runtime-conditional**:
+     `if (RendererInit.strictCapabilities() && !ext.contains("…"))`. Upstream gates each version group and
+     extension on what the driver ADVERTISES; we used to delete all **234** guards process-wide, which made
+     `OpenGL46` (and ARB flags) true on this GL 4.2 device purely because Mesa's dispatch resolves the entry
+     points — that lie sent Flywheel down the compute path and into the driver bug (2026-09-16);
+  3. de-short-circuit `||`/`&&` so every probe evaluates;
+  4. neutralise the pure-logging `reportMissing("GL","…")` → `false` (without it, edit 3's `|` makes
+     LWJGL log `[GL] … an entry point is missing` for **every** probe);
+  5. `ext = RendererInit.filterCapabilities(ext);` — the runtime capability deny-list;
+  6. wrap **every** capability flag (`FIELD = check_X(...);` / `FIELD = ext.contains("…");`) with
+     `&& !RendererInit.isMasked("FIELD")` — the only level that can gate a pure function-slot probe such as
+     `check_ARB_compute_shader` (`ext` filtering, `MESA_EXTENSION_OVERRIDE` and a GL-layer filter were all
+     measured inert, because Zink does export `glDispatchCompute`).
+  Edits 1/3/4 reproduce the historical shipped overlay **byte-for-byte** from the official file (re-verified
+  2026-09-16 against tag 3.4.3). The policy behind edits 2/5/6 is **DATA**
+  (`MEOW_MASK_EXTENSIONS`/`-Dmeow.maskExtensions`, `MEOW_STRICT_CAPS`/`-Dmeow.strictCaps`), so capabilities
+  can be masked/unmasked and the guards reverted **without a rebuild**.
 
 The 3.4.x `GLFW.java` adds the three 3.4.x IME/preedit methods MC ≥ 1.22 calls
 (`glfwSetPreeditCallback`, `glfwSetIMEStatusCallback`, `glfwSetPreeditCursorRectangle`),
@@ -254,10 +268,10 @@ cp stuffs/research/meowcraft_extras.tar.gz entry/src/main/resources/rawfile/
 
 | artifact | sha256 |
 |---|---|
-| `lwjgl-3.4.3.jar` (carries the 5 3.4.x compat shims; no `Multi-Release` claim) | `b9b54d372187c0bb7e483d1eb004b3ce80af72a27851df33d64783260f3d1cdb` |
+| `lwjgl-3.4.3.jar` (carries the 5 3.4.x compat shims; no `Multi-Release` claim; honest capability guards + the runtime capability-mask interface) | `0eb7c8a0ee3734f1544abdaf8b8f59d763915b64077618d0b38422ef17cbc5a6` |
 | `liblwjgl_343.so` / `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (3.4.3) | `16298280…` / `e1f1413b…` / `8eb4a1b8…` |
 | `libffi.a` (3.8.0, aarch64-linux-ohos) | `238cadb7bfa70ca5b4f718cc66878f1f3d26107bc6f6b0e272380c3f3f1fda5b` |
-| `meowcraft_extras.tar.gz` (shipped; single modern generation) | `61d4b2d43a1282a51e51f1685618b3a1106df331aed0c221d9d33277c96a2b26` |
+| `meowcraft_extras.tar.gz` (shipped; single modern generation; EXTRAS_VERSION=20260916-lwjgl-honest) | `6052db8fae4ead6432921ac223073151a7b616eb3dfd914d8b68c437811ad9c5` |
 
 Reproducibility caveats (verified 2026-09-10):
 - **Native builds are byte-reproducible only when the absolute `--src`/`--out` paths are

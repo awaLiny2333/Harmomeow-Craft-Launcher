@@ -156,24 +156,46 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   // glthread 收益照拿）。见 notes 20-design/lwjgl3-并代可行性.md / glthread-B方案-GL-guard.md §2。
   const guardSyncNone = glthread && !guardNeedsSync(mcVersion);
   const userRenderEnv = settings.renderEnv;
-  // **本机 GPU 是 Maleoon（Kirin）时，在 Mesa 层"谎报"掉 compute 能力**：本机 Bisheng 编译器在编译
-  // **合法** compute SPIR-V 时空指针/无效地址崩溃（4 次复现；见 notes `20-design/render/1.21.1-崩溃-两条链
-  // 与随包规避.md` §1），而 compute 在 Vulkan 里是**核心特性、硬件其实支持** ⇒ 这是"对一台出 bug 的设备
-  // 撒谎"的权宜之计。代价 = 本机丢掉 GPU 驱动渲染（纯性能，无功能缺失）。
-  // 实测依据：走 **GL 层**（guard 过滤扩展表）**到不了 LWJGL** ✗；走 **Mesa 层**才有效 ✓（可自证：游戏
-  // DEBUG 日志里 Flywheel 由 `Compiled culling/…` 变回 `Compiled pipeline/instancing/…`）。
-  // ⚠️ **机制更正（2026-09-16，3/3 复现）**：有效的**不是**"模组看不见能力后主动降级"—— LWJGL 的能力集
-  // **仍看得到**该扩展，Flywheel 照常选 INDIRECT 并去编译 compute 程序，是 **Zink 拒绝创建该着色器**
-  // （`GL_INVALID_VALUE`）后**模组自己捕获该失败**才回退（`fell back from 'flywheel:indirect' to
-  // 'flywheel:instancing'`）。⇒ 一次拦截把"驱动崩溃"变成"干净的 GL 错误"（覆盖所有模组、不必逐模组打
-  // 补丁），但**兜底靠模组的错误处理**：不捕获编译错误的 compute 模组会抛异常（今天进程内只有 Flywheel
-  // 与 Iris 用 compute，Iris 无光影包 ⇒ 无暴露）。
-  // 只对**现代渲染路径**（openglv4/Zink）注入；拼接在用户 env **之前** ⇒ 用户可显式覆盖 ✓。
-  const hideComputeEnv = (/Kirin/i.test(cpuChip) && renderer.env === RENDERER_ENV)
-    ? 'MESA_EXTENSION_OVERRIDE=-GL_ARB_compute_shader' : '';
+  // ★能力屏蔽（通用接口，2026-09-16）：**一份策略 → 两个执行点**。
+  // 策略是运行时数据：内置默认（见下），或用户在「额外渲染环境变量」里显式给的
+  // `MEOW_MASK_EXTENSIONS=GL_A,GL_B`（用户优先；显式写空 = 关闭屏蔽）。
+  //   · Mesa 层  `MESA_EXTENSION_OVERRIDE=-GL_A -GL_B` —— 进程级；决定驱动是否真去创建该能力。
+  //   · LWJGL 层 `MEOW_MASK_EXTENSIONS=GL_A,GL_B` —— LWJGL 的能力构造器读它（见
+  //     `tools/lwjgl/deltas/overlay/org/lwjgl/opengl/RendererInit.java` 的 filterCapabilities，
+  //     由 `gen_glcap.py` 第 5 条改写注入到 `GLCapabilities`）⇒ 模组读到的就是"没有该能力"。
+  // 为什么两层都要：**LWJGL 层**让模组走它**设计好的**降级路径（不依赖它捕获异常）；**Mesa 层**保证
+  // 任何绕过 LWJGL 直接查 GL 的消费者也拿不到那条会崩的创建路径（只会得到干净的 GL 错误）。
+  // 内置默认：现代渲染路径 + 芯片含 Kirin ⇒ 屏蔽 `GL_ARB_compute_shader`（本机 Maleoon 的 Bisheng
+  // 编译器在编译**合法** compute SPIR-V 时空指针崩，4 次复现；见 notes
+  // `20-design/render/1.21.1-崩溃-两条链与随包规避.md` §1）。代价 = 本机丢掉 GPU 驱动渲染（纯性能损失）。
+  // ⚠️ 实测依据与机制更正（2026-09-16，3/3 复现）：**GL 层**（guard 过滤扩展表）到不了 LWJGL ✗；
+  // **Mesa 层**有效 ✓，但它只是把"驱动崩溃"变成"干净的 GL 错误"——LWJGL 的能力集**仍看得到**该扩展，
+  // Flywheel 照常去编译 compute 程序，全靠它自己捕获失败后退回 instancing（`fell back from …`）。
+  // ⇒ 只做 Mesa 层等于**依赖模组的错误处理**；LWJGL 层那一半才让"门槛真的为假"。两层合起来才完备。
+  // 拼接在用户 env **之前** ⇒ 用户可显式覆盖 ✓。
+  const defaultMask: string[] = (/Kirin/i.test(cpuChip) && renderer.env === RENDERER_ENV)
+    // ★只屏蔽 compute 这一个能力。2026-09-16 曾临时把 `OpenGL46` 也写进来（因为 Flywheel 的
+    // `GlCompat.isIndirectSupported()` 有 `if (CAPABILITIES.OpenGL46) return true;` 版本组直通），
+    // 但那是**治标**：真正的病根是我们 overlay 曾删掉官方 234 处
+    // `if (!ext.contains("...")) return false;` 守卫，导致版本组/扩展在 Mesa 派发表上"恒真" ✗。
+    // 根因已修（`gen_glcap.py` 第 2 条改为**运行时条件守卫** + `RendererInit.strictCapabilities()`：
+    // 现代路径保留守卫 ⇒ 版本组诚实；gl4es 兼容上下文才放行）⇒ 这里不再需要钉假版本组 ✓。
+    ? ['GL_ARB_compute_shader'] : [];
+  // ⚠️ 若将来某设备又出现"门控绕过了本清单"，可在「额外渲染环境变量」里写
+  // `MEOW_MASK_EXTENSIONS=GL_X,OpenGL46` 临时兜底（无需重编）✓。
+  const maskOverride = parseMaskOverride(userRenderEnv);
+  const capMask = maskOverride === null ? defaultMask : maskOverride;
+  // Mesa 只认 `GL_*` 扩展名；版本组（`OpenGLxx`）不进 `MESA_EXTENSION_OVERRIDE`。
+  const mesaMask = capMask.filter((n: string) => n.startsWith('GL_'));
+  const maskEnv = capMask.length > 0
+    ? (mesaMask.length > 0
+      ? `MESA_EXTENSION_OVERRIDE=${mesaMask.map((n: string) => `-${n}`).join(' ')}\n`
+      : '')
+      + `MEOW_MASK_EXTENSIONS=${capMask.join(',')}`
+    : '';
   const renderEnv = `GALLIUM_THREAD=${glthread ? '1' : '0'}`
     + (guardSyncNone ? '\nMEOW_GUARD_SYNC=none' : '')
-    + (hideComputeEnv.length > 0 ? `\n${hideComputeEnv}` : '')
+    + (maskEnv.length > 0 ? `\n${maskEnv}` : '')
     + `\n${userRenderEnv}`;
   // 用户「额外渲染环境变量」里若**显式**写 none，会让守卫对"本需要同步的版本"也纯透传（fail-open）——
   // 不改用户语义（用户优先），但记一条 WARN 便于实机排障（见 notes 00-current/运行时环境变量.md 回滚阶梯）。
@@ -182,9 +204,9 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
       'extra render env forces MEOW_GUARD_SYNC=none on a version that needs the guard sync (UAF risk)');
   }
   hilog.info(LOG_DOMAIN, LOG_TAG,
-    'glthread=%{public}s guardSync=%{public}s renderer=%{public}s computeHide=%{public}s',
+    'glthread=%{public}s guardSync=%{public}s renderer=%{public}s capMask=%{public}s',
     glthread ? 'on' : 'off', guardSyncNone ? 'none(auto)' : 'per-call', renderer.env,
-    hideComputeEnv.length > 0 ? 'on(MESA_EXTENSION_OVERRIDE)' : 'off');
+    capMask.length > 0 ? `on(${capMask.join(',')})` : 'off');
   await startJvm(ctx, [java, ...argv], renderer.lib, renderer.env, renderer.glProfile, renderEnv);
 }
 
@@ -197,6 +219,20 @@ function userForcedGuardSyncNone(env: string): boolean {
     }
   }
   return false;
+}
+
+/** 读用户「额外渲染环境变量」里的 `MEOW_MASK_EXTENSIONS`（**最后一个生效**，与 native `setenv(…,1)`
+ *  的覆盖语义一致）。返回 `null` = 用户没写（用内置默认）；返回 `[]` = 用户显式写空（关闭屏蔽）。 */
+function parseMaskOverride(env: string): string[] | null {
+  let result: string[] | null = null;
+  for (const part of env.split(/[\n\r;]+/)) {
+    const kv = part.trim().split('=');
+    if (kv.length < 2 || kv[0].trim() !== 'MEOW_MASK_EXTENSIONS') {
+      continue;
+    }
+    result = kv.slice(1).join('=').split(/[\s,]+/).filter((n: string) => n.length > 0);
+  }
+  return result;
 }
 
 /** 读取设备 CPU 芯片型号（deviceInfo.chipType，API 21+）；失败/空返回空串。 */

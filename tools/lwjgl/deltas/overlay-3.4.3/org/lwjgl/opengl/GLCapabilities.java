@@ -3773,469 +3773,470 @@ public final class GLCapabilities {
 
     GLCapabilities(FunctionProvider provider, Set<String> ext, boolean fc, IntFunction<PointerBuffer> bufferFactory) {
         RendererInit.onCreateCapabilities(provider);
+        ext = RendererInit.filterCapabilities(ext);
         forwardCompatible = fc;
 
         PointerBuffer caps = bufferFactory.apply(ADDRESS_BUFFER_SIZE);
 
-        OpenGL11 = check_GL11(provider, caps, ext, fc);
-        OpenGL12 = check_GL12(provider, caps, ext);
-        OpenGL13 = check_GL13(provider, caps, ext, fc);
-        OpenGL14 = check_GL14(provider, caps, ext, fc);
-        OpenGL15 = check_GL15(provider, caps, ext);
-        OpenGL20 = check_GL20(provider, caps, ext);
-        OpenGL21 = check_GL21(provider, caps, ext);
-        OpenGL30 = check_GL30(provider, caps, ext);
-        OpenGL31 = check_GL31(provider, caps, ext);
-        OpenGL32 = check_GL32(provider, caps, ext);
-        OpenGL33 = check_GL33(provider, caps, ext, fc);
-        OpenGL40 = check_GL40(provider, caps, ext);
-        OpenGL41 = check_GL41(provider, caps, ext);
-        OpenGL42 = check_GL42(provider, caps, ext);
-        OpenGL43 = check_GL43(provider, caps, ext);
-        OpenGL44 = check_GL44(provider, caps, ext);
-        OpenGL45 = check_GL45(provider, caps, ext);
-        OpenGL46 = check_GL46(provider, caps, ext);
-        GL_3DFX_texture_compression_FXT1 = ext.contains("GL_3DFX_texture_compression_FXT1");
-        GL_AMD_blend_minmax_factor = ext.contains("GL_AMD_blend_minmax_factor");
-        GL_AMD_conservative_depth = ext.contains("GL_AMD_conservative_depth");
-        GL_AMD_debug_output = check_AMD_debug_output(provider, caps, ext);
-        GL_AMD_depth_clamp_separate = ext.contains("GL_AMD_depth_clamp_separate");
-        GL_AMD_draw_buffers_blend = check_AMD_draw_buffers_blend(provider, caps, ext);
-        GL_AMD_framebuffer_multisample_advanced = check_AMD_framebuffer_multisample_advanced(provider, caps, ext);
-        GL_AMD_gcn_shader = ext.contains("GL_AMD_gcn_shader");
-        GL_AMD_gpu_shader_half_float = ext.contains("GL_AMD_gpu_shader_half_float");
-        GL_AMD_gpu_shader_half_float_fetch = ext.contains("GL_AMD_gpu_shader_half_float_fetch");
-        GL_AMD_gpu_shader_int16 = ext.contains("GL_AMD_gpu_shader_int16");
-        GL_AMD_gpu_shader_int64 = check_AMD_gpu_shader_int64(provider, caps, ext);
-        GL_AMD_interleaved_elements = check_AMD_interleaved_elements(provider, caps, ext);
-        GL_AMD_occlusion_query_event = check_AMD_occlusion_query_event(provider, caps, ext);
-        GL_AMD_performance_monitor = check_AMD_performance_monitor(provider, caps, ext);
-        GL_AMD_pinned_memory = ext.contains("GL_AMD_pinned_memory");
-        GL_AMD_query_buffer_object = ext.contains("GL_AMD_query_buffer_object");
-        GL_AMD_sample_positions = check_AMD_sample_positions(provider, caps, ext);
-        GL_AMD_seamless_cubemap_per_texture = ext.contains("GL_AMD_seamless_cubemap_per_texture");
-        GL_AMD_shader_atomic_counter_ops = ext.contains("GL_AMD_shader_atomic_counter_ops");
-        GL_AMD_shader_ballot = ext.contains("GL_AMD_shader_ballot");
-        GL_AMD_shader_explicit_vertex_parameter = ext.contains("GL_AMD_shader_explicit_vertex_parameter");
-        GL_AMD_shader_image_load_store_lod = ext.contains("GL_AMD_shader_image_load_store_lod");
-        GL_AMD_shader_stencil_export = ext.contains("GL_AMD_shader_stencil_export");
-        GL_AMD_shader_trinary_minmax = ext.contains("GL_AMD_shader_trinary_minmax");
-        GL_AMD_sparse_texture = check_AMD_sparse_texture(provider, caps, ext);
-        GL_AMD_stencil_operation_extended = check_AMD_stencil_operation_extended(provider, caps, ext);
-        GL_AMD_texture_gather_bias_lod = ext.contains("GL_AMD_texture_gather_bias_lod");
-        GL_AMD_texture_texture4 = ext.contains("GL_AMD_texture_texture4");
-        GL_AMD_transform_feedback3_lines_triangles = ext.contains("GL_AMD_transform_feedback3_lines_triangles");
-        GL_AMD_transform_feedback4 = ext.contains("GL_AMD_transform_feedback4");
-        GL_AMD_vertex_shader_layer = ext.contains("GL_AMD_vertex_shader_layer");
-        GL_AMD_vertex_shader_tessellator = check_AMD_vertex_shader_tessellator(provider, caps, ext);
-        GL_AMD_vertex_shader_viewport_index = ext.contains("GL_AMD_vertex_shader_viewport_index");
-        GL_APPLE_aux_depth_stencil = ext.contains("GL_APPLE_aux_depth_stencil");
-        GL_APPLE_client_storage = ext.contains("GL_APPLE_client_storage");
-        GL_APPLE_element_array = check_APPLE_element_array(provider, caps, ext);
-        GL_APPLE_fence = check_APPLE_fence(provider, caps, ext);
-        GL_APPLE_float_pixels = ext.contains("GL_APPLE_float_pixels");
-        GL_APPLE_flush_buffer_range = check_APPLE_flush_buffer_range(provider, caps, ext);
-        GL_APPLE_object_purgeable = check_APPLE_object_purgeable(provider, caps, ext);
-        GL_APPLE_rgb_422 = ext.contains("GL_APPLE_rgb_422");
-        GL_APPLE_row_bytes = ext.contains("GL_APPLE_row_bytes");
-        GL_APPLE_texture_range = check_APPLE_texture_range(provider, caps, ext);
-        GL_APPLE_vertex_array_object = check_APPLE_vertex_array_object(provider, caps, ext);
-        GL_APPLE_vertex_array_range = check_APPLE_vertex_array_range(provider, caps, ext);
-        GL_APPLE_vertex_program_evaluators = check_APPLE_vertex_program_evaluators(provider, caps, ext);
-        GL_APPLE_ycbcr_422 = ext.contains("GL_APPLE_ycbcr_422");
-        GL_ARB_arrays_of_arrays = ext.contains("GL_ARB_arrays_of_arrays");
-        GL_ARB_base_instance = check_ARB_base_instance(provider, caps, ext);
-        GL_ARB_bindless_texture = check_ARB_bindless_texture(provider, caps, ext);
-        GL_ARB_blend_func_extended = check_ARB_blend_func_extended(provider, caps, ext);
-        GL_ARB_buffer_storage = check_ARB_buffer_storage(provider, caps, ext);
-        GL_ARB_cl_event = check_ARB_cl_event(provider, caps, ext);
-        GL_ARB_clear_buffer_object = check_ARB_clear_buffer_object(provider, caps, ext);
-        GL_ARB_clear_texture = check_ARB_clear_texture(provider, caps, ext);
-        GL_ARB_clip_control = check_ARB_clip_control(provider, caps, ext);
-        GL_ARB_color_buffer_float = check_ARB_color_buffer_float(provider, caps, ext);
-        GL_ARB_compatibility = ext.contains("GL_ARB_compatibility");
-        GL_ARB_compressed_texture_pixel_storage = ext.contains("GL_ARB_compressed_texture_pixel_storage");
-        GL_ARB_compute_shader = check_ARB_compute_shader(provider, caps, ext);
-        GL_ARB_compute_variable_group_size = check_ARB_compute_variable_group_size(provider, caps, ext);
-        GL_ARB_conditional_render_inverted = ext.contains("GL_ARB_conditional_render_inverted");
-        GL_ARB_conservative_depth = ext.contains("GL_ARB_conservative_depth");
-        GL_ARB_copy_buffer = check_ARB_copy_buffer(provider, caps, ext);
-        GL_ARB_copy_image = check_ARB_copy_image(provider, caps, ext);
-        GL_ARB_cull_distance = ext.contains("GL_ARB_cull_distance");
-        GL_ARB_debug_output = check_ARB_debug_output(provider, caps, ext);
-        GL_ARB_depth_buffer_float = ext.contains("GL_ARB_depth_buffer_float");
-        GL_ARB_depth_clamp = ext.contains("GL_ARB_depth_clamp");
-        GL_ARB_depth_texture = ext.contains("GL_ARB_depth_texture");
-        GL_ARB_derivative_control = ext.contains("GL_ARB_derivative_control");
-        GL_ARB_direct_state_access = check_ARB_direct_state_access(provider, caps, ext);
-        GL_ARB_draw_buffers = check_ARB_draw_buffers(provider, caps, ext);
-        GL_ARB_draw_buffers_blend = check_ARB_draw_buffers_blend(provider, caps, ext);
-        GL_ARB_draw_elements_base_vertex = check_ARB_draw_elements_base_vertex(provider, caps, ext);
-        GL_ARB_draw_indirect = check_ARB_draw_indirect(provider, caps, ext);
-        GL_ARB_draw_instanced = check_ARB_draw_instanced(provider, caps, ext);
-        GL_ARB_enhanced_layouts = ext.contains("GL_ARB_enhanced_layouts");
-        GL_ARB_ES2_compatibility = check_ARB_ES2_compatibility(provider, caps, ext);
-        GL_ARB_ES3_1_compatibility = check_ARB_ES3_1_compatibility(provider, caps, ext);
-        GL_ARB_ES3_2_compatibility = check_ARB_ES3_2_compatibility(provider, caps, ext);
-        GL_ARB_ES3_compatibility = ext.contains("GL_ARB_ES3_compatibility");
-        GL_ARB_explicit_attrib_location = ext.contains("GL_ARB_explicit_attrib_location");
-        GL_ARB_explicit_uniform_location = ext.contains("GL_ARB_explicit_uniform_location");
-        GL_ARB_fragment_coord_conventions = ext.contains("GL_ARB_fragment_coord_conventions");
-        GL_ARB_fragment_layer_viewport = ext.contains("GL_ARB_fragment_layer_viewport");
-        GL_ARB_fragment_program = ext.contains("GL_ARB_fragment_program");
-        GL_ARB_fragment_program_shadow = ext.contains("GL_ARB_fragment_program_shadow");
-        GL_ARB_fragment_shader = ext.contains("GL_ARB_fragment_shader");
-        GL_ARB_fragment_shader_interlock = ext.contains("GL_ARB_fragment_shader_interlock");
-        GL_ARB_framebuffer_no_attachments = check_ARB_framebuffer_no_attachments(provider, caps, ext);
-        GL_ARB_framebuffer_object = check_ARB_framebuffer_object(provider, caps, ext);
-        GL_ARB_framebuffer_sRGB = ext.contains("GL_ARB_framebuffer_sRGB");
-        GL_ARB_geometry_shader4 = check_ARB_geometry_shader4(provider, caps, ext);
-        GL_ARB_get_program_binary = check_ARB_get_program_binary(provider, caps, ext);
-        GL_ARB_get_texture_sub_image = check_ARB_get_texture_sub_image(provider, caps, ext);
-        GL_ARB_gl_spirv = check_ARB_gl_spirv(provider, caps, ext);
-        GL_ARB_gpu_shader5 = ext.contains("GL_ARB_gpu_shader5");
-        GL_ARB_gpu_shader_fp64 = check_ARB_gpu_shader_fp64(provider, caps, ext);
-        GL_ARB_gpu_shader_int64 = check_ARB_gpu_shader_int64(provider, caps, ext);
-        GL_ARB_half_float_pixel = ext.contains("GL_ARB_half_float_pixel");
-        GL_ARB_half_float_vertex = ext.contains("GL_ARB_half_float_vertex");
-        GL_ARB_imaging = check_ARB_imaging(provider, caps, ext, fc);
-        GL_ARB_indirect_parameters = check_ARB_indirect_parameters(provider, caps, ext);
-        GL_ARB_instanced_arrays = check_ARB_instanced_arrays(provider, caps, ext);
-        GL_ARB_internalformat_query = check_ARB_internalformat_query(provider, caps, ext);
-        GL_ARB_internalformat_query2 = check_ARB_internalformat_query2(provider, caps, ext);
-        GL_ARB_invalidate_subdata = check_ARB_invalidate_subdata(provider, caps, ext);
-        GL_ARB_map_buffer_alignment = ext.contains("GL_ARB_map_buffer_alignment");
-        GL_ARB_map_buffer_range = check_ARB_map_buffer_range(provider, caps, ext);
-        GL_ARB_matrix_palette = check_ARB_matrix_palette(provider, caps, ext);
-        GL_ARB_multi_bind = check_ARB_multi_bind(provider, caps, ext);
-        GL_ARB_multi_draw_indirect = check_ARB_multi_draw_indirect(provider, caps, ext);
-        GL_ARB_multisample = check_ARB_multisample(provider, caps, ext);
-        GL_ARB_multitexture = check_ARB_multitexture(provider, caps, ext);
-        GL_ARB_occlusion_query = check_ARB_occlusion_query(provider, caps, ext);
-        GL_ARB_occlusion_query2 = ext.contains("GL_ARB_occlusion_query2");
-        GL_ARB_parallel_shader_compile = check_ARB_parallel_shader_compile(provider, caps, ext);
-        GL_ARB_pipeline_statistics_query = ext.contains("GL_ARB_pipeline_statistics_query");
-        GL_ARB_pixel_buffer_object = ext.contains("GL_ARB_pixel_buffer_object");
-        GL_ARB_point_parameters = check_ARB_point_parameters(provider, caps, ext);
-        GL_ARB_point_sprite = ext.contains("GL_ARB_point_sprite");
-        GL_ARB_polygon_offset_clamp = check_ARB_polygon_offset_clamp(provider, caps, ext);
-        GL_ARB_post_depth_coverage = ext.contains("GL_ARB_post_depth_coverage");
-        GL_ARB_program_interface_query = check_ARB_program_interface_query(provider, caps, ext);
-        GL_ARB_provoking_vertex = check_ARB_provoking_vertex(provider, caps, ext);
-        GL_ARB_query_buffer_object = ext.contains("GL_ARB_query_buffer_object");
-        GL_ARB_robust_buffer_access_behavior = ext.contains("GL_ARB_robust_buffer_access_behavior");
-        GL_ARB_robustness = check_ARB_robustness(provider, caps, ext);
-        GL_ARB_robustness_application_isolation = ext.contains("GL_ARB_robustness_application_isolation");
-        GL_ARB_robustness_share_group_isolation = ext.contains("GL_ARB_robustness_share_group_isolation");
-        GL_ARB_sample_locations = check_ARB_sample_locations(provider, caps, ext);
-        GL_ARB_sample_shading = check_ARB_sample_shading(provider, caps, ext);
-        GL_ARB_sampler_objects = check_ARB_sampler_objects(provider, caps, ext);
-        GL_ARB_seamless_cube_map = ext.contains("GL_ARB_seamless_cube_map");
-        GL_ARB_seamless_cubemap_per_texture = ext.contains("GL_ARB_seamless_cubemap_per_texture");
-        GL_ARB_separate_shader_objects = check_ARB_separate_shader_objects(provider, caps, ext);
-        GL_ARB_shader_atomic_counter_ops = ext.contains("GL_ARB_shader_atomic_counter_ops");
-        GL_ARB_shader_atomic_counters = check_ARB_shader_atomic_counters(provider, caps, ext);
-        GL_ARB_shader_ballot = ext.contains("GL_ARB_shader_ballot");
-        GL_ARB_shader_bit_encoding = ext.contains("GL_ARB_shader_bit_encoding");
-        GL_ARB_shader_clock = ext.contains("GL_ARB_shader_clock");
-        GL_ARB_shader_draw_parameters = ext.contains("GL_ARB_shader_draw_parameters");
-        GL_ARB_shader_group_vote = ext.contains("GL_ARB_shader_group_vote");
-        GL_ARB_shader_image_load_store = check_ARB_shader_image_load_store(provider, caps, ext);
-        GL_ARB_shader_image_size = ext.contains("GL_ARB_shader_image_size");
-        GL_ARB_shader_objects = check_ARB_shader_objects(provider, caps, ext);
-        GL_ARB_shader_precision = ext.contains("GL_ARB_shader_precision");
-        GL_ARB_shader_stencil_export = ext.contains("GL_ARB_shader_stencil_export");
-        GL_ARB_shader_storage_buffer_object = check_ARB_shader_storage_buffer_object(provider, caps, ext);
-        GL_ARB_shader_subroutine = check_ARB_shader_subroutine(provider, caps, ext);
-        GL_ARB_shader_texture_image_samples = ext.contains("GL_ARB_shader_texture_image_samples");
-        GL_ARB_shader_texture_lod = ext.contains("GL_ARB_shader_texture_lod");
-        GL_ARB_shader_viewport_layer_array = ext.contains("GL_ARB_shader_viewport_layer_array");
-        GL_ARB_shading_language_100 = ext.contains("GL_ARB_shading_language_100");
-        GL_ARB_shading_language_420pack = ext.contains("GL_ARB_shading_language_420pack");
-        GL_ARB_shading_language_include = check_ARB_shading_language_include(provider, caps, ext);
-        GL_ARB_shading_language_packing = ext.contains("GL_ARB_shading_language_packing");
-        GL_ARB_shadow = ext.contains("GL_ARB_shadow");
-        GL_ARB_shadow_ambient = ext.contains("GL_ARB_shadow_ambient");
-        GL_ARB_sparse_buffer = check_ARB_sparse_buffer(provider, caps, ext);
-        GL_ARB_sparse_texture = check_ARB_sparse_texture(provider, caps, ext);
-        GL_ARB_sparse_texture2 = ext.contains("GL_ARB_sparse_texture2");
-        GL_ARB_sparse_texture_clamp = ext.contains("GL_ARB_sparse_texture_clamp");
-        GL_ARB_spirv_extensions = ext.contains("GL_ARB_spirv_extensions");
-        GL_ARB_stencil_texturing = ext.contains("GL_ARB_stencil_texturing");
-        GL_ARB_sync = check_ARB_sync(provider, caps, ext);
-        GL_ARB_tessellation_shader = check_ARB_tessellation_shader(provider, caps, ext);
-        GL_ARB_texture_barrier = check_ARB_texture_barrier(provider, caps, ext);
-        GL_ARB_texture_border_clamp = ext.contains("GL_ARB_texture_border_clamp");
-        GL_ARB_texture_buffer_object = check_ARB_texture_buffer_object(provider, caps, ext);
-        GL_ARB_texture_buffer_object_rgb32 = ext.contains("GL_ARB_texture_buffer_object_rgb32");
-        GL_ARB_texture_buffer_range = check_ARB_texture_buffer_range(provider, caps, ext);
-        GL_ARB_texture_compression = check_ARB_texture_compression(provider, caps, ext);
-        GL_ARB_texture_compression_bptc = ext.contains("GL_ARB_texture_compression_bptc");
-        GL_ARB_texture_compression_rgtc = ext.contains("GL_ARB_texture_compression_rgtc");
-        GL_ARB_texture_cube_map = ext.contains("GL_ARB_texture_cube_map");
-        GL_ARB_texture_cube_map_array = ext.contains("GL_ARB_texture_cube_map_array");
-        GL_ARB_texture_env_add = ext.contains("GL_ARB_texture_env_add");
-        GL_ARB_texture_env_combine = ext.contains("GL_ARB_texture_env_combine");
-        GL_ARB_texture_env_crossbar = ext.contains("GL_ARB_texture_env_crossbar");
-        GL_ARB_texture_env_dot3 = ext.contains("GL_ARB_texture_env_dot3");
-        GL_ARB_texture_filter_anisotropic = ext.contains("GL_ARB_texture_filter_anisotropic");
-        GL_ARB_texture_filter_minmax = ext.contains("GL_ARB_texture_filter_minmax");
-        GL_ARB_texture_float = ext.contains("GL_ARB_texture_float");
-        GL_ARB_texture_gather = ext.contains("GL_ARB_texture_gather");
-        GL_ARB_texture_mirror_clamp_to_edge = ext.contains("GL_ARB_texture_mirror_clamp_to_edge");
-        GL_ARB_texture_mirrored_repeat = ext.contains("GL_ARB_texture_mirrored_repeat");
-        GL_ARB_texture_multisample = check_ARB_texture_multisample(provider, caps, ext);
-        GL_ARB_texture_non_power_of_two = ext.contains("GL_ARB_texture_non_power_of_two");
-        GL_ARB_texture_query_levels = ext.contains("GL_ARB_texture_query_levels");
-        GL_ARB_texture_query_lod = ext.contains("GL_ARB_texture_query_lod");
-        GL_ARB_texture_rectangle = ext.contains("GL_ARB_texture_rectangle");
-        GL_ARB_texture_rg = ext.contains("GL_ARB_texture_rg");
-        GL_ARB_texture_rgb10_a2ui = ext.contains("GL_ARB_texture_rgb10_a2ui");
-        GL_ARB_texture_stencil8 = ext.contains("GL_ARB_texture_stencil8");
-        GL_ARB_texture_storage = check_ARB_texture_storage(provider, caps, ext);
-        GL_ARB_texture_storage_multisample = check_ARB_texture_storage_multisample(provider, caps, ext);
-        GL_ARB_texture_swizzle = ext.contains("GL_ARB_texture_swizzle");
-        GL_ARB_texture_view = check_ARB_texture_view(provider, caps, ext);
-        GL_ARB_timer_query = check_ARB_timer_query(provider, caps, ext);
-        GL_ARB_transform_feedback2 = check_ARB_transform_feedback2(provider, caps, ext);
-        GL_ARB_transform_feedback3 = check_ARB_transform_feedback3(provider, caps, ext);
-        GL_ARB_transform_feedback_instanced = check_ARB_transform_feedback_instanced(provider, caps, ext);
-        GL_ARB_transform_feedback_overflow_query = ext.contains("GL_ARB_transform_feedback_overflow_query");
-        GL_ARB_transpose_matrix = check_ARB_transpose_matrix(provider, caps, ext);
-        GL_ARB_uniform_buffer_object = check_ARB_uniform_buffer_object(provider, caps, ext);
-        GL_ARB_vertex_array_bgra = ext.contains("GL_ARB_vertex_array_bgra");
-        GL_ARB_vertex_array_object = check_ARB_vertex_array_object(provider, caps, ext);
-        GL_ARB_vertex_attrib_64bit = check_ARB_vertex_attrib_64bit(provider, caps, ext);
-        GL_ARB_vertex_attrib_binding = check_ARB_vertex_attrib_binding(provider, caps, ext);
-        GL_ARB_vertex_blend = check_ARB_vertex_blend(provider, caps, ext);
-        GL_ARB_vertex_buffer_object = check_ARB_vertex_buffer_object(provider, caps, ext);
-        GL_ARB_vertex_program = check_ARB_vertex_program(provider, caps, ext);
-        GL_ARB_vertex_shader = check_ARB_vertex_shader(provider, caps, ext);
-        GL_ARB_vertex_type_10f_11f_11f_rev = ext.contains("GL_ARB_vertex_type_10f_11f_11f_rev");
-        GL_ARB_vertex_type_2_10_10_10_rev = check_ARB_vertex_type_2_10_10_10_rev(provider, caps, ext, fc);
-        GL_ARB_viewport_array = check_ARB_viewport_array(provider, caps, ext);
-        GL_ARB_window_pos = check_ARB_window_pos(provider, caps, ext);
-        GL_ATI_meminfo = ext.contains("GL_ATI_meminfo");
-        GL_ATI_shader_texture_lod = ext.contains("GL_ATI_shader_texture_lod");
-        GL_ATI_texture_compression_3dc = ext.contains("GL_ATI_texture_compression_3dc");
-        GL_EXT_422_pixels = ext.contains("GL_EXT_422_pixels");
-        GL_EXT_abgr = ext.contains("GL_EXT_abgr");
-        GL_EXT_bgra = ext.contains("GL_EXT_bgra");
-        GL_EXT_bindable_uniform = check_EXT_bindable_uniform(provider, caps, ext);
-        GL_EXT_blend_color = check_EXT_blend_color(provider, caps, ext);
-        GL_EXT_blend_equation_separate = check_EXT_blend_equation_separate(provider, caps, ext);
-        GL_EXT_blend_func_separate = check_EXT_blend_func_separate(provider, caps, ext);
-        GL_EXT_blend_minmax = check_EXT_blend_minmax(provider, caps, ext);
-        GL_EXT_blend_subtract = ext.contains("GL_EXT_blend_subtract");
-        GL_EXT_clip_volume_hint = ext.contains("GL_EXT_clip_volume_hint");
-        GL_EXT_compiled_vertex_array = check_EXT_compiled_vertex_array(provider, caps, ext);
-        GL_EXT_debug_label = check_EXT_debug_label(provider, caps, ext);
-        GL_EXT_debug_marker = check_EXT_debug_marker(provider, caps, ext);
-        GL_EXT_depth_bounds_test = check_EXT_depth_bounds_test(provider, caps, ext);
-        GL_EXT_direct_state_access = check_EXT_direct_state_access(provider, caps, ext);
-        GL_EXT_draw_buffers2 = check_EXT_draw_buffers2(provider, caps, ext);
-        GL_EXT_draw_instanced = check_EXT_draw_instanced(provider, caps, ext);
-        GL_EXT_EGL_image_storage = check_EXT_EGL_image_storage(provider, caps, ext);
-        GL_EXT_EGL_sync = ext.contains("GL_EXT_EGL_sync");
-        GL_EXT_external_buffer = check_EXT_external_buffer(provider, caps, ext);
-        GL_EXT_fragment_shading_rate = check_EXT_fragment_shading_rate(provider, caps, ext);
-        GL_EXT_fragment_shading_rate_attachment = ext.contains("GL_EXT_fragment_shading_rate_attachment");
-        GL_EXT_fragment_shading_rate_primitive = ext.contains("GL_EXT_fragment_shading_rate_primitive");
-        GL_EXT_framebuffer_blit = check_EXT_framebuffer_blit(provider, caps, ext);
-        GL_EXT_framebuffer_blit_layers = check_EXT_framebuffer_blit_layers(provider, caps, ext);
-        GL_EXT_framebuffer_multisample = check_EXT_framebuffer_multisample(provider, caps, ext);
-        GL_EXT_framebuffer_multisample_blit_scaled = ext.contains("GL_EXT_framebuffer_multisample_blit_scaled");
-        GL_EXT_framebuffer_object = check_EXT_framebuffer_object(provider, caps, ext);
-        GL_EXT_framebuffer_sRGB = ext.contains("GL_EXT_framebuffer_sRGB");
-        GL_EXT_geometry_shader4 = check_EXT_geometry_shader4(provider, caps, ext);
-        GL_EXT_gpu_program_parameters = check_EXT_gpu_program_parameters(provider, caps, ext);
-        GL_EXT_gpu_shader4 = check_EXT_gpu_shader4(provider, caps, ext);
-        GL_EXT_memory_object = check_EXT_memory_object(provider, caps, ext);
-        GL_EXT_memory_object_fd = check_EXT_memory_object_fd(provider, caps, ext);
-        GL_EXT_memory_object_win32 = check_EXT_memory_object_win32(provider, caps, ext);
-        GL_EXT_mesh_shader = check_EXT_mesh_shader(provider, caps, ext);
-        GL_EXT_multiview_tessellation_geometry_shader = ext.contains("GL_EXT_multiview_tessellation_geometry_shader");
-        GL_EXT_multiview_texture_multisample = ext.contains("GL_EXT_multiview_texture_multisample");
-        GL_EXT_multiview_timer_query = ext.contains("GL_EXT_multiview_timer_query");
-        GL_EXT_packed_depth_stencil = ext.contains("GL_EXT_packed_depth_stencil");
-        GL_EXT_packed_float = ext.contains("GL_EXT_packed_float");
-        GL_EXT_pixel_buffer_object = ext.contains("GL_EXT_pixel_buffer_object");
-        GL_EXT_point_parameters = check_EXT_point_parameters(provider, caps, ext);
-        GL_EXT_polygon_offset_clamp = check_EXT_polygon_offset_clamp(provider, caps, ext);
-        GL_EXT_post_depth_coverage = ext.contains("GL_EXT_post_depth_coverage");
-        GL_EXT_provoking_vertex = check_EXT_provoking_vertex(provider, caps, ext);
-        GL_EXT_raster_multisample = check_EXT_raster_multisample(provider, caps, ext);
-        GL_EXT_secondary_color = check_EXT_secondary_color(provider, caps, ext);
-        GL_EXT_semaphore = check_EXT_semaphore(provider, caps, ext);
-        GL_EXT_semaphore_fd = check_EXT_semaphore_fd(provider, caps, ext);
-        GL_EXT_semaphore_win32 = check_EXT_semaphore_win32(provider, caps, ext);
-        GL_EXT_separate_shader_objects = check_EXT_separate_shader_objects(provider, caps, ext);
-        GL_EXT_shader_framebuffer_fetch = ext.contains("GL_EXT_shader_framebuffer_fetch");
-        GL_EXT_shader_framebuffer_fetch_non_coherent = check_EXT_shader_framebuffer_fetch_non_coherent(provider, caps, ext);
-        GL_EXT_shader_image_load_formatted = ext.contains("GL_EXT_shader_image_load_formatted");
-        GL_EXT_shader_image_load_store = check_EXT_shader_image_load_store(provider, caps, ext);
-        GL_EXT_shader_integer_mix = ext.contains("GL_EXT_shader_integer_mix");
-        GL_EXT_shader_realtime_clock = ext.contains("GL_EXT_shader_realtime_clock");
-        GL_EXT_shader_samples_identical = ext.contains("GL_EXT_shader_samples_identical");
-        GL_EXT_shader_texture_samples = ext.contains("GL_EXT_shader_texture_samples");
-        GL_EXT_shadow_funcs = ext.contains("GL_EXT_shadow_funcs");
-        GL_EXT_shared_texture_palette = ext.contains("GL_EXT_shared_texture_palette");
-        GL_EXT_sparse_texture2 = ext.contains("GL_EXT_sparse_texture2");
-        GL_EXT_stencil_clear_tag = check_EXT_stencil_clear_tag(provider, caps, ext);
-        GL_EXT_stencil_two_side = check_EXT_stencil_two_side(provider, caps, ext);
-        GL_EXT_stencil_wrap = ext.contains("GL_EXT_stencil_wrap");
-        GL_EXT_texture_array = check_EXT_texture_array(provider, caps, ext);
-        GL_EXT_texture_buffer_object = check_EXT_texture_buffer_object(provider, caps, ext);
-        GL_EXT_texture_compression_latc = ext.contains("GL_EXT_texture_compression_latc");
-        GL_EXT_texture_compression_rgtc = ext.contains("GL_EXT_texture_compression_rgtc");
-        GL_EXT_texture_compression_s3tc = ext.contains("GL_EXT_texture_compression_s3tc");
-        GL_EXT_texture_filter_anisotropic = ext.contains("GL_EXT_texture_filter_anisotropic");
-        GL_EXT_texture_filter_minmax = ext.contains("GL_EXT_texture_filter_minmax");
-        GL_EXT_texture_integer = check_EXT_texture_integer(provider, caps, ext);
-        GL_EXT_texture_mirror_clamp = ext.contains("GL_EXT_texture_mirror_clamp");
-        GL_EXT_texture_shadow_lod = ext.contains("GL_EXT_texture_shadow_lod");
-        GL_EXT_texture_shared_exponent = ext.contains("GL_EXT_texture_shared_exponent");
-        GL_EXT_texture_snorm = ext.contains("GL_EXT_texture_snorm");
-        GL_EXT_texture_sRGB = ext.contains("GL_EXT_texture_sRGB");
-        GL_EXT_texture_sRGB_decode = ext.contains("GL_EXT_texture_sRGB_decode");
-        GL_EXT_texture_sRGB_R8 = ext.contains("GL_EXT_texture_sRGB_R8");
-        GL_EXT_texture_sRGB_RG8 = ext.contains("GL_EXT_texture_sRGB_RG8");
-        GL_EXT_texture_storage = check_EXT_texture_storage(provider, caps, ext);
-        GL_EXT_texture_swizzle = ext.contains("GL_EXT_texture_swizzle");
-        GL_EXT_timer_query = check_EXT_timer_query(provider, caps, ext);
-        GL_EXT_transform_feedback = check_EXT_transform_feedback(provider, caps, ext);
-        GL_EXT_vertex_array_bgra = ext.contains("GL_EXT_vertex_array_bgra");
-        GL_EXT_vertex_attrib_64bit = check_EXT_vertex_attrib_64bit(provider, caps, ext);
-        GL_EXT_win32_keyed_mutex = check_EXT_win32_keyed_mutex(provider, caps, ext);
-        GL_EXT_window_rectangles = check_EXT_window_rectangles(provider, caps, ext);
-        GL_EXT_x11_sync_object = check_EXT_x11_sync_object(provider, caps, ext);
-        GL_GREMEDY_frame_terminator = check_GREMEDY_frame_terminator(provider, caps, ext);
-        GL_GREMEDY_string_marker = check_GREMEDY_string_marker(provider, caps, ext);
-        GL_INTEL_blackhole_render = ext.contains("GL_INTEL_blackhole_render");
-        GL_INTEL_conservative_rasterization = ext.contains("GL_INTEL_conservative_rasterization");
-        GL_INTEL_fragment_shader_ordering = ext.contains("GL_INTEL_fragment_shader_ordering");
-        GL_INTEL_framebuffer_CMAA = check_INTEL_framebuffer_CMAA(provider, caps, ext);
-        GL_INTEL_map_texture = check_INTEL_map_texture(provider, caps, ext);
-        GL_INTEL_performance_query = check_INTEL_performance_query(provider, caps, ext);
-        GL_INTEL_shader_integer_functions2 = ext.contains("GL_INTEL_shader_integer_functions2");
-        GL_KHR_blend_equation_advanced = check_KHR_blend_equation_advanced(provider, caps, ext);
-        GL_KHR_blend_equation_advanced_coherent = ext.contains("GL_KHR_blend_equation_advanced_coherent");
-        GL_KHR_context_flush_control = ext.contains("GL_KHR_context_flush_control");
-        GL_KHR_debug = check_KHR_debug(provider, caps, ext);
-        GL_KHR_no_error = ext.contains("GL_KHR_no_error");
-        GL_KHR_parallel_shader_compile = check_KHR_parallel_shader_compile(provider, caps, ext);
-        GL_KHR_robust_buffer_access_behavior = ext.contains("GL_KHR_robust_buffer_access_behavior");
-        GL_KHR_robustness = check_KHR_robustness(provider, caps, ext);
-        GL_KHR_shader_subgroup = ext.contains("GL_KHR_shader_subgroup");
-        GL_KHR_texture_compression_astc_hdr = ext.contains("GL_KHR_texture_compression_astc_hdr");
-        GL_KHR_texture_compression_astc_ldr = ext.contains("GL_KHR_texture_compression_astc_ldr");
-        GL_KHR_texture_compression_astc_sliced_3d = ext.contains("GL_KHR_texture_compression_astc_sliced_3d");
-        GL_MESA_framebuffer_flip_x = ext.contains("GL_MESA_framebuffer_flip_x");
-        GL_MESA_framebuffer_flip_y = check_MESA_framebuffer_flip_y(provider, caps, ext);
-        GL_MESA_framebuffer_swap_xy = ext.contains("GL_MESA_framebuffer_swap_xy");
-        GL_MESA_tile_raster_order = ext.contains("GL_MESA_tile_raster_order");
-        GL_NV_alpha_to_coverage_dither_control = check_NV_alpha_to_coverage_dither_control(provider, caps, ext);
-        GL_NV_bindless_multi_draw_indirect = check_NV_bindless_multi_draw_indirect(provider, caps, ext);
-        GL_NV_bindless_multi_draw_indirect_count = check_NV_bindless_multi_draw_indirect_count(provider, caps, ext);
-        GL_NV_bindless_texture = check_NV_bindless_texture(provider, caps, ext);
-        GL_NV_blend_equation_advanced = check_NV_blend_equation_advanced(provider, caps, ext);
-        GL_NV_blend_equation_advanced_coherent = ext.contains("GL_NV_blend_equation_advanced_coherent");
-        GL_NV_blend_minmax_factor = ext.contains("GL_NV_blend_minmax_factor");
-        GL_NV_blend_square = ext.contains("GL_NV_blend_square");
-        GL_NV_clip_space_w_scaling = check_NV_clip_space_w_scaling(provider, caps, ext);
-        GL_NV_command_list = check_NV_command_list(provider, caps, ext);
-        GL_NV_compute_shader_derivatives = ext.contains("GL_NV_compute_shader_derivatives");
-        GL_NV_conditional_render = check_NV_conditional_render(provider, caps, ext);
-        GL_NV_conservative_raster = check_NV_conservative_raster(provider, caps, ext);
-        GL_NV_conservative_raster_dilate = check_NV_conservative_raster_dilate(provider, caps, ext);
-        GL_NV_conservative_raster_pre_snap = ext.contains("GL_NV_conservative_raster_pre_snap");
-        GL_NV_conservative_raster_pre_snap_triangles = check_NV_conservative_raster_pre_snap_triangles(provider, caps, ext);
-        GL_NV_conservative_raster_underestimation = ext.contains("GL_NV_conservative_raster_underestimation");
-        GL_NV_copy_depth_to_color = ext.contains("GL_NV_copy_depth_to_color");
-        GL_NV_copy_image = check_NV_copy_image(provider, caps, ext);
-        GL_NV_deep_texture3D = ext.contains("GL_NV_deep_texture3D");
-        GL_NV_depth_buffer_float = check_NV_depth_buffer_float(provider, caps, ext);
-        GL_NV_depth_clamp = ext.contains("GL_NV_depth_clamp");
-        GL_NV_draw_texture = check_NV_draw_texture(provider, caps, ext);
-        GL_NV_draw_vulkan_image = check_NV_draw_vulkan_image(provider, caps, ext);
-        GL_NV_ES3_1_compatibility = ext.contains("GL_NV_ES3_1_compatibility");
-        GL_NV_explicit_multisample = check_NV_explicit_multisample(provider, caps, ext);
-        GL_NV_fence = check_NV_fence(provider, caps, ext);
-        GL_NV_fill_rectangle = ext.contains("GL_NV_fill_rectangle");
-        GL_NV_float_buffer = ext.contains("GL_NV_float_buffer");
-        GL_NV_fog_distance = ext.contains("GL_NV_fog_distance");
-        GL_NV_fragment_coverage_to_color = check_NV_fragment_coverage_to_color(provider, caps, ext);
-        GL_NV_fragment_program4 = ext.contains("GL_NV_fragment_program4");
-        GL_NV_fragment_program_option = ext.contains("GL_NV_fragment_program_option");
-        GL_NV_fragment_shader_barycentric = ext.contains("GL_NV_fragment_shader_barycentric");
-        GL_NV_fragment_shader_interlock = ext.contains("GL_NV_fragment_shader_interlock");
-        GL_NV_framebuffer_mixed_samples = check_NV_framebuffer_mixed_samples(provider, caps, ext);
-        GL_NV_framebuffer_multisample_coverage = check_NV_framebuffer_multisample_coverage(provider, caps, ext);
-        GL_NV_geometry_shader4 = ext.contains("GL_NV_geometry_shader4");
-        GL_NV_geometry_shader_passthrough = ext.contains("GL_NV_geometry_shader_passthrough");
-        GL_NV_gpu_multicast = check_NV_gpu_multicast(provider, caps, ext);
-        GL_NV_gpu_shader5 = check_NV_gpu_shader5(provider, caps, ext);
-        GL_NV_half_float = check_NV_half_float(provider, caps, ext);
-        GL_NV_internalformat_sample_query = check_NV_internalformat_sample_query(provider, caps, ext);
-        GL_NV_light_max_exponent = ext.contains("GL_NV_light_max_exponent");
-        GL_NV_memory_attachment = check_NV_memory_attachment(provider, caps, ext);
-        GL_NV_memory_object_sparse = check_NV_memory_object_sparse(provider, caps, ext);
-        GL_NV_mesh_shader = check_NV_mesh_shader(provider, caps, ext);
-        GL_NV_multisample_coverage = ext.contains("GL_NV_multisample_coverage");
-        GL_NV_multisample_filter_hint = ext.contains("GL_NV_multisample_filter_hint");
-        GL_NV_packed_depth_stencil = ext.contains("GL_NV_packed_depth_stencil");
-        GL_NV_path_rendering = check_NV_path_rendering(provider, caps, ext);
-        GL_NV_path_rendering_shared_edge = ext.contains("GL_NV_path_rendering_shared_edge");
-        GL_NV_pixel_data_range = check_NV_pixel_data_range(provider, caps, ext);
-        GL_NV_point_sprite = check_NV_point_sprite(provider, caps, ext);
-        GL_NV_primitive_restart = check_NV_primitive_restart(provider, caps, ext);
-        GL_NV_primitive_shading_rate = ext.contains("GL_NV_primitive_shading_rate");
-        GL_NV_query_resource = check_NV_query_resource(provider, caps, ext);
-        GL_NV_query_resource_tag = check_NV_query_resource_tag(provider, caps, ext);
-        GL_NV_representative_fragment_test = ext.contains("GL_NV_representative_fragment_test");
-        GL_NV_robustness_video_memory_purge = ext.contains("GL_NV_robustness_video_memory_purge");
-        GL_NV_sample_locations = check_NV_sample_locations(provider, caps, ext);
-        GL_NV_sample_mask_override_coverage = ext.contains("GL_NV_sample_mask_override_coverage");
-        GL_NV_scissor_exclusive = check_NV_scissor_exclusive(provider, caps, ext);
-        GL_NV_shader_atomic_float = ext.contains("GL_NV_shader_atomic_float");
-        GL_NV_shader_atomic_float64 = ext.contains("GL_NV_shader_atomic_float64");
-        GL_NV_shader_atomic_fp16_vector = ext.contains("GL_NV_shader_atomic_fp16_vector");
-        GL_NV_shader_atomic_int64 = ext.contains("GL_NV_shader_atomic_int64");
-        GL_NV_shader_buffer_load = check_NV_shader_buffer_load(provider, caps, ext);
-        GL_NV_shader_buffer_store = ext.contains("GL_NV_shader_buffer_store");
-        GL_NV_shader_subgroup_partitioned = ext.contains("GL_NV_shader_subgroup_partitioned");
-        GL_NV_shader_texture_footprint = ext.contains("GL_NV_shader_texture_footprint");
-        GL_NV_shader_thread_group = ext.contains("GL_NV_shader_thread_group");
-        GL_NV_shader_thread_shuffle = ext.contains("GL_NV_shader_thread_shuffle");
-        GL_NV_shading_rate_image = check_NV_shading_rate_image(provider, caps, ext);
-        GL_NV_stereo_view_rendering = ext.contains("GL_NV_stereo_view_rendering");
-        GL_NV_texgen_reflection = ext.contains("GL_NV_texgen_reflection");
-        GL_NV_texture_barrier = check_NV_texture_barrier(provider, caps, ext);
-        GL_NV_texture_compression_vtc = ext.contains("GL_NV_texture_compression_vtc");
-        GL_NV_texture_multisample = check_NV_texture_multisample(provider, caps, ext);
-        GL_NV_texture_rectangle_compressed = ext.contains("GL_NV_texture_rectangle_compressed");
-        GL_NV_texture_shader = ext.contains("GL_NV_texture_shader");
-        GL_NV_texture_shader2 = ext.contains("GL_NV_texture_shader2");
-        GL_NV_texture_shader3 = ext.contains("GL_NV_texture_shader3");
-        GL_NV_timeline_semaphore = check_NV_timeline_semaphore(provider, caps, ext);
-        GL_NV_transform_feedback = check_NV_transform_feedback(provider, caps, ext);
-        GL_NV_transform_feedback2 = check_NV_transform_feedback2(provider, caps, ext);
-        GL_NV_uniform_buffer_std430_layout = ext.contains("GL_NV_uniform_buffer_std430_layout");
-        GL_NV_uniform_buffer_unified_memory = ext.contains("GL_NV_uniform_buffer_unified_memory");
-        GL_NV_vertex_array_range = check_NV_vertex_array_range(provider, caps, ext);
-        GL_NV_vertex_array_range2 = ext.contains("GL_NV_vertex_array_range2");
-        GL_NV_vertex_attrib_integer_64bit = check_NV_vertex_attrib_integer_64bit(provider, caps, ext);
-        GL_NV_vertex_buffer_unified_memory = check_NV_vertex_buffer_unified_memory(provider, caps, ext);
-        GL_NV_viewport_array2 = ext.contains("GL_NV_viewport_array2");
-        GL_NV_viewport_swizzle = check_NV_viewport_swizzle(provider, caps, ext);
-        GL_NVX_blend_equation_advanced_multi_draw_buffers = ext.contains("GL_NVX_blend_equation_advanced_multi_draw_buffers");
-        GL_NVX_conditional_render = check_NVX_conditional_render(provider, caps, ext);
-        GL_NVX_gpu_memory_info = ext.contains("GL_NVX_gpu_memory_info");
-        GL_NVX_gpu_multicast2 = check_NVX_gpu_multicast2(provider, caps, ext);
-        GL_NVX_progress_fence = check_NVX_progress_fence(provider, caps, ext);
-        GL_OVR_multiview = check_OVR_multiview(provider, caps, ext);
-        GL_OVR_multiview2 = ext.contains("GL_OVR_multiview2");
-        GL_S3_s3tc = ext.contains("GL_S3_s3tc");
+        OpenGL11 = check_GL11(provider, caps, ext, fc) && !RendererInit.isMasked("OpenGL11");
+        OpenGL12 = check_GL12(provider, caps, ext) && !RendererInit.isMasked("OpenGL12");
+        OpenGL13 = check_GL13(provider, caps, ext, fc) && !RendererInit.isMasked("OpenGL13");
+        OpenGL14 = check_GL14(provider, caps, ext, fc) && !RendererInit.isMasked("OpenGL14");
+        OpenGL15 = check_GL15(provider, caps, ext) && !RendererInit.isMasked("OpenGL15");
+        OpenGL20 = check_GL20(provider, caps, ext) && !RendererInit.isMasked("OpenGL20");
+        OpenGL21 = check_GL21(provider, caps, ext) && !RendererInit.isMasked("OpenGL21");
+        OpenGL30 = check_GL30(provider, caps, ext) && !RendererInit.isMasked("OpenGL30");
+        OpenGL31 = check_GL31(provider, caps, ext) && !RendererInit.isMasked("OpenGL31");
+        OpenGL32 = check_GL32(provider, caps, ext) && !RendererInit.isMasked("OpenGL32");
+        OpenGL33 = check_GL33(provider, caps, ext, fc) && !RendererInit.isMasked("OpenGL33");
+        OpenGL40 = check_GL40(provider, caps, ext) && !RendererInit.isMasked("OpenGL40");
+        OpenGL41 = check_GL41(provider, caps, ext) && !RendererInit.isMasked("OpenGL41");
+        OpenGL42 = check_GL42(provider, caps, ext) && !RendererInit.isMasked("OpenGL42");
+        OpenGL43 = check_GL43(provider, caps, ext) && !RendererInit.isMasked("OpenGL43");
+        OpenGL44 = check_GL44(provider, caps, ext) && !RendererInit.isMasked("OpenGL44");
+        OpenGL45 = check_GL45(provider, caps, ext) && !RendererInit.isMasked("OpenGL45");
+        OpenGL46 = check_GL46(provider, caps, ext) && !RendererInit.isMasked("OpenGL46");
+        GL_3DFX_texture_compression_FXT1 = ext.contains("GL_3DFX_texture_compression_FXT1") && !RendererInit.isMasked("GL_3DFX_texture_compression_FXT1");
+        GL_AMD_blend_minmax_factor = ext.contains("GL_AMD_blend_minmax_factor") && !RendererInit.isMasked("GL_AMD_blend_minmax_factor");
+        GL_AMD_conservative_depth = ext.contains("GL_AMD_conservative_depth") && !RendererInit.isMasked("GL_AMD_conservative_depth");
+        GL_AMD_debug_output = check_AMD_debug_output(provider, caps, ext) && !RendererInit.isMasked("GL_AMD_debug_output");
+        GL_AMD_depth_clamp_separate = ext.contains("GL_AMD_depth_clamp_separate") && !RendererInit.isMasked("GL_AMD_depth_clamp_separate");
+        GL_AMD_draw_buffers_blend = check_AMD_draw_buffers_blend(provider, caps, ext) && !RendererInit.isMasked("GL_AMD_draw_buffers_blend");
+        GL_AMD_framebuffer_multisample_advanced = check_AMD_framebuffer_multisample_advanced(provider, caps, ext) && !RendererInit.isMasked("GL_AMD_framebuffer_multisample_advanced");
+        GL_AMD_gcn_shader = ext.contains("GL_AMD_gcn_shader") && !RendererInit.isMasked("GL_AMD_gcn_shader");
+        GL_AMD_gpu_shader_half_float = ext.contains("GL_AMD_gpu_shader_half_float") && !RendererInit.isMasked("GL_AMD_gpu_shader_half_float");
+        GL_AMD_gpu_shader_half_float_fetch = ext.contains("GL_AMD_gpu_shader_half_float_fetch") && !RendererInit.isMasked("GL_AMD_gpu_shader_half_float_fetch");
+        GL_AMD_gpu_shader_int16 = ext.contains("GL_AMD_gpu_shader_int16") && !RendererInit.isMasked("GL_AMD_gpu_shader_int16");
+        GL_AMD_gpu_shader_int64 = check_AMD_gpu_shader_int64(provider, caps, ext) && !RendererInit.isMasked("GL_AMD_gpu_shader_int64");
+        GL_AMD_interleaved_elements = check_AMD_interleaved_elements(provider, caps, ext) && !RendererInit.isMasked("GL_AMD_interleaved_elements");
+        GL_AMD_occlusion_query_event = check_AMD_occlusion_query_event(provider, caps, ext) && !RendererInit.isMasked("GL_AMD_occlusion_query_event");
+        GL_AMD_performance_monitor = check_AMD_performance_monitor(provider, caps, ext) && !RendererInit.isMasked("GL_AMD_performance_monitor");
+        GL_AMD_pinned_memory = ext.contains("GL_AMD_pinned_memory") && !RendererInit.isMasked("GL_AMD_pinned_memory");
+        GL_AMD_query_buffer_object = ext.contains("GL_AMD_query_buffer_object") && !RendererInit.isMasked("GL_AMD_query_buffer_object");
+        GL_AMD_sample_positions = check_AMD_sample_positions(provider, caps, ext) && !RendererInit.isMasked("GL_AMD_sample_positions");
+        GL_AMD_seamless_cubemap_per_texture = ext.contains("GL_AMD_seamless_cubemap_per_texture") && !RendererInit.isMasked("GL_AMD_seamless_cubemap_per_texture");
+        GL_AMD_shader_atomic_counter_ops = ext.contains("GL_AMD_shader_atomic_counter_ops") && !RendererInit.isMasked("GL_AMD_shader_atomic_counter_ops");
+        GL_AMD_shader_ballot = ext.contains("GL_AMD_shader_ballot") && !RendererInit.isMasked("GL_AMD_shader_ballot");
+        GL_AMD_shader_explicit_vertex_parameter = ext.contains("GL_AMD_shader_explicit_vertex_parameter") && !RendererInit.isMasked("GL_AMD_shader_explicit_vertex_parameter");
+        GL_AMD_shader_image_load_store_lod = ext.contains("GL_AMD_shader_image_load_store_lod") && !RendererInit.isMasked("GL_AMD_shader_image_load_store_lod");
+        GL_AMD_shader_stencil_export = ext.contains("GL_AMD_shader_stencil_export") && !RendererInit.isMasked("GL_AMD_shader_stencil_export");
+        GL_AMD_shader_trinary_minmax = ext.contains("GL_AMD_shader_trinary_minmax") && !RendererInit.isMasked("GL_AMD_shader_trinary_minmax");
+        GL_AMD_sparse_texture = check_AMD_sparse_texture(provider, caps, ext) && !RendererInit.isMasked("GL_AMD_sparse_texture");
+        GL_AMD_stencil_operation_extended = check_AMD_stencil_operation_extended(provider, caps, ext) && !RendererInit.isMasked("GL_AMD_stencil_operation_extended");
+        GL_AMD_texture_gather_bias_lod = ext.contains("GL_AMD_texture_gather_bias_lod") && !RendererInit.isMasked("GL_AMD_texture_gather_bias_lod");
+        GL_AMD_texture_texture4 = ext.contains("GL_AMD_texture_texture4") && !RendererInit.isMasked("GL_AMD_texture_texture4");
+        GL_AMD_transform_feedback3_lines_triangles = ext.contains("GL_AMD_transform_feedback3_lines_triangles") && !RendererInit.isMasked("GL_AMD_transform_feedback3_lines_triangles");
+        GL_AMD_transform_feedback4 = ext.contains("GL_AMD_transform_feedback4") && !RendererInit.isMasked("GL_AMD_transform_feedback4");
+        GL_AMD_vertex_shader_layer = ext.contains("GL_AMD_vertex_shader_layer") && !RendererInit.isMasked("GL_AMD_vertex_shader_layer");
+        GL_AMD_vertex_shader_tessellator = check_AMD_vertex_shader_tessellator(provider, caps, ext) && !RendererInit.isMasked("GL_AMD_vertex_shader_tessellator");
+        GL_AMD_vertex_shader_viewport_index = ext.contains("GL_AMD_vertex_shader_viewport_index") && !RendererInit.isMasked("GL_AMD_vertex_shader_viewport_index");
+        GL_APPLE_aux_depth_stencil = ext.contains("GL_APPLE_aux_depth_stencil") && !RendererInit.isMasked("GL_APPLE_aux_depth_stencil");
+        GL_APPLE_client_storage = ext.contains("GL_APPLE_client_storage") && !RendererInit.isMasked("GL_APPLE_client_storage");
+        GL_APPLE_element_array = check_APPLE_element_array(provider, caps, ext) && !RendererInit.isMasked("GL_APPLE_element_array");
+        GL_APPLE_fence = check_APPLE_fence(provider, caps, ext) && !RendererInit.isMasked("GL_APPLE_fence");
+        GL_APPLE_float_pixels = ext.contains("GL_APPLE_float_pixels") && !RendererInit.isMasked("GL_APPLE_float_pixels");
+        GL_APPLE_flush_buffer_range = check_APPLE_flush_buffer_range(provider, caps, ext) && !RendererInit.isMasked("GL_APPLE_flush_buffer_range");
+        GL_APPLE_object_purgeable = check_APPLE_object_purgeable(provider, caps, ext) && !RendererInit.isMasked("GL_APPLE_object_purgeable");
+        GL_APPLE_rgb_422 = ext.contains("GL_APPLE_rgb_422") && !RendererInit.isMasked("GL_APPLE_rgb_422");
+        GL_APPLE_row_bytes = ext.contains("GL_APPLE_row_bytes") && !RendererInit.isMasked("GL_APPLE_row_bytes");
+        GL_APPLE_texture_range = check_APPLE_texture_range(provider, caps, ext) && !RendererInit.isMasked("GL_APPLE_texture_range");
+        GL_APPLE_vertex_array_object = check_APPLE_vertex_array_object(provider, caps, ext) && !RendererInit.isMasked("GL_APPLE_vertex_array_object");
+        GL_APPLE_vertex_array_range = check_APPLE_vertex_array_range(provider, caps, ext) && !RendererInit.isMasked("GL_APPLE_vertex_array_range");
+        GL_APPLE_vertex_program_evaluators = check_APPLE_vertex_program_evaluators(provider, caps, ext) && !RendererInit.isMasked("GL_APPLE_vertex_program_evaluators");
+        GL_APPLE_ycbcr_422 = ext.contains("GL_APPLE_ycbcr_422") && !RendererInit.isMasked("GL_APPLE_ycbcr_422");
+        GL_ARB_arrays_of_arrays = ext.contains("GL_ARB_arrays_of_arrays") && !RendererInit.isMasked("GL_ARB_arrays_of_arrays");
+        GL_ARB_base_instance = check_ARB_base_instance(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_base_instance");
+        GL_ARB_bindless_texture = check_ARB_bindless_texture(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_bindless_texture");
+        GL_ARB_blend_func_extended = check_ARB_blend_func_extended(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_blend_func_extended");
+        GL_ARB_buffer_storage = check_ARB_buffer_storage(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_buffer_storage");
+        GL_ARB_cl_event = check_ARB_cl_event(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_cl_event");
+        GL_ARB_clear_buffer_object = check_ARB_clear_buffer_object(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_clear_buffer_object");
+        GL_ARB_clear_texture = check_ARB_clear_texture(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_clear_texture");
+        GL_ARB_clip_control = check_ARB_clip_control(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_clip_control");
+        GL_ARB_color_buffer_float = check_ARB_color_buffer_float(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_color_buffer_float");
+        GL_ARB_compatibility = ext.contains("GL_ARB_compatibility") && !RendererInit.isMasked("GL_ARB_compatibility");
+        GL_ARB_compressed_texture_pixel_storage = ext.contains("GL_ARB_compressed_texture_pixel_storage") && !RendererInit.isMasked("GL_ARB_compressed_texture_pixel_storage");
+        GL_ARB_compute_shader = check_ARB_compute_shader(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_compute_shader");
+        GL_ARB_compute_variable_group_size = check_ARB_compute_variable_group_size(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_compute_variable_group_size");
+        GL_ARB_conditional_render_inverted = ext.contains("GL_ARB_conditional_render_inverted") && !RendererInit.isMasked("GL_ARB_conditional_render_inverted");
+        GL_ARB_conservative_depth = ext.contains("GL_ARB_conservative_depth") && !RendererInit.isMasked("GL_ARB_conservative_depth");
+        GL_ARB_copy_buffer = check_ARB_copy_buffer(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_copy_buffer");
+        GL_ARB_copy_image = check_ARB_copy_image(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_copy_image");
+        GL_ARB_cull_distance = ext.contains("GL_ARB_cull_distance") && !RendererInit.isMasked("GL_ARB_cull_distance");
+        GL_ARB_debug_output = check_ARB_debug_output(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_debug_output");
+        GL_ARB_depth_buffer_float = ext.contains("GL_ARB_depth_buffer_float") && !RendererInit.isMasked("GL_ARB_depth_buffer_float");
+        GL_ARB_depth_clamp = ext.contains("GL_ARB_depth_clamp") && !RendererInit.isMasked("GL_ARB_depth_clamp");
+        GL_ARB_depth_texture = ext.contains("GL_ARB_depth_texture") && !RendererInit.isMasked("GL_ARB_depth_texture");
+        GL_ARB_derivative_control = ext.contains("GL_ARB_derivative_control") && !RendererInit.isMasked("GL_ARB_derivative_control");
+        GL_ARB_direct_state_access = check_ARB_direct_state_access(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_direct_state_access");
+        GL_ARB_draw_buffers = check_ARB_draw_buffers(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_draw_buffers");
+        GL_ARB_draw_buffers_blend = check_ARB_draw_buffers_blend(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_draw_buffers_blend");
+        GL_ARB_draw_elements_base_vertex = check_ARB_draw_elements_base_vertex(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_draw_elements_base_vertex");
+        GL_ARB_draw_indirect = check_ARB_draw_indirect(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_draw_indirect");
+        GL_ARB_draw_instanced = check_ARB_draw_instanced(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_draw_instanced");
+        GL_ARB_enhanced_layouts = ext.contains("GL_ARB_enhanced_layouts") && !RendererInit.isMasked("GL_ARB_enhanced_layouts");
+        GL_ARB_ES2_compatibility = check_ARB_ES2_compatibility(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_ES2_compatibility");
+        GL_ARB_ES3_1_compatibility = check_ARB_ES3_1_compatibility(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_ES3_1_compatibility");
+        GL_ARB_ES3_2_compatibility = check_ARB_ES3_2_compatibility(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_ES3_2_compatibility");
+        GL_ARB_ES3_compatibility = ext.contains("GL_ARB_ES3_compatibility") && !RendererInit.isMasked("GL_ARB_ES3_compatibility");
+        GL_ARB_explicit_attrib_location = ext.contains("GL_ARB_explicit_attrib_location") && !RendererInit.isMasked("GL_ARB_explicit_attrib_location");
+        GL_ARB_explicit_uniform_location = ext.contains("GL_ARB_explicit_uniform_location") && !RendererInit.isMasked("GL_ARB_explicit_uniform_location");
+        GL_ARB_fragment_coord_conventions = ext.contains("GL_ARB_fragment_coord_conventions") && !RendererInit.isMasked("GL_ARB_fragment_coord_conventions");
+        GL_ARB_fragment_layer_viewport = ext.contains("GL_ARB_fragment_layer_viewport") && !RendererInit.isMasked("GL_ARB_fragment_layer_viewport");
+        GL_ARB_fragment_program = ext.contains("GL_ARB_fragment_program") && !RendererInit.isMasked("GL_ARB_fragment_program");
+        GL_ARB_fragment_program_shadow = ext.contains("GL_ARB_fragment_program_shadow") && !RendererInit.isMasked("GL_ARB_fragment_program_shadow");
+        GL_ARB_fragment_shader = ext.contains("GL_ARB_fragment_shader") && !RendererInit.isMasked("GL_ARB_fragment_shader");
+        GL_ARB_fragment_shader_interlock = ext.contains("GL_ARB_fragment_shader_interlock") && !RendererInit.isMasked("GL_ARB_fragment_shader_interlock");
+        GL_ARB_framebuffer_no_attachments = check_ARB_framebuffer_no_attachments(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_framebuffer_no_attachments");
+        GL_ARB_framebuffer_object = check_ARB_framebuffer_object(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_framebuffer_object");
+        GL_ARB_framebuffer_sRGB = ext.contains("GL_ARB_framebuffer_sRGB") && !RendererInit.isMasked("GL_ARB_framebuffer_sRGB");
+        GL_ARB_geometry_shader4 = check_ARB_geometry_shader4(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_geometry_shader4");
+        GL_ARB_get_program_binary = check_ARB_get_program_binary(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_get_program_binary");
+        GL_ARB_get_texture_sub_image = check_ARB_get_texture_sub_image(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_get_texture_sub_image");
+        GL_ARB_gl_spirv = check_ARB_gl_spirv(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_gl_spirv");
+        GL_ARB_gpu_shader5 = ext.contains("GL_ARB_gpu_shader5") && !RendererInit.isMasked("GL_ARB_gpu_shader5");
+        GL_ARB_gpu_shader_fp64 = check_ARB_gpu_shader_fp64(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_gpu_shader_fp64");
+        GL_ARB_gpu_shader_int64 = check_ARB_gpu_shader_int64(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_gpu_shader_int64");
+        GL_ARB_half_float_pixel = ext.contains("GL_ARB_half_float_pixel") && !RendererInit.isMasked("GL_ARB_half_float_pixel");
+        GL_ARB_half_float_vertex = ext.contains("GL_ARB_half_float_vertex") && !RendererInit.isMasked("GL_ARB_half_float_vertex");
+        GL_ARB_imaging = check_ARB_imaging(provider, caps, ext, fc) && !RendererInit.isMasked("GL_ARB_imaging");
+        GL_ARB_indirect_parameters = check_ARB_indirect_parameters(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_indirect_parameters");
+        GL_ARB_instanced_arrays = check_ARB_instanced_arrays(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_instanced_arrays");
+        GL_ARB_internalformat_query = check_ARB_internalformat_query(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_internalformat_query");
+        GL_ARB_internalformat_query2 = check_ARB_internalformat_query2(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_internalformat_query2");
+        GL_ARB_invalidate_subdata = check_ARB_invalidate_subdata(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_invalidate_subdata");
+        GL_ARB_map_buffer_alignment = ext.contains("GL_ARB_map_buffer_alignment") && !RendererInit.isMasked("GL_ARB_map_buffer_alignment");
+        GL_ARB_map_buffer_range = check_ARB_map_buffer_range(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_map_buffer_range");
+        GL_ARB_matrix_palette = check_ARB_matrix_palette(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_matrix_palette");
+        GL_ARB_multi_bind = check_ARB_multi_bind(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_multi_bind");
+        GL_ARB_multi_draw_indirect = check_ARB_multi_draw_indirect(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_multi_draw_indirect");
+        GL_ARB_multisample = check_ARB_multisample(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_multisample");
+        GL_ARB_multitexture = check_ARB_multitexture(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_multitexture");
+        GL_ARB_occlusion_query = check_ARB_occlusion_query(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_occlusion_query");
+        GL_ARB_occlusion_query2 = ext.contains("GL_ARB_occlusion_query2") && !RendererInit.isMasked("GL_ARB_occlusion_query2");
+        GL_ARB_parallel_shader_compile = check_ARB_parallel_shader_compile(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_parallel_shader_compile");
+        GL_ARB_pipeline_statistics_query = ext.contains("GL_ARB_pipeline_statistics_query") && !RendererInit.isMasked("GL_ARB_pipeline_statistics_query");
+        GL_ARB_pixel_buffer_object = ext.contains("GL_ARB_pixel_buffer_object") && !RendererInit.isMasked("GL_ARB_pixel_buffer_object");
+        GL_ARB_point_parameters = check_ARB_point_parameters(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_point_parameters");
+        GL_ARB_point_sprite = ext.contains("GL_ARB_point_sprite") && !RendererInit.isMasked("GL_ARB_point_sprite");
+        GL_ARB_polygon_offset_clamp = check_ARB_polygon_offset_clamp(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_polygon_offset_clamp");
+        GL_ARB_post_depth_coverage = ext.contains("GL_ARB_post_depth_coverage") && !RendererInit.isMasked("GL_ARB_post_depth_coverage");
+        GL_ARB_program_interface_query = check_ARB_program_interface_query(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_program_interface_query");
+        GL_ARB_provoking_vertex = check_ARB_provoking_vertex(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_provoking_vertex");
+        GL_ARB_query_buffer_object = ext.contains("GL_ARB_query_buffer_object") && !RendererInit.isMasked("GL_ARB_query_buffer_object");
+        GL_ARB_robust_buffer_access_behavior = ext.contains("GL_ARB_robust_buffer_access_behavior") && !RendererInit.isMasked("GL_ARB_robust_buffer_access_behavior");
+        GL_ARB_robustness = check_ARB_robustness(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_robustness");
+        GL_ARB_robustness_application_isolation = ext.contains("GL_ARB_robustness_application_isolation") && !RendererInit.isMasked("GL_ARB_robustness_application_isolation");
+        GL_ARB_robustness_share_group_isolation = ext.contains("GL_ARB_robustness_share_group_isolation") && !RendererInit.isMasked("GL_ARB_robustness_share_group_isolation");
+        GL_ARB_sample_locations = check_ARB_sample_locations(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_sample_locations");
+        GL_ARB_sample_shading = check_ARB_sample_shading(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_sample_shading");
+        GL_ARB_sampler_objects = check_ARB_sampler_objects(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_sampler_objects");
+        GL_ARB_seamless_cube_map = ext.contains("GL_ARB_seamless_cube_map") && !RendererInit.isMasked("GL_ARB_seamless_cube_map");
+        GL_ARB_seamless_cubemap_per_texture = ext.contains("GL_ARB_seamless_cubemap_per_texture") && !RendererInit.isMasked("GL_ARB_seamless_cubemap_per_texture");
+        GL_ARB_separate_shader_objects = check_ARB_separate_shader_objects(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_separate_shader_objects");
+        GL_ARB_shader_atomic_counter_ops = ext.contains("GL_ARB_shader_atomic_counter_ops") && !RendererInit.isMasked("GL_ARB_shader_atomic_counter_ops");
+        GL_ARB_shader_atomic_counters = check_ARB_shader_atomic_counters(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_shader_atomic_counters");
+        GL_ARB_shader_ballot = ext.contains("GL_ARB_shader_ballot") && !RendererInit.isMasked("GL_ARB_shader_ballot");
+        GL_ARB_shader_bit_encoding = ext.contains("GL_ARB_shader_bit_encoding") && !RendererInit.isMasked("GL_ARB_shader_bit_encoding");
+        GL_ARB_shader_clock = ext.contains("GL_ARB_shader_clock") && !RendererInit.isMasked("GL_ARB_shader_clock");
+        GL_ARB_shader_draw_parameters = ext.contains("GL_ARB_shader_draw_parameters") && !RendererInit.isMasked("GL_ARB_shader_draw_parameters");
+        GL_ARB_shader_group_vote = ext.contains("GL_ARB_shader_group_vote") && !RendererInit.isMasked("GL_ARB_shader_group_vote");
+        GL_ARB_shader_image_load_store = check_ARB_shader_image_load_store(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_shader_image_load_store");
+        GL_ARB_shader_image_size = ext.contains("GL_ARB_shader_image_size") && !RendererInit.isMasked("GL_ARB_shader_image_size");
+        GL_ARB_shader_objects = check_ARB_shader_objects(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_shader_objects");
+        GL_ARB_shader_precision = ext.contains("GL_ARB_shader_precision") && !RendererInit.isMasked("GL_ARB_shader_precision");
+        GL_ARB_shader_stencil_export = ext.contains("GL_ARB_shader_stencil_export") && !RendererInit.isMasked("GL_ARB_shader_stencil_export");
+        GL_ARB_shader_storage_buffer_object = check_ARB_shader_storage_buffer_object(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_shader_storage_buffer_object");
+        GL_ARB_shader_subroutine = check_ARB_shader_subroutine(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_shader_subroutine");
+        GL_ARB_shader_texture_image_samples = ext.contains("GL_ARB_shader_texture_image_samples") && !RendererInit.isMasked("GL_ARB_shader_texture_image_samples");
+        GL_ARB_shader_texture_lod = ext.contains("GL_ARB_shader_texture_lod") && !RendererInit.isMasked("GL_ARB_shader_texture_lod");
+        GL_ARB_shader_viewport_layer_array = ext.contains("GL_ARB_shader_viewport_layer_array") && !RendererInit.isMasked("GL_ARB_shader_viewport_layer_array");
+        GL_ARB_shading_language_100 = ext.contains("GL_ARB_shading_language_100") && !RendererInit.isMasked("GL_ARB_shading_language_100");
+        GL_ARB_shading_language_420pack = ext.contains("GL_ARB_shading_language_420pack") && !RendererInit.isMasked("GL_ARB_shading_language_420pack");
+        GL_ARB_shading_language_include = check_ARB_shading_language_include(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_shading_language_include");
+        GL_ARB_shading_language_packing = ext.contains("GL_ARB_shading_language_packing") && !RendererInit.isMasked("GL_ARB_shading_language_packing");
+        GL_ARB_shadow = ext.contains("GL_ARB_shadow") && !RendererInit.isMasked("GL_ARB_shadow");
+        GL_ARB_shadow_ambient = ext.contains("GL_ARB_shadow_ambient") && !RendererInit.isMasked("GL_ARB_shadow_ambient");
+        GL_ARB_sparse_buffer = check_ARB_sparse_buffer(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_sparse_buffer");
+        GL_ARB_sparse_texture = check_ARB_sparse_texture(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_sparse_texture");
+        GL_ARB_sparse_texture2 = ext.contains("GL_ARB_sparse_texture2") && !RendererInit.isMasked("GL_ARB_sparse_texture2");
+        GL_ARB_sparse_texture_clamp = ext.contains("GL_ARB_sparse_texture_clamp") && !RendererInit.isMasked("GL_ARB_sparse_texture_clamp");
+        GL_ARB_spirv_extensions = ext.contains("GL_ARB_spirv_extensions") && !RendererInit.isMasked("GL_ARB_spirv_extensions");
+        GL_ARB_stencil_texturing = ext.contains("GL_ARB_stencil_texturing") && !RendererInit.isMasked("GL_ARB_stencil_texturing");
+        GL_ARB_sync = check_ARB_sync(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_sync");
+        GL_ARB_tessellation_shader = check_ARB_tessellation_shader(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_tessellation_shader");
+        GL_ARB_texture_barrier = check_ARB_texture_barrier(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_texture_barrier");
+        GL_ARB_texture_border_clamp = ext.contains("GL_ARB_texture_border_clamp") && !RendererInit.isMasked("GL_ARB_texture_border_clamp");
+        GL_ARB_texture_buffer_object = check_ARB_texture_buffer_object(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_texture_buffer_object");
+        GL_ARB_texture_buffer_object_rgb32 = ext.contains("GL_ARB_texture_buffer_object_rgb32") && !RendererInit.isMasked("GL_ARB_texture_buffer_object_rgb32");
+        GL_ARB_texture_buffer_range = check_ARB_texture_buffer_range(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_texture_buffer_range");
+        GL_ARB_texture_compression = check_ARB_texture_compression(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_texture_compression");
+        GL_ARB_texture_compression_bptc = ext.contains("GL_ARB_texture_compression_bptc") && !RendererInit.isMasked("GL_ARB_texture_compression_bptc");
+        GL_ARB_texture_compression_rgtc = ext.contains("GL_ARB_texture_compression_rgtc") && !RendererInit.isMasked("GL_ARB_texture_compression_rgtc");
+        GL_ARB_texture_cube_map = ext.contains("GL_ARB_texture_cube_map") && !RendererInit.isMasked("GL_ARB_texture_cube_map");
+        GL_ARB_texture_cube_map_array = ext.contains("GL_ARB_texture_cube_map_array") && !RendererInit.isMasked("GL_ARB_texture_cube_map_array");
+        GL_ARB_texture_env_add = ext.contains("GL_ARB_texture_env_add") && !RendererInit.isMasked("GL_ARB_texture_env_add");
+        GL_ARB_texture_env_combine = ext.contains("GL_ARB_texture_env_combine") && !RendererInit.isMasked("GL_ARB_texture_env_combine");
+        GL_ARB_texture_env_crossbar = ext.contains("GL_ARB_texture_env_crossbar") && !RendererInit.isMasked("GL_ARB_texture_env_crossbar");
+        GL_ARB_texture_env_dot3 = ext.contains("GL_ARB_texture_env_dot3") && !RendererInit.isMasked("GL_ARB_texture_env_dot3");
+        GL_ARB_texture_filter_anisotropic = ext.contains("GL_ARB_texture_filter_anisotropic") && !RendererInit.isMasked("GL_ARB_texture_filter_anisotropic");
+        GL_ARB_texture_filter_minmax = ext.contains("GL_ARB_texture_filter_minmax") && !RendererInit.isMasked("GL_ARB_texture_filter_minmax");
+        GL_ARB_texture_float = ext.contains("GL_ARB_texture_float") && !RendererInit.isMasked("GL_ARB_texture_float");
+        GL_ARB_texture_gather = ext.contains("GL_ARB_texture_gather") && !RendererInit.isMasked("GL_ARB_texture_gather");
+        GL_ARB_texture_mirror_clamp_to_edge = ext.contains("GL_ARB_texture_mirror_clamp_to_edge") && !RendererInit.isMasked("GL_ARB_texture_mirror_clamp_to_edge");
+        GL_ARB_texture_mirrored_repeat = ext.contains("GL_ARB_texture_mirrored_repeat") && !RendererInit.isMasked("GL_ARB_texture_mirrored_repeat");
+        GL_ARB_texture_multisample = check_ARB_texture_multisample(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_texture_multisample");
+        GL_ARB_texture_non_power_of_two = ext.contains("GL_ARB_texture_non_power_of_two") && !RendererInit.isMasked("GL_ARB_texture_non_power_of_two");
+        GL_ARB_texture_query_levels = ext.contains("GL_ARB_texture_query_levels") && !RendererInit.isMasked("GL_ARB_texture_query_levels");
+        GL_ARB_texture_query_lod = ext.contains("GL_ARB_texture_query_lod") && !RendererInit.isMasked("GL_ARB_texture_query_lod");
+        GL_ARB_texture_rectangle = ext.contains("GL_ARB_texture_rectangle") && !RendererInit.isMasked("GL_ARB_texture_rectangle");
+        GL_ARB_texture_rg = ext.contains("GL_ARB_texture_rg") && !RendererInit.isMasked("GL_ARB_texture_rg");
+        GL_ARB_texture_rgb10_a2ui = ext.contains("GL_ARB_texture_rgb10_a2ui") && !RendererInit.isMasked("GL_ARB_texture_rgb10_a2ui");
+        GL_ARB_texture_stencil8 = ext.contains("GL_ARB_texture_stencil8") && !RendererInit.isMasked("GL_ARB_texture_stencil8");
+        GL_ARB_texture_storage = check_ARB_texture_storage(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_texture_storage");
+        GL_ARB_texture_storage_multisample = check_ARB_texture_storage_multisample(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_texture_storage_multisample");
+        GL_ARB_texture_swizzle = ext.contains("GL_ARB_texture_swizzle") && !RendererInit.isMasked("GL_ARB_texture_swizzle");
+        GL_ARB_texture_view = check_ARB_texture_view(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_texture_view");
+        GL_ARB_timer_query = check_ARB_timer_query(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_timer_query");
+        GL_ARB_transform_feedback2 = check_ARB_transform_feedback2(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_transform_feedback2");
+        GL_ARB_transform_feedback3 = check_ARB_transform_feedback3(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_transform_feedback3");
+        GL_ARB_transform_feedback_instanced = check_ARB_transform_feedback_instanced(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_transform_feedback_instanced");
+        GL_ARB_transform_feedback_overflow_query = ext.contains("GL_ARB_transform_feedback_overflow_query") && !RendererInit.isMasked("GL_ARB_transform_feedback_overflow_query");
+        GL_ARB_transpose_matrix = check_ARB_transpose_matrix(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_transpose_matrix");
+        GL_ARB_uniform_buffer_object = check_ARB_uniform_buffer_object(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_uniform_buffer_object");
+        GL_ARB_vertex_array_bgra = ext.contains("GL_ARB_vertex_array_bgra") && !RendererInit.isMasked("GL_ARB_vertex_array_bgra");
+        GL_ARB_vertex_array_object = check_ARB_vertex_array_object(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_vertex_array_object");
+        GL_ARB_vertex_attrib_64bit = check_ARB_vertex_attrib_64bit(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_vertex_attrib_64bit");
+        GL_ARB_vertex_attrib_binding = check_ARB_vertex_attrib_binding(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_vertex_attrib_binding");
+        GL_ARB_vertex_blend = check_ARB_vertex_blend(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_vertex_blend");
+        GL_ARB_vertex_buffer_object = check_ARB_vertex_buffer_object(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_vertex_buffer_object");
+        GL_ARB_vertex_program = check_ARB_vertex_program(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_vertex_program");
+        GL_ARB_vertex_shader = check_ARB_vertex_shader(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_vertex_shader");
+        GL_ARB_vertex_type_10f_11f_11f_rev = ext.contains("GL_ARB_vertex_type_10f_11f_11f_rev") && !RendererInit.isMasked("GL_ARB_vertex_type_10f_11f_11f_rev");
+        GL_ARB_vertex_type_2_10_10_10_rev = check_ARB_vertex_type_2_10_10_10_rev(provider, caps, ext, fc) && !RendererInit.isMasked("GL_ARB_vertex_type_2_10_10_10_rev");
+        GL_ARB_viewport_array = check_ARB_viewport_array(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_viewport_array");
+        GL_ARB_window_pos = check_ARB_window_pos(provider, caps, ext) && !RendererInit.isMasked("GL_ARB_window_pos");
+        GL_ATI_meminfo = ext.contains("GL_ATI_meminfo") && !RendererInit.isMasked("GL_ATI_meminfo");
+        GL_ATI_shader_texture_lod = ext.contains("GL_ATI_shader_texture_lod") && !RendererInit.isMasked("GL_ATI_shader_texture_lod");
+        GL_ATI_texture_compression_3dc = ext.contains("GL_ATI_texture_compression_3dc") && !RendererInit.isMasked("GL_ATI_texture_compression_3dc");
+        GL_EXT_422_pixels = ext.contains("GL_EXT_422_pixels") && !RendererInit.isMasked("GL_EXT_422_pixels");
+        GL_EXT_abgr = ext.contains("GL_EXT_abgr") && !RendererInit.isMasked("GL_EXT_abgr");
+        GL_EXT_bgra = ext.contains("GL_EXT_bgra") && !RendererInit.isMasked("GL_EXT_bgra");
+        GL_EXT_bindable_uniform = check_EXT_bindable_uniform(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_bindable_uniform");
+        GL_EXT_blend_color = check_EXT_blend_color(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_blend_color");
+        GL_EXT_blend_equation_separate = check_EXT_blend_equation_separate(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_blend_equation_separate");
+        GL_EXT_blend_func_separate = check_EXT_blend_func_separate(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_blend_func_separate");
+        GL_EXT_blend_minmax = check_EXT_blend_minmax(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_blend_minmax");
+        GL_EXT_blend_subtract = ext.contains("GL_EXT_blend_subtract") && !RendererInit.isMasked("GL_EXT_blend_subtract");
+        GL_EXT_clip_volume_hint = ext.contains("GL_EXT_clip_volume_hint") && !RendererInit.isMasked("GL_EXT_clip_volume_hint");
+        GL_EXT_compiled_vertex_array = check_EXT_compiled_vertex_array(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_compiled_vertex_array");
+        GL_EXT_debug_label = check_EXT_debug_label(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_debug_label");
+        GL_EXT_debug_marker = check_EXT_debug_marker(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_debug_marker");
+        GL_EXT_depth_bounds_test = check_EXT_depth_bounds_test(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_depth_bounds_test");
+        GL_EXT_direct_state_access = check_EXT_direct_state_access(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_direct_state_access");
+        GL_EXT_draw_buffers2 = check_EXT_draw_buffers2(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_draw_buffers2");
+        GL_EXT_draw_instanced = check_EXT_draw_instanced(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_draw_instanced");
+        GL_EXT_EGL_image_storage = check_EXT_EGL_image_storage(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_EGL_image_storage");
+        GL_EXT_EGL_sync = ext.contains("GL_EXT_EGL_sync") && !RendererInit.isMasked("GL_EXT_EGL_sync");
+        GL_EXT_external_buffer = check_EXT_external_buffer(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_external_buffer");
+        GL_EXT_fragment_shading_rate = check_EXT_fragment_shading_rate(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_fragment_shading_rate");
+        GL_EXT_fragment_shading_rate_attachment = ext.contains("GL_EXT_fragment_shading_rate_attachment") && !RendererInit.isMasked("GL_EXT_fragment_shading_rate_attachment");
+        GL_EXT_fragment_shading_rate_primitive = ext.contains("GL_EXT_fragment_shading_rate_primitive") && !RendererInit.isMasked("GL_EXT_fragment_shading_rate_primitive");
+        GL_EXT_framebuffer_blit = check_EXT_framebuffer_blit(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_framebuffer_blit");
+        GL_EXT_framebuffer_blit_layers = check_EXT_framebuffer_blit_layers(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_framebuffer_blit_layers");
+        GL_EXT_framebuffer_multisample = check_EXT_framebuffer_multisample(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_framebuffer_multisample");
+        GL_EXT_framebuffer_multisample_blit_scaled = ext.contains("GL_EXT_framebuffer_multisample_blit_scaled") && !RendererInit.isMasked("GL_EXT_framebuffer_multisample_blit_scaled");
+        GL_EXT_framebuffer_object = check_EXT_framebuffer_object(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_framebuffer_object");
+        GL_EXT_framebuffer_sRGB = ext.contains("GL_EXT_framebuffer_sRGB") && !RendererInit.isMasked("GL_EXT_framebuffer_sRGB");
+        GL_EXT_geometry_shader4 = check_EXT_geometry_shader4(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_geometry_shader4");
+        GL_EXT_gpu_program_parameters = check_EXT_gpu_program_parameters(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_gpu_program_parameters");
+        GL_EXT_gpu_shader4 = check_EXT_gpu_shader4(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_gpu_shader4");
+        GL_EXT_memory_object = check_EXT_memory_object(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_memory_object");
+        GL_EXT_memory_object_fd = check_EXT_memory_object_fd(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_memory_object_fd");
+        GL_EXT_memory_object_win32 = check_EXT_memory_object_win32(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_memory_object_win32");
+        GL_EXT_mesh_shader = check_EXT_mesh_shader(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_mesh_shader");
+        GL_EXT_multiview_tessellation_geometry_shader = ext.contains("GL_EXT_multiview_tessellation_geometry_shader") && !RendererInit.isMasked("GL_EXT_multiview_tessellation_geometry_shader");
+        GL_EXT_multiview_texture_multisample = ext.contains("GL_EXT_multiview_texture_multisample") && !RendererInit.isMasked("GL_EXT_multiview_texture_multisample");
+        GL_EXT_multiview_timer_query = ext.contains("GL_EXT_multiview_timer_query") && !RendererInit.isMasked("GL_EXT_multiview_timer_query");
+        GL_EXT_packed_depth_stencil = ext.contains("GL_EXT_packed_depth_stencil") && !RendererInit.isMasked("GL_EXT_packed_depth_stencil");
+        GL_EXT_packed_float = ext.contains("GL_EXT_packed_float") && !RendererInit.isMasked("GL_EXT_packed_float");
+        GL_EXT_pixel_buffer_object = ext.contains("GL_EXT_pixel_buffer_object") && !RendererInit.isMasked("GL_EXT_pixel_buffer_object");
+        GL_EXT_point_parameters = check_EXT_point_parameters(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_point_parameters");
+        GL_EXT_polygon_offset_clamp = check_EXT_polygon_offset_clamp(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_polygon_offset_clamp");
+        GL_EXT_post_depth_coverage = ext.contains("GL_EXT_post_depth_coverage") && !RendererInit.isMasked("GL_EXT_post_depth_coverage");
+        GL_EXT_provoking_vertex = check_EXT_provoking_vertex(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_provoking_vertex");
+        GL_EXT_raster_multisample = check_EXT_raster_multisample(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_raster_multisample");
+        GL_EXT_secondary_color = check_EXT_secondary_color(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_secondary_color");
+        GL_EXT_semaphore = check_EXT_semaphore(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_semaphore");
+        GL_EXT_semaphore_fd = check_EXT_semaphore_fd(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_semaphore_fd");
+        GL_EXT_semaphore_win32 = check_EXT_semaphore_win32(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_semaphore_win32");
+        GL_EXT_separate_shader_objects = check_EXT_separate_shader_objects(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_separate_shader_objects");
+        GL_EXT_shader_framebuffer_fetch = ext.contains("GL_EXT_shader_framebuffer_fetch") && !RendererInit.isMasked("GL_EXT_shader_framebuffer_fetch");
+        GL_EXT_shader_framebuffer_fetch_non_coherent = check_EXT_shader_framebuffer_fetch_non_coherent(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_shader_framebuffer_fetch_non_coherent");
+        GL_EXT_shader_image_load_formatted = ext.contains("GL_EXT_shader_image_load_formatted") && !RendererInit.isMasked("GL_EXT_shader_image_load_formatted");
+        GL_EXT_shader_image_load_store = check_EXT_shader_image_load_store(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_shader_image_load_store");
+        GL_EXT_shader_integer_mix = ext.contains("GL_EXT_shader_integer_mix") && !RendererInit.isMasked("GL_EXT_shader_integer_mix");
+        GL_EXT_shader_realtime_clock = ext.contains("GL_EXT_shader_realtime_clock") && !RendererInit.isMasked("GL_EXT_shader_realtime_clock");
+        GL_EXT_shader_samples_identical = ext.contains("GL_EXT_shader_samples_identical") && !RendererInit.isMasked("GL_EXT_shader_samples_identical");
+        GL_EXT_shader_texture_samples = ext.contains("GL_EXT_shader_texture_samples") && !RendererInit.isMasked("GL_EXT_shader_texture_samples");
+        GL_EXT_shadow_funcs = ext.contains("GL_EXT_shadow_funcs") && !RendererInit.isMasked("GL_EXT_shadow_funcs");
+        GL_EXT_shared_texture_palette = ext.contains("GL_EXT_shared_texture_palette") && !RendererInit.isMasked("GL_EXT_shared_texture_palette");
+        GL_EXT_sparse_texture2 = ext.contains("GL_EXT_sparse_texture2") && !RendererInit.isMasked("GL_EXT_sparse_texture2");
+        GL_EXT_stencil_clear_tag = check_EXT_stencil_clear_tag(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_stencil_clear_tag");
+        GL_EXT_stencil_two_side = check_EXT_stencil_two_side(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_stencil_two_side");
+        GL_EXT_stencil_wrap = ext.contains("GL_EXT_stencil_wrap") && !RendererInit.isMasked("GL_EXT_stencil_wrap");
+        GL_EXT_texture_array = check_EXT_texture_array(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_texture_array");
+        GL_EXT_texture_buffer_object = check_EXT_texture_buffer_object(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_texture_buffer_object");
+        GL_EXT_texture_compression_latc = ext.contains("GL_EXT_texture_compression_latc") && !RendererInit.isMasked("GL_EXT_texture_compression_latc");
+        GL_EXT_texture_compression_rgtc = ext.contains("GL_EXT_texture_compression_rgtc") && !RendererInit.isMasked("GL_EXT_texture_compression_rgtc");
+        GL_EXT_texture_compression_s3tc = ext.contains("GL_EXT_texture_compression_s3tc") && !RendererInit.isMasked("GL_EXT_texture_compression_s3tc");
+        GL_EXT_texture_filter_anisotropic = ext.contains("GL_EXT_texture_filter_anisotropic") && !RendererInit.isMasked("GL_EXT_texture_filter_anisotropic");
+        GL_EXT_texture_filter_minmax = ext.contains("GL_EXT_texture_filter_minmax") && !RendererInit.isMasked("GL_EXT_texture_filter_minmax");
+        GL_EXT_texture_integer = check_EXT_texture_integer(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_texture_integer");
+        GL_EXT_texture_mirror_clamp = ext.contains("GL_EXT_texture_mirror_clamp") && !RendererInit.isMasked("GL_EXT_texture_mirror_clamp");
+        GL_EXT_texture_shadow_lod = ext.contains("GL_EXT_texture_shadow_lod") && !RendererInit.isMasked("GL_EXT_texture_shadow_lod");
+        GL_EXT_texture_shared_exponent = ext.contains("GL_EXT_texture_shared_exponent") && !RendererInit.isMasked("GL_EXT_texture_shared_exponent");
+        GL_EXT_texture_snorm = ext.contains("GL_EXT_texture_snorm") && !RendererInit.isMasked("GL_EXT_texture_snorm");
+        GL_EXT_texture_sRGB = ext.contains("GL_EXT_texture_sRGB") && !RendererInit.isMasked("GL_EXT_texture_sRGB");
+        GL_EXT_texture_sRGB_decode = ext.contains("GL_EXT_texture_sRGB_decode") && !RendererInit.isMasked("GL_EXT_texture_sRGB_decode");
+        GL_EXT_texture_sRGB_R8 = ext.contains("GL_EXT_texture_sRGB_R8") && !RendererInit.isMasked("GL_EXT_texture_sRGB_R8");
+        GL_EXT_texture_sRGB_RG8 = ext.contains("GL_EXT_texture_sRGB_RG8") && !RendererInit.isMasked("GL_EXT_texture_sRGB_RG8");
+        GL_EXT_texture_storage = check_EXT_texture_storage(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_texture_storage");
+        GL_EXT_texture_swizzle = ext.contains("GL_EXT_texture_swizzle") && !RendererInit.isMasked("GL_EXT_texture_swizzle");
+        GL_EXT_timer_query = check_EXT_timer_query(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_timer_query");
+        GL_EXT_transform_feedback = check_EXT_transform_feedback(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_transform_feedback");
+        GL_EXT_vertex_array_bgra = ext.contains("GL_EXT_vertex_array_bgra") && !RendererInit.isMasked("GL_EXT_vertex_array_bgra");
+        GL_EXT_vertex_attrib_64bit = check_EXT_vertex_attrib_64bit(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_vertex_attrib_64bit");
+        GL_EXT_win32_keyed_mutex = check_EXT_win32_keyed_mutex(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_win32_keyed_mutex");
+        GL_EXT_window_rectangles = check_EXT_window_rectangles(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_window_rectangles");
+        GL_EXT_x11_sync_object = check_EXT_x11_sync_object(provider, caps, ext) && !RendererInit.isMasked("GL_EXT_x11_sync_object");
+        GL_GREMEDY_frame_terminator = check_GREMEDY_frame_terminator(provider, caps, ext) && !RendererInit.isMasked("GL_GREMEDY_frame_terminator");
+        GL_GREMEDY_string_marker = check_GREMEDY_string_marker(provider, caps, ext) && !RendererInit.isMasked("GL_GREMEDY_string_marker");
+        GL_INTEL_blackhole_render = ext.contains("GL_INTEL_blackhole_render") && !RendererInit.isMasked("GL_INTEL_blackhole_render");
+        GL_INTEL_conservative_rasterization = ext.contains("GL_INTEL_conservative_rasterization") && !RendererInit.isMasked("GL_INTEL_conservative_rasterization");
+        GL_INTEL_fragment_shader_ordering = ext.contains("GL_INTEL_fragment_shader_ordering") && !RendererInit.isMasked("GL_INTEL_fragment_shader_ordering");
+        GL_INTEL_framebuffer_CMAA = check_INTEL_framebuffer_CMAA(provider, caps, ext) && !RendererInit.isMasked("GL_INTEL_framebuffer_CMAA");
+        GL_INTEL_map_texture = check_INTEL_map_texture(provider, caps, ext) && !RendererInit.isMasked("GL_INTEL_map_texture");
+        GL_INTEL_performance_query = check_INTEL_performance_query(provider, caps, ext) && !RendererInit.isMasked("GL_INTEL_performance_query");
+        GL_INTEL_shader_integer_functions2 = ext.contains("GL_INTEL_shader_integer_functions2") && !RendererInit.isMasked("GL_INTEL_shader_integer_functions2");
+        GL_KHR_blend_equation_advanced = check_KHR_blend_equation_advanced(provider, caps, ext) && !RendererInit.isMasked("GL_KHR_blend_equation_advanced");
+        GL_KHR_blend_equation_advanced_coherent = ext.contains("GL_KHR_blend_equation_advanced_coherent") && !RendererInit.isMasked("GL_KHR_blend_equation_advanced_coherent");
+        GL_KHR_context_flush_control = ext.contains("GL_KHR_context_flush_control") && !RendererInit.isMasked("GL_KHR_context_flush_control");
+        GL_KHR_debug = check_KHR_debug(provider, caps, ext) && !RendererInit.isMasked("GL_KHR_debug");
+        GL_KHR_no_error = ext.contains("GL_KHR_no_error") && !RendererInit.isMasked("GL_KHR_no_error");
+        GL_KHR_parallel_shader_compile = check_KHR_parallel_shader_compile(provider, caps, ext) && !RendererInit.isMasked("GL_KHR_parallel_shader_compile");
+        GL_KHR_robust_buffer_access_behavior = ext.contains("GL_KHR_robust_buffer_access_behavior") && !RendererInit.isMasked("GL_KHR_robust_buffer_access_behavior");
+        GL_KHR_robustness = check_KHR_robustness(provider, caps, ext) && !RendererInit.isMasked("GL_KHR_robustness");
+        GL_KHR_shader_subgroup = ext.contains("GL_KHR_shader_subgroup") && !RendererInit.isMasked("GL_KHR_shader_subgroup");
+        GL_KHR_texture_compression_astc_hdr = ext.contains("GL_KHR_texture_compression_astc_hdr") && !RendererInit.isMasked("GL_KHR_texture_compression_astc_hdr");
+        GL_KHR_texture_compression_astc_ldr = ext.contains("GL_KHR_texture_compression_astc_ldr") && !RendererInit.isMasked("GL_KHR_texture_compression_astc_ldr");
+        GL_KHR_texture_compression_astc_sliced_3d = ext.contains("GL_KHR_texture_compression_astc_sliced_3d") && !RendererInit.isMasked("GL_KHR_texture_compression_astc_sliced_3d");
+        GL_MESA_framebuffer_flip_x = ext.contains("GL_MESA_framebuffer_flip_x") && !RendererInit.isMasked("GL_MESA_framebuffer_flip_x");
+        GL_MESA_framebuffer_flip_y = check_MESA_framebuffer_flip_y(provider, caps, ext) && !RendererInit.isMasked("GL_MESA_framebuffer_flip_y");
+        GL_MESA_framebuffer_swap_xy = ext.contains("GL_MESA_framebuffer_swap_xy") && !RendererInit.isMasked("GL_MESA_framebuffer_swap_xy");
+        GL_MESA_tile_raster_order = ext.contains("GL_MESA_tile_raster_order") && !RendererInit.isMasked("GL_MESA_tile_raster_order");
+        GL_NV_alpha_to_coverage_dither_control = check_NV_alpha_to_coverage_dither_control(provider, caps, ext) && !RendererInit.isMasked("GL_NV_alpha_to_coverage_dither_control");
+        GL_NV_bindless_multi_draw_indirect = check_NV_bindless_multi_draw_indirect(provider, caps, ext) && !RendererInit.isMasked("GL_NV_bindless_multi_draw_indirect");
+        GL_NV_bindless_multi_draw_indirect_count = check_NV_bindless_multi_draw_indirect_count(provider, caps, ext) && !RendererInit.isMasked("GL_NV_bindless_multi_draw_indirect_count");
+        GL_NV_bindless_texture = check_NV_bindless_texture(provider, caps, ext) && !RendererInit.isMasked("GL_NV_bindless_texture");
+        GL_NV_blend_equation_advanced = check_NV_blend_equation_advanced(provider, caps, ext) && !RendererInit.isMasked("GL_NV_blend_equation_advanced");
+        GL_NV_blend_equation_advanced_coherent = ext.contains("GL_NV_blend_equation_advanced_coherent") && !RendererInit.isMasked("GL_NV_blend_equation_advanced_coherent");
+        GL_NV_blend_minmax_factor = ext.contains("GL_NV_blend_minmax_factor") && !RendererInit.isMasked("GL_NV_blend_minmax_factor");
+        GL_NV_blend_square = ext.contains("GL_NV_blend_square") && !RendererInit.isMasked("GL_NV_blend_square");
+        GL_NV_clip_space_w_scaling = check_NV_clip_space_w_scaling(provider, caps, ext) && !RendererInit.isMasked("GL_NV_clip_space_w_scaling");
+        GL_NV_command_list = check_NV_command_list(provider, caps, ext) && !RendererInit.isMasked("GL_NV_command_list");
+        GL_NV_compute_shader_derivatives = ext.contains("GL_NV_compute_shader_derivatives") && !RendererInit.isMasked("GL_NV_compute_shader_derivatives");
+        GL_NV_conditional_render = check_NV_conditional_render(provider, caps, ext) && !RendererInit.isMasked("GL_NV_conditional_render");
+        GL_NV_conservative_raster = check_NV_conservative_raster(provider, caps, ext) && !RendererInit.isMasked("GL_NV_conservative_raster");
+        GL_NV_conservative_raster_dilate = check_NV_conservative_raster_dilate(provider, caps, ext) && !RendererInit.isMasked("GL_NV_conservative_raster_dilate");
+        GL_NV_conservative_raster_pre_snap = ext.contains("GL_NV_conservative_raster_pre_snap") && !RendererInit.isMasked("GL_NV_conservative_raster_pre_snap");
+        GL_NV_conservative_raster_pre_snap_triangles = check_NV_conservative_raster_pre_snap_triangles(provider, caps, ext) && !RendererInit.isMasked("GL_NV_conservative_raster_pre_snap_triangles");
+        GL_NV_conservative_raster_underestimation = ext.contains("GL_NV_conservative_raster_underestimation") && !RendererInit.isMasked("GL_NV_conservative_raster_underestimation");
+        GL_NV_copy_depth_to_color = ext.contains("GL_NV_copy_depth_to_color") && !RendererInit.isMasked("GL_NV_copy_depth_to_color");
+        GL_NV_copy_image = check_NV_copy_image(provider, caps, ext) && !RendererInit.isMasked("GL_NV_copy_image");
+        GL_NV_deep_texture3D = ext.contains("GL_NV_deep_texture3D") && !RendererInit.isMasked("GL_NV_deep_texture3D");
+        GL_NV_depth_buffer_float = check_NV_depth_buffer_float(provider, caps, ext) && !RendererInit.isMasked("GL_NV_depth_buffer_float");
+        GL_NV_depth_clamp = ext.contains("GL_NV_depth_clamp") && !RendererInit.isMasked("GL_NV_depth_clamp");
+        GL_NV_draw_texture = check_NV_draw_texture(provider, caps, ext) && !RendererInit.isMasked("GL_NV_draw_texture");
+        GL_NV_draw_vulkan_image = check_NV_draw_vulkan_image(provider, caps, ext) && !RendererInit.isMasked("GL_NV_draw_vulkan_image");
+        GL_NV_ES3_1_compatibility = ext.contains("GL_NV_ES3_1_compatibility") && !RendererInit.isMasked("GL_NV_ES3_1_compatibility");
+        GL_NV_explicit_multisample = check_NV_explicit_multisample(provider, caps, ext) && !RendererInit.isMasked("GL_NV_explicit_multisample");
+        GL_NV_fence = check_NV_fence(provider, caps, ext) && !RendererInit.isMasked("GL_NV_fence");
+        GL_NV_fill_rectangle = ext.contains("GL_NV_fill_rectangle") && !RendererInit.isMasked("GL_NV_fill_rectangle");
+        GL_NV_float_buffer = ext.contains("GL_NV_float_buffer") && !RendererInit.isMasked("GL_NV_float_buffer");
+        GL_NV_fog_distance = ext.contains("GL_NV_fog_distance") && !RendererInit.isMasked("GL_NV_fog_distance");
+        GL_NV_fragment_coverage_to_color = check_NV_fragment_coverage_to_color(provider, caps, ext) && !RendererInit.isMasked("GL_NV_fragment_coverage_to_color");
+        GL_NV_fragment_program4 = ext.contains("GL_NV_fragment_program4") && !RendererInit.isMasked("GL_NV_fragment_program4");
+        GL_NV_fragment_program_option = ext.contains("GL_NV_fragment_program_option") && !RendererInit.isMasked("GL_NV_fragment_program_option");
+        GL_NV_fragment_shader_barycentric = ext.contains("GL_NV_fragment_shader_barycentric") && !RendererInit.isMasked("GL_NV_fragment_shader_barycentric");
+        GL_NV_fragment_shader_interlock = ext.contains("GL_NV_fragment_shader_interlock") && !RendererInit.isMasked("GL_NV_fragment_shader_interlock");
+        GL_NV_framebuffer_mixed_samples = check_NV_framebuffer_mixed_samples(provider, caps, ext) && !RendererInit.isMasked("GL_NV_framebuffer_mixed_samples");
+        GL_NV_framebuffer_multisample_coverage = check_NV_framebuffer_multisample_coverage(provider, caps, ext) && !RendererInit.isMasked("GL_NV_framebuffer_multisample_coverage");
+        GL_NV_geometry_shader4 = ext.contains("GL_NV_geometry_shader4") && !RendererInit.isMasked("GL_NV_geometry_shader4");
+        GL_NV_geometry_shader_passthrough = ext.contains("GL_NV_geometry_shader_passthrough") && !RendererInit.isMasked("GL_NV_geometry_shader_passthrough");
+        GL_NV_gpu_multicast = check_NV_gpu_multicast(provider, caps, ext) && !RendererInit.isMasked("GL_NV_gpu_multicast");
+        GL_NV_gpu_shader5 = check_NV_gpu_shader5(provider, caps, ext) && !RendererInit.isMasked("GL_NV_gpu_shader5");
+        GL_NV_half_float = check_NV_half_float(provider, caps, ext) && !RendererInit.isMasked("GL_NV_half_float");
+        GL_NV_internalformat_sample_query = check_NV_internalformat_sample_query(provider, caps, ext) && !RendererInit.isMasked("GL_NV_internalformat_sample_query");
+        GL_NV_light_max_exponent = ext.contains("GL_NV_light_max_exponent") && !RendererInit.isMasked("GL_NV_light_max_exponent");
+        GL_NV_memory_attachment = check_NV_memory_attachment(provider, caps, ext) && !RendererInit.isMasked("GL_NV_memory_attachment");
+        GL_NV_memory_object_sparse = check_NV_memory_object_sparse(provider, caps, ext) && !RendererInit.isMasked("GL_NV_memory_object_sparse");
+        GL_NV_mesh_shader = check_NV_mesh_shader(provider, caps, ext) && !RendererInit.isMasked("GL_NV_mesh_shader");
+        GL_NV_multisample_coverage = ext.contains("GL_NV_multisample_coverage") && !RendererInit.isMasked("GL_NV_multisample_coverage");
+        GL_NV_multisample_filter_hint = ext.contains("GL_NV_multisample_filter_hint") && !RendererInit.isMasked("GL_NV_multisample_filter_hint");
+        GL_NV_packed_depth_stencil = ext.contains("GL_NV_packed_depth_stencil") && !RendererInit.isMasked("GL_NV_packed_depth_stencil");
+        GL_NV_path_rendering = check_NV_path_rendering(provider, caps, ext) && !RendererInit.isMasked("GL_NV_path_rendering");
+        GL_NV_path_rendering_shared_edge = ext.contains("GL_NV_path_rendering_shared_edge") && !RendererInit.isMasked("GL_NV_path_rendering_shared_edge");
+        GL_NV_pixel_data_range = check_NV_pixel_data_range(provider, caps, ext) && !RendererInit.isMasked("GL_NV_pixel_data_range");
+        GL_NV_point_sprite = check_NV_point_sprite(provider, caps, ext) && !RendererInit.isMasked("GL_NV_point_sprite");
+        GL_NV_primitive_restart = check_NV_primitive_restart(provider, caps, ext) && !RendererInit.isMasked("GL_NV_primitive_restart");
+        GL_NV_primitive_shading_rate = ext.contains("GL_NV_primitive_shading_rate") && !RendererInit.isMasked("GL_NV_primitive_shading_rate");
+        GL_NV_query_resource = check_NV_query_resource(provider, caps, ext) && !RendererInit.isMasked("GL_NV_query_resource");
+        GL_NV_query_resource_tag = check_NV_query_resource_tag(provider, caps, ext) && !RendererInit.isMasked("GL_NV_query_resource_tag");
+        GL_NV_representative_fragment_test = ext.contains("GL_NV_representative_fragment_test") && !RendererInit.isMasked("GL_NV_representative_fragment_test");
+        GL_NV_robustness_video_memory_purge = ext.contains("GL_NV_robustness_video_memory_purge") && !RendererInit.isMasked("GL_NV_robustness_video_memory_purge");
+        GL_NV_sample_locations = check_NV_sample_locations(provider, caps, ext) && !RendererInit.isMasked("GL_NV_sample_locations");
+        GL_NV_sample_mask_override_coverage = ext.contains("GL_NV_sample_mask_override_coverage") && !RendererInit.isMasked("GL_NV_sample_mask_override_coverage");
+        GL_NV_scissor_exclusive = check_NV_scissor_exclusive(provider, caps, ext) && !RendererInit.isMasked("GL_NV_scissor_exclusive");
+        GL_NV_shader_atomic_float = ext.contains("GL_NV_shader_atomic_float") && !RendererInit.isMasked("GL_NV_shader_atomic_float");
+        GL_NV_shader_atomic_float64 = ext.contains("GL_NV_shader_atomic_float64") && !RendererInit.isMasked("GL_NV_shader_atomic_float64");
+        GL_NV_shader_atomic_fp16_vector = ext.contains("GL_NV_shader_atomic_fp16_vector") && !RendererInit.isMasked("GL_NV_shader_atomic_fp16_vector");
+        GL_NV_shader_atomic_int64 = ext.contains("GL_NV_shader_atomic_int64") && !RendererInit.isMasked("GL_NV_shader_atomic_int64");
+        GL_NV_shader_buffer_load = check_NV_shader_buffer_load(provider, caps, ext) && !RendererInit.isMasked("GL_NV_shader_buffer_load");
+        GL_NV_shader_buffer_store = ext.contains("GL_NV_shader_buffer_store") && !RendererInit.isMasked("GL_NV_shader_buffer_store");
+        GL_NV_shader_subgroup_partitioned = ext.contains("GL_NV_shader_subgroup_partitioned") && !RendererInit.isMasked("GL_NV_shader_subgroup_partitioned");
+        GL_NV_shader_texture_footprint = ext.contains("GL_NV_shader_texture_footprint") && !RendererInit.isMasked("GL_NV_shader_texture_footprint");
+        GL_NV_shader_thread_group = ext.contains("GL_NV_shader_thread_group") && !RendererInit.isMasked("GL_NV_shader_thread_group");
+        GL_NV_shader_thread_shuffle = ext.contains("GL_NV_shader_thread_shuffle") && !RendererInit.isMasked("GL_NV_shader_thread_shuffle");
+        GL_NV_shading_rate_image = check_NV_shading_rate_image(provider, caps, ext) && !RendererInit.isMasked("GL_NV_shading_rate_image");
+        GL_NV_stereo_view_rendering = ext.contains("GL_NV_stereo_view_rendering") && !RendererInit.isMasked("GL_NV_stereo_view_rendering");
+        GL_NV_texgen_reflection = ext.contains("GL_NV_texgen_reflection") && !RendererInit.isMasked("GL_NV_texgen_reflection");
+        GL_NV_texture_barrier = check_NV_texture_barrier(provider, caps, ext) && !RendererInit.isMasked("GL_NV_texture_barrier");
+        GL_NV_texture_compression_vtc = ext.contains("GL_NV_texture_compression_vtc") && !RendererInit.isMasked("GL_NV_texture_compression_vtc");
+        GL_NV_texture_multisample = check_NV_texture_multisample(provider, caps, ext) && !RendererInit.isMasked("GL_NV_texture_multisample");
+        GL_NV_texture_rectangle_compressed = ext.contains("GL_NV_texture_rectangle_compressed") && !RendererInit.isMasked("GL_NV_texture_rectangle_compressed");
+        GL_NV_texture_shader = ext.contains("GL_NV_texture_shader") && !RendererInit.isMasked("GL_NV_texture_shader");
+        GL_NV_texture_shader2 = ext.contains("GL_NV_texture_shader2") && !RendererInit.isMasked("GL_NV_texture_shader2");
+        GL_NV_texture_shader3 = ext.contains("GL_NV_texture_shader3") && !RendererInit.isMasked("GL_NV_texture_shader3");
+        GL_NV_timeline_semaphore = check_NV_timeline_semaphore(provider, caps, ext) && !RendererInit.isMasked("GL_NV_timeline_semaphore");
+        GL_NV_transform_feedback = check_NV_transform_feedback(provider, caps, ext) && !RendererInit.isMasked("GL_NV_transform_feedback");
+        GL_NV_transform_feedback2 = check_NV_transform_feedback2(provider, caps, ext) && !RendererInit.isMasked("GL_NV_transform_feedback2");
+        GL_NV_uniform_buffer_std430_layout = ext.contains("GL_NV_uniform_buffer_std430_layout") && !RendererInit.isMasked("GL_NV_uniform_buffer_std430_layout");
+        GL_NV_uniform_buffer_unified_memory = ext.contains("GL_NV_uniform_buffer_unified_memory") && !RendererInit.isMasked("GL_NV_uniform_buffer_unified_memory");
+        GL_NV_vertex_array_range = check_NV_vertex_array_range(provider, caps, ext) && !RendererInit.isMasked("GL_NV_vertex_array_range");
+        GL_NV_vertex_array_range2 = ext.contains("GL_NV_vertex_array_range2") && !RendererInit.isMasked("GL_NV_vertex_array_range2");
+        GL_NV_vertex_attrib_integer_64bit = check_NV_vertex_attrib_integer_64bit(provider, caps, ext) && !RendererInit.isMasked("GL_NV_vertex_attrib_integer_64bit");
+        GL_NV_vertex_buffer_unified_memory = check_NV_vertex_buffer_unified_memory(provider, caps, ext) && !RendererInit.isMasked("GL_NV_vertex_buffer_unified_memory");
+        GL_NV_viewport_array2 = ext.contains("GL_NV_viewport_array2") && !RendererInit.isMasked("GL_NV_viewport_array2");
+        GL_NV_viewport_swizzle = check_NV_viewport_swizzle(provider, caps, ext) && !RendererInit.isMasked("GL_NV_viewport_swizzle");
+        GL_NVX_blend_equation_advanced_multi_draw_buffers = ext.contains("GL_NVX_blend_equation_advanced_multi_draw_buffers") && !RendererInit.isMasked("GL_NVX_blend_equation_advanced_multi_draw_buffers");
+        GL_NVX_conditional_render = check_NVX_conditional_render(provider, caps, ext) && !RendererInit.isMasked("GL_NVX_conditional_render");
+        GL_NVX_gpu_memory_info = ext.contains("GL_NVX_gpu_memory_info") && !RendererInit.isMasked("GL_NVX_gpu_memory_info");
+        GL_NVX_gpu_multicast2 = check_NVX_gpu_multicast2(provider, caps, ext) && !RendererInit.isMasked("GL_NVX_gpu_multicast2");
+        GL_NVX_progress_fence = check_NVX_progress_fence(provider, caps, ext) && !RendererInit.isMasked("GL_NVX_progress_fence");
+        GL_OVR_multiview = check_OVR_multiview(provider, caps, ext) && !RendererInit.isMasked("GL_OVR_multiview");
+        GL_OVR_multiview2 = ext.contains("GL_OVR_multiview2") && !RendererInit.isMasked("GL_OVR_multiview2");
+        GL_S3_s3tc = ext.contains("GL_S3_s3tc") && !RendererInit.isMasked("GL_S3_s3tc");
 
         glEnable = caps.get(0);
         glDisable = caps.get(1);
@@ -6519,6 +6520,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL11(FunctionProvider provider, PointerBuffer caps, Set<String> ext, boolean fc) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL11")) {
+            return false;
+        }
 
         int flag0 = !fc | ext.contains("GL_NV_vertex_buffer_unified_memory") ? 0 : Integer.MIN_VALUE;
 
@@ -6580,6 +6584,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL12(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL12")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             336, 337, 338, 339
@@ -6589,6 +6596,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL13(FunctionProvider provider, PointerBuffer caps, Set<String> ext, boolean fc) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL13")) {
+            return false;
+        }
 
         return ((fc | checkFunctions(provider, caps, new int[] {
             349, 350, 351, 352, 353, 354, 355, 356, 357, 358, 359, 360, 361, 362, 363, 364, 365, 366, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 
@@ -6610,6 +6620,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL14(FunctionProvider provider, PointerBuffer caps, Set<String> ext, boolean fc) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL14")) {
+            return false;
+        }
 
         return ((fc | checkFunctions(provider, caps, new int[] {
             388, 389, 390, 391, 392, 399, 400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 417, 418, 419, 420, 421, 422, 423, 
@@ -6630,6 +6643,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL15(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL15")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             433, 434, 435, 436, 437, 438, 439, 440, 441, 442, 443, 444, 445, 446, 447, 448, 449, 450, 451
@@ -6641,6 +6657,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL20(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL20")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             452, 453, 454, 455, 456, 457, 458, 459, 460, 461, 462, 463, 464, 465, 466, 467, 468, 469, 470, 471, 472, 473, 474, 475, 476, 477, 478, 479, 480, 
@@ -6666,6 +6685,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL21(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL21")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             545, 546, 547, 548, 549, 550
@@ -6675,6 +6697,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL30(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL30")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             551, 552, 553, 554, 555, 556, 557, 558, 559, 560, 561, 562, 563, 564, 565, 566, 567, 568, 569, 570, 571, 572, 573, 574, 575, 576, 577, 578, 579, 
@@ -6699,6 +6724,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL31(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL31")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             635, 636, 637, 638, 639, 640, 641, 642, 643, 644, 645, 646
@@ -6710,6 +6738,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL32(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL32")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             647, 648, 649, 650, 651, 652, 653, 654, 655, 656, 657, 658, 659, 660, 661, 662, 663, 664, 665
@@ -6722,6 +6753,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL33(FunctionProvider provider, PointerBuffer caps, Set<String> ext, boolean fc) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL33")) {
+            return false;
+        }
 
         return ((fc | checkFunctions(provider, caps, new int[] {
             686, 687, 688, 689, 690, 691, 692, 693, 694, 695, 696, 697, 698, 699, 700, 701, 702, 703, 704, 705, 706, 707, 708, 709, 710, 711, 712, 713, 714, 
@@ -6744,6 +6778,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL40(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL40")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             724, 725, 726, 727, 728, 729, 730, 731, 732, 733, 734, 735, 736, 737, 738, 739, 740, 741, 742, 743, 744, 745, 746, 747, 748, 749, 750, 751, 752, 
@@ -6761,6 +6798,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL41(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL41")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             770, 771, 772, 773, 774, 775, 776, 777, 778, 779, 780, 781, 782, 783, 784, 785, 786, 787, 788, 789, 790, 791, 792, 793, 794, 795, 796, 797, 798, 
@@ -6788,6 +6828,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL42(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL42")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             858, 859, 860, 861, 862, 863, 864, 865, 866, 867, 868, 869
@@ -6799,6 +6842,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL43(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL43")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             870, 871, 872, 873, 874, 875, 876, 877, 878, 879, 880, 881, 882, 883, 884, 885, 886, 887, 888, 889, 890, 891, 892, 893, 894, 895, 896, 897, 898, 
@@ -6816,6 +6862,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL44(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL44")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             913, 914, 915, 916, 917, 918, 919, 920, 921
@@ -6826,6 +6875,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL45(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL45")) {
+            return false;
+        }
 
         int flag0 = provider.getFunctionAddress("glGetMapdv") != NULL ? 0 : Integer.MIN_VALUE;
         int flag1 = provider.getFunctionAddress("glGetMapfv") != NULL ? 0 : Integer.MIN_VALUE;
@@ -6872,6 +6924,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL46(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL46")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1044, 1045, 1046, 1047
@@ -6881,6 +6936,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_AMD_debug_output(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_AMD_debug_output")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1048, 1049, 1050, 1051
@@ -6890,6 +6948,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_AMD_draw_buffers_blend(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_AMD_draw_buffers_blend")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1052, 1053, 1054, 1055
@@ -6899,6 +6960,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_AMD_framebuffer_multisample_advanced(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_AMD_framebuffer_multisample_advanced")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1056, 1057
@@ -6908,6 +6972,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_AMD_gpu_shader_int64(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_AMD_gpu_shader_int64")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -6926,6 +6993,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_AMD_interleaved_elements(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_AMD_interleaved_elements")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1092
@@ -6935,6 +7005,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_AMD_occlusion_query_event(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_AMD_occlusion_query_event")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1093
@@ -6944,6 +7017,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_AMD_performance_monitor(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_AMD_performance_monitor")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1094, 1095, 1096, 1097, 1098, 1099, 1100, 1101, 1102, 1103, 1104
@@ -6955,6 +7031,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_AMD_sample_positions(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_AMD_sample_positions")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1105
@@ -6964,6 +7043,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_AMD_sparse_texture(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_AMD_sparse_texture")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1106, 1107
@@ -6973,6 +7055,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_AMD_stencil_operation_extended(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_AMD_stencil_operation_extended")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1108
@@ -6982,6 +7067,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_AMD_vertex_shader_tessellator(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_AMD_vertex_shader_tessellator")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1109, 1110
@@ -6991,6 +7079,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_APPLE_element_array(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_APPLE_element_array")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1111, 1112, 1113, 1114, 1115
@@ -7001,6 +7092,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_APPLE_fence(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_APPLE_fence")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1116, 1117, 1118, 1119, 1120, 1121, 1122, 1123
@@ -7011,6 +7105,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_APPLE_flush_buffer_range(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_APPLE_flush_buffer_range")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1124, 1125
@@ -7020,6 +7117,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_APPLE_object_purgeable(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_APPLE_object_purgeable")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1126, 1127, 1128
@@ -7029,6 +7129,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_APPLE_texture_range(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_APPLE_texture_range")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1129, 1130
@@ -7038,6 +7141,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_APPLE_vertex_array_object(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_APPLE_vertex_array_object")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1131, 1132, 1133, 1134
@@ -7047,6 +7153,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_APPLE_vertex_array_range(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_APPLE_vertex_array_range")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1135, 1136, 1137
@@ -7056,6 +7165,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_APPLE_vertex_program_evaluators(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_APPLE_vertex_program_evaluators")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1138, 1139, 1140, 1141, 1142, 1143, 1144
@@ -7066,6 +7178,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_base_instance(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_base_instance")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             864, 865, 866
@@ -7075,6 +7190,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_bindless_texture(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_bindless_texture")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1145, 1146, 1147, 1148, 1149, 1150, 1151, 1152, 1153, 1154, 1155, 1156, 1157, 1158, 1159, 1160
@@ -7087,6 +7205,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_blend_func_extended(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_blend_func_extended")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             666, 667
@@ -7096,6 +7217,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_buffer_storage(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_buffer_storage")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -7107,6 +7231,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_cl_event(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_cl_event")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1162
@@ -7116,6 +7243,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_clear_buffer_object(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_clear_buffer_object")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -7127,6 +7257,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_clear_texture(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_clear_texture")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             914, 915
@@ -7136,6 +7269,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_clip_control(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_clip_control")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             922
@@ -7145,6 +7281,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_color_buffer_float(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_color_buffer_float")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1165
@@ -7154,6 +7293,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_compute_shader(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_compute_shader")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             872, 873
@@ -7163,6 +7305,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_compute_variable_group_size(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_compute_variable_group_size")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1166
@@ -7172,6 +7317,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_copy_buffer(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_copy_buffer")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             637
@@ -7181,6 +7329,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_copy_image(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_copy_image")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             874
@@ -7190,6 +7341,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_debug_output(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_debug_output")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1167, 1168, 1169, 1170
@@ -7199,6 +7353,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_direct_state_access(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_direct_state_access")) {
+            return false;
+        }
 
         int flag0 = ARB_transform_feedback2(ext) ? 0 : Integer.MIN_VALUE;
         int flag1 = ARB_uniform_buffer_object(ext) ? 0 : Integer.MIN_VALUE;
@@ -7255,6 +7412,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_draw_buffers(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_draw_buffers")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1171
@@ -7264,6 +7424,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_draw_buffers_blend(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_draw_buffers_blend")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1172, 1173, 1174, 1175
@@ -7273,6 +7436,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_draw_elements_base_vertex(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_draw_elements_base_vertex")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             648, 649, 650, 651
@@ -7282,6 +7448,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_draw_indirect(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_draw_indirect")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             728, 729
@@ -7291,6 +7460,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_draw_instanced(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_draw_instanced")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1176, 1177
@@ -7300,6 +7472,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_ES2_compatibility(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_ES2_compatibility")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             770, 771, 772, 773, 774
@@ -7309,6 +7484,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_ES3_1_compatibility(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_ES3_1_compatibility")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1020
@@ -7318,6 +7496,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_ES3_2_compatibility(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_ES3_2_compatibility")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1178
@@ -7327,6 +7508,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_framebuffer_no_attachments(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_framebuffer_no_attachments")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -7338,6 +7522,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_framebuffer_object(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_framebuffer_object")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             595, 596, 597, 598, 599, 600, 601, 602, 603, 604, 605, 606, 607, 608, 609, 610, 611, 612, 613, 614
@@ -7350,6 +7537,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_geometry_shader4(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_geometry_shader4")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1181, 1182, 1183, 1184
@@ -7359,6 +7549,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_get_program_binary(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_get_program_binary")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             775, 776, 777
@@ -7368,6 +7561,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_get_texture_sub_image(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_get_texture_sub_image")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1021, 1022
@@ -7377,6 +7573,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_gl_spirv(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_gl_spirv")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1185
@@ -7386,6 +7585,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_gpu_shader_fp64(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_gpu_shader_fp64")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -7399,6 +7601,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_gpu_shader_int64(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_gpu_shader_int64")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1203, 1204, 1205, 1206, 1207, 1208, 1209, 1210, 1211, 1212, 1213, 1214, 1215, 1216, 1217, 1218, 1219, 1220, 1221, 1222, 1223, 1224, 1225, 1226, 
@@ -7415,6 +7620,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_imaging(FunctionProvider provider, PointerBuffer caps, Set<String> ext, boolean fc) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_imaging")) {
+            return false;
+        }
 
         return ((fc | checkFunctions(provider, caps, new int[] {
             1239, 1240, 1241, 1242, 1243, 1244, 1245, 1246, 1247, 1248, 1249, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258, 1259, 1260, 1261, 1262, 
@@ -7434,6 +7642,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_indirect_parameters(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_indirect_parameters")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1271, 1272
@@ -7443,6 +7654,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_instanced_arrays(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_instanced_arrays")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -7454,6 +7668,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_internalformat_query(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_internalformat_query")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             869
@@ -7463,6 +7680,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_internalformat_query2(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_internalformat_query2")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             887
@@ -7472,6 +7692,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_invalidate_subdata(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_invalidate_subdata")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             888, 889, 890, 891, 892, 893
@@ -7482,6 +7705,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_map_buffer_range(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_map_buffer_range")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             592, 593
@@ -7491,6 +7717,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_matrix_palette(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_matrix_palette")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1275, 1276, 1277, 1278, 1279
@@ -7500,6 +7729,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_multi_bind(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_multi_bind")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             916, 917, 918, 919, 920, 921
@@ -7509,6 +7741,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_multi_draw_indirect(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_multi_draw_indirect")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             894, 895
@@ -7518,6 +7753,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_multisample(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_multisample")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1280
@@ -7527,6 +7765,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_multitexture(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_multitexture")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1281, 1282, 1283, 1284, 1285, 1286, 1287, 1288, 1289, 1290, 1291, 1292, 1293, 1294, 1295, 1296, 1297, 1298, 1299, 1300, 1301, 1302, 1303, 1304, 
@@ -7542,6 +7783,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_occlusion_query(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_occlusion_query")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1315, 1316, 1317, 1318, 1319, 1320, 1321, 1322
@@ -7552,6 +7796,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_parallel_shader_compile(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_parallel_shader_compile")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1323
@@ -7561,6 +7808,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_point_parameters(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_point_parameters")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1324, 1325
@@ -7570,6 +7820,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_polygon_offset_clamp(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_polygon_offset_clamp")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1046
@@ -7579,6 +7832,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_program_interface_query(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_program_interface_query")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             896, 897, 898, 899, 900, 901
@@ -7589,6 +7845,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_provoking_vertex(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_provoking_vertex")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             652
@@ -7598,6 +7857,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_robustness(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_robustness")) {
+            return false;
+        }
 
         int flag0 = provider.getFunctionAddress("glGetMapdv") != NULL ? 0 : Integer.MIN_VALUE;
         int flag1 = provider.getFunctionAddress("glGetMapfv") != NULL ? 0 : Integer.MIN_VALUE;
@@ -7628,6 +7890,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_sample_locations(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_sample_locations")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1346, 1347, 1348
@@ -7637,6 +7902,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_sample_shading(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_sample_shading")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1349
@@ -7646,6 +7914,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_sampler_objects(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_sampler_objects")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             668, 669, 670, 671, 672, 673, 674, 675, 676, 677, 678, 679, 680, 681
@@ -7657,6 +7928,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_separate_shader_objects(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_separate_shader_objects")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             778, 779, 780, 781, 782, 783, 784, 777, 785, 786, 787, 788, 789, 790, 791, 792, 793, 794, 795, 796, 797, 798, 799, 800, 801, 802, 803, 804, 805, 
@@ -7679,6 +7953,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_shader_atomic_counters(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_shader_atomic_counters")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             858
@@ -7688,6 +7965,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_shader_image_load_store(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_shader_image_load_store")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             867, 868
@@ -7697,6 +7977,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_shader_objects(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_shader_objects")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1350, 1351, 1352, 1353, 1354, 1355, 1356, 1357, 1358, 1359, 1360, 1361, 1362, 1363, 1364, 1365, 1366, 1367, 1368, 1369, 1370, 1371, 1372, 1373, 
@@ -7713,6 +7996,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_shader_storage_buffer_object(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_shader_storage_buffer_object")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             902
@@ -7722,6 +8008,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_shader_subroutine(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_shader_subroutine")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             749, 750, 751, 752, 753, 754, 755, 756
@@ -7732,6 +8021,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_shading_language_include(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_shading_language_include")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1389, 1390, 1391, 1392, 1393, 1394
@@ -7741,6 +8033,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_sparse_buffer(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_sparse_buffer")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
         int flag1 = ext.contains("GL_ARB_direct_state_access") ? 0 : Integer.MIN_VALUE;
@@ -7753,6 +8048,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_sparse_texture(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_sparse_texture")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -7764,6 +8062,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_sync(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_sync")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             658, 659, 660, 661, 662, 663, 665
@@ -7773,6 +8074,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_tessellation_shader(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_tessellation_shader")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             757, 758
@@ -7782,6 +8086,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_texture_barrier(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_texture_barrier")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1023
@@ -7791,6 +8098,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_texture_buffer_object(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_texture_buffer_object")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1400
@@ -7800,6 +8110,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_texture_buffer_range(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_texture_buffer_range")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -7811,6 +8124,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_texture_compression(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_texture_compression")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1402, 1403, 1404, 1405, 1406, 1407, 1408
@@ -7821,6 +8137,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_texture_multisample(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_texture_multisample")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             653, 654, 655, 656
@@ -7830,6 +8149,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_texture_storage(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_texture_storage")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -7841,6 +8163,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_texture_storage_multisample(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_texture_storage_multisample")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -7852,6 +8177,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_texture_view(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_texture_view")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             906
@@ -7861,6 +8189,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_timer_query(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_timer_query")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             682, 683, 684
@@ -7870,6 +8201,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_transform_feedback2(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_transform_feedback2")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             759, 760, 761, 762, 763, 764, 765
@@ -7880,6 +8214,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_transform_feedback3(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_transform_feedback3")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             766, 767, 768, 769
@@ -7889,6 +8226,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_transform_feedback_instanced(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_transform_feedback_instanced")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             862, 863
@@ -7898,6 +8238,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_transpose_matrix(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_transpose_matrix")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1414, 1415, 1416, 1417
@@ -7907,6 +8250,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_uniform_buffer_object(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_uniform_buffer_object")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             640, 641, 642, 643, 644, 645, 625, 626, 621, 646
@@ -7917,6 +8263,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_vertex_array_object(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_vertex_array_object")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             631, 632, 633, 634
@@ -7926,6 +8275,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_vertex_attrib_64bit(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_vertex_attrib_64bit")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -7938,6 +8290,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_vertex_attrib_binding(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_vertex_attrib_binding")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -7951,6 +8306,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_vertex_blend(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_vertex_blend")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1425, 1426, 1427, 1428, 1429, 1430, 1431, 1432, 1433, 1434
@@ -7961,6 +8319,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_vertex_buffer_object(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_vertex_buffer_object")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1435, 1436, 1437, 1438, 1439, 1440, 1441, 1442, 1443, 1444, 1445
@@ -7971,6 +8332,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_vertex_program(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_vertex_program")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1446, 1447, 1448, 1449, 1450, 1451, 1452, 1453, 1454, 1455, 1456, 1457, 1458, 1459, 1460, 1461, 1462, 1463, 1464, 1465, 1466, 1467, 1468, 1469, 
@@ -7993,6 +8357,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_vertex_shader(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_vertex_shader")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1447, 1446, 1448, 1450, 1449, 1451, 1453, 1452, 1454, 1456, 1455, 1457, 1458, 1460, 1459, 1461, 1463, 1462, 1464, 1466, 1465, 1467, 1468, 1470, 
@@ -8011,6 +8378,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_vertex_type_2_10_10_10_rev(FunctionProvider provider, PointerBuffer caps, Set<String> ext, boolean fc) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_vertex_type_2_10_10_10_rev")) {
+            return false;
+        }
 
         return ((fc | checkFunctions(provider, caps, new int[] {
             686, 687, 688, 689, 690, 691, 692, 693, 694, 695, 696, 697, 698, 699, 700, 701, 702, 703, 704, 705, 706, 707, 708, 709, 710, 711, 712, 713, 714, 
@@ -8030,6 +8400,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_viewport_array(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_viewport_array")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             848, 849, 850, 851, 852, 853, 854, 855, 856, 857
@@ -8040,6 +8413,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_ARB_window_pos(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_window_pos")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1511, 1512, 1513, 1514, 1515, 1516, 1517, 1518, 1519, 1520, 1521, 1522, 1523, 1524, 1525, 1526
@@ -8051,6 +8427,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_bindable_uniform(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_bindable_uniform")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1527, 1528, 1529
@@ -8060,6 +8439,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_blend_color(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_blend_color")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1530
@@ -8069,6 +8451,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_blend_equation_separate(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_blend_equation_separate")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1531
@@ -8078,6 +8463,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_blend_func_separate(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_blend_func_separate")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1532
@@ -8087,6 +8475,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_blend_minmax(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_blend_minmax")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1533
@@ -8096,6 +8487,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_compiled_vertex_array(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_compiled_vertex_array")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1534, 1535
@@ -8105,6 +8499,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_debug_label(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_debug_label")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1536, 1537
@@ -8114,6 +8511,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_debug_marker(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_debug_marker")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1538, 1539, 1540
@@ -8123,6 +8523,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_depth_bounds_test(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_depth_bounds_test")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1541
@@ -8132,6 +8535,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_direct_state_access(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_direct_state_access")) {
+            return false;
+        }
 
         int flag0 = ext.contains("OpenGL12") ? 0 : Integer.MIN_VALUE;
         int flag3 = ext.contains("OpenGL13") ? 0 : Integer.MIN_VALUE;
@@ -8224,6 +8630,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_draw_buffers2(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_draw_buffers2")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1759, 1630, 1629, 1626, 1627, 1628
@@ -8233,6 +8642,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_draw_instanced(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_draw_instanced")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1760, 1761
@@ -8242,6 +8654,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_EGL_image_storage(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_EGL_image_storage")) {
+            return false;
+        }
 
         int flag0 = hasDSA(ext) ? 0 : Integer.MIN_VALUE;
 
@@ -8253,6 +8668,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_external_buffer(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_external_buffer")) {
+            return false;
+        }
 
         int flag0 = hasDSA(ext) ? 0 : Integer.MIN_VALUE;
 
@@ -8264,6 +8682,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_fragment_shading_rate(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_fragment_shading_rate")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1766, 1767, 1768, 1769
@@ -8273,6 +8694,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_framebuffer_blit(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_framebuffer_blit")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1770
@@ -8282,6 +8706,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_framebuffer_blit_layers(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_framebuffer_blit_layers")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1771, 1772
@@ -8291,6 +8718,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_framebuffer_multisample(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_framebuffer_multisample")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1773
@@ -8300,6 +8730,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_framebuffer_object(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_framebuffer_object")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1774, 1775, 1776, 1777, 1778, 1779, 1780, 1781, 1782, 1783, 1784, 1785, 1786, 1787, 1788, 1789, 1790
@@ -8312,6 +8745,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_geometry_shader4(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_geometry_shader4")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1791, 1792, 1793, 1794
@@ -8321,6 +8757,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_gpu_program_parameters(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_gpu_program_parameters")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1795, 1796
@@ -8330,6 +8769,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_gpu_shader4(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_gpu_shader4")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1797, 1798, 1799, 1800, 1801, 1802, 1803, 1804, 1805, 1806, 1807, 1808, 1809, 1810, 1811, 1812, 1813, 1814, 1815, 1816, 1817, 1818, 1819, 1820, 
@@ -8346,6 +8788,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_memory_object(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_memory_object")) {
+            return false;
+        }
 
         int flag0 = hasDSA(ext) ? 0 : Integer.MIN_VALUE;
 
@@ -8362,6 +8807,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_memory_object_fd(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_memory_object_fd")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1850
@@ -8371,6 +8819,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_memory_object_win32(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_memory_object_win32")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1851, 1852
@@ -8380,6 +8831,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_mesh_shader(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_mesh_shader")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1853, 1854, 1855, 1856
@@ -8389,6 +8843,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_point_parameters(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_point_parameters")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1857, 1858
@@ -8398,6 +8855,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_polygon_offset_clamp(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_polygon_offset_clamp")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1859
@@ -8407,6 +8867,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_provoking_vertex(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_provoking_vertex")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1860
@@ -8416,6 +8879,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_raster_multisample(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_raster_multisample")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1861
@@ -8425,6 +8891,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_secondary_color(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_secondary_color")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1862, 1863, 1864, 1865, 1866, 1867, 1868, 1869, 1870, 1871, 1872, 1873, 1874, 1875, 1876, 1877, 1878
@@ -8437,6 +8906,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_semaphore(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_semaphore")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1831, 1832, 1879, 1880, 1881, 1882, 1883, 1884, 1885
@@ -8447,6 +8919,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_semaphore_fd(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_semaphore_fd")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1886
@@ -8456,6 +8931,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_semaphore_win32(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_semaphore_win32")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1887, 1888
@@ -8465,6 +8943,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_separate_shader_objects(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_separate_shader_objects")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1889, 1890, 1891
@@ -8474,6 +8955,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_shader_framebuffer_fetch_non_coherent(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_shader_framebuffer_fetch_non_coherent")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1892
@@ -8483,6 +8967,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_shader_image_load_store(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_shader_image_load_store")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1893, 1894
@@ -8492,6 +8979,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_stencil_clear_tag(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_stencil_clear_tag")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1895
@@ -8501,6 +8991,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_stencil_two_side(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_stencil_two_side")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1896
@@ -8510,6 +9003,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_texture_array(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_texture_array")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1793
@@ -8519,6 +9015,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_texture_buffer_object(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_texture_buffer_object")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1897
@@ -8528,6 +9027,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_texture_integer(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_texture_integer")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1898, 1899, 1900, 1901, 1902, 1903
@@ -8537,6 +9039,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_texture_storage(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_texture_storage")) {
+            return false;
+        }
 
         int flag0 = hasDSA(ext) ? 0 : Integer.MIN_VALUE;
 
@@ -8548,6 +9053,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_timer_query(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_timer_query")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1907, 1908
@@ -8557,6 +9065,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_transform_feedback(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_transform_feedback")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1909, 1910, 1911, 1912, 1913, 1914, 1915, 1629, 1630
@@ -8567,6 +9078,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_vertex_attrib_64bit(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_vertex_attrib_64bit")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -8579,6 +9093,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_win32_keyed_mutex(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_win32_keyed_mutex")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1926, 1927
@@ -8588,6 +9105,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_window_rectangles(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_window_rectangles")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1928
@@ -8597,6 +9117,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_EXT_x11_sync_object(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_EXT_x11_sync_object")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1929
@@ -8606,6 +9129,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GREMEDY_frame_terminator(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_GREMEDY_frame_terminator")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1930
@@ -8615,6 +9141,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GREMEDY_string_marker(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_GREMEDY_string_marker")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1931
@@ -8624,6 +9153,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_INTEL_framebuffer_CMAA(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_INTEL_framebuffer_CMAA")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1932
@@ -8633,6 +9165,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_INTEL_map_texture(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_INTEL_map_texture")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1933, 1934, 1935
@@ -8642,6 +9177,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_INTEL_performance_query(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_INTEL_performance_query")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1936, 1937, 1938, 1939, 1940, 1941, 1942, 1943, 1944, 1945
@@ -8652,6 +9190,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_KHR_blend_equation_advanced(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_KHR_blend_equation_advanced")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1946
@@ -8661,6 +9202,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_KHR_debug(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_KHR_debug")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             875, 876, 877, 878, 879, 880, 881, 882, 883, 884
@@ -8671,6 +9215,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_KHR_parallel_shader_compile(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_KHR_parallel_shader_compile")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1947
@@ -8680,6 +9227,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_KHR_robustness(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_KHR_robustness")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1024, 1033, 1040, 1042, 1043
@@ -8689,6 +9239,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_MESA_framebuffer_flip_y(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_MESA_framebuffer_flip_y")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1948, 1949
@@ -8698,6 +9251,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_alpha_to_coverage_dither_control(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_alpha_to_coverage_dither_control")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1950
@@ -8707,6 +9263,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_bindless_multi_draw_indirect(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_bindless_multi_draw_indirect")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1951, 1952
@@ -8716,6 +9275,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_bindless_multi_draw_indirect_count(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_bindless_multi_draw_indirect_count")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1953, 1954
@@ -8725,6 +9287,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_bindless_texture(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_bindless_texture")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1955, 1956, 1957, 1958, 1959, 1960, 1961, 1962, 1963, 1964, 1965, 1966, 1967
@@ -8736,6 +9301,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_blend_equation_advanced(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_blend_equation_advanced")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1968, 1969
@@ -8745,6 +9313,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_clip_space_w_scaling(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_clip_space_w_scaling")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1970
@@ -8754,6 +9325,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_command_list(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_command_list")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1971, 1972, 1973, 1974, 1975, 1976, 1977, 1978, 1979, 1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987
@@ -8765,6 +9339,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_conditional_render(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_conditional_render")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1988, 1989
@@ -8774,6 +9351,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_conservative_raster(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_conservative_raster")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1990
@@ -8783,6 +9363,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_conservative_raster_dilate(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_conservative_raster_dilate")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1991
@@ -8792,6 +9375,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_conservative_raster_pre_snap_triangles(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_conservative_raster_pre_snap_triangles")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1992
@@ -8801,6 +9387,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_copy_image(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_copy_image")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1993
@@ -8810,6 +9399,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_depth_buffer_float(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_depth_buffer_float")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1994, 1995, 1996
@@ -8819,6 +9411,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_draw_texture(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_draw_texture")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1997
@@ -8828,6 +9423,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_draw_vulkan_image(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_draw_vulkan_image")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1998, 1999, 2000, 2001, 2002
@@ -8837,6 +9435,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_explicit_multisample(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_explicit_multisample")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2003, 2004, 2005
@@ -8846,6 +9447,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_fence(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_fence")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2006, 2007, 2008, 2009, 2010, 2011, 2012
@@ -8855,6 +9459,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_fragment_coverage_to_color(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_fragment_coverage_to_color")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2013
@@ -8864,6 +9471,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_framebuffer_mixed_samples(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_framebuffer_mixed_samples")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             1861, 2014, 2015, 2016
@@ -8873,6 +9483,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_framebuffer_multisample_coverage(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_framebuffer_multisample_coverage")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2017
@@ -8882,6 +9495,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_gpu_multicast(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_gpu_multicast")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026, 2027, 2028, 2029
@@ -8893,6 +9509,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_gpu_shader5(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_gpu_shader5")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_direct_state_access") ? 0 : Integer.MIN_VALUE;
 
@@ -8911,6 +9530,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_half_float(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_half_float")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_EXT_fog_coord") ? 0 : Integer.MIN_VALUE;
         int flag2 = ext.contains("GL_EXT_secondary_color") ? 0 : Integer.MIN_VALUE;
@@ -8933,6 +9555,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_internalformat_sample_query(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_internalformat_sample_query")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2076
@@ -8942,6 +9567,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_memory_attachment(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_memory_attachment")) {
+            return false;
+        }
 
         int flag0 = hasDSA(ext) ? 0 : Integer.MIN_VALUE;
 
@@ -8954,6 +9582,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_memory_object_sparse(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_memory_object_sparse")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2083, 2084, 2085, 2086
@@ -8963,6 +9594,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_mesh_shader(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_mesh_shader")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2087, 2088, 2089, 2090
@@ -8972,6 +9606,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_path_rendering(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_path_rendering")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2091, 2092, 2093, 2094, 2095, 2096, 2097, 2100, 2102, 2103, 2104, 2105, 2106, 2107, 2108, 2109, 2110, 2111, 2112, 2113, 2114, 2115, 2116, 2117, 
@@ -8988,6 +9625,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_pixel_data_range(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_pixel_data_range")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2155, 2156
@@ -8997,6 +9637,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_point_sprite(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_point_sprite")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2157, 2158
@@ -9006,6 +9649,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_primitive_restart(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_primitive_restart")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2159, 2160
@@ -9015,6 +9661,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_query_resource(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_query_resource")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2161
@@ -9024,6 +9673,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_query_resource_tag(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_query_resource_tag")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2162, 2163, 2164
@@ -9033,6 +9685,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_sample_locations(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_sample_locations")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2165, 2166, 2167
@@ -9042,6 +9697,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_scissor_exclusive(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_scissor_exclusive")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2168, 2169
@@ -9051,6 +9709,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_shader_buffer_load(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_shader_buffer_load")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2170, 2171, 2172, 2173, 2174, 2175, 2176, 2177, 2178, 2179, 2180, 1075, 2181, 2182
@@ -9062,6 +9723,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_shading_rate_image(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_shading_rate_image")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2183, 2184, 2185, 2186, 2187, 2188, 2189
@@ -9072,6 +9736,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_texture_barrier(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_texture_barrier")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2190
@@ -9081,6 +9748,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_texture_multisample(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_texture_multisample")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2191, 2192, 2193, 2194, 2195, 2196
@@ -9091,6 +9761,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_timeline_semaphore(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_timeline_semaphore")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2197, 2198, 2199
@@ -9100,6 +9773,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_transform_feedback(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_transform_feedback")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2200, 2201, 2202, 2203, 2204, 2205, 2206, 2207, 2208, 2209, 2210, 2211
@@ -9111,6 +9787,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_transform_feedback2(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_transform_feedback2")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2212, 2213, 2214, 2215, 2216, 2217, 2218
@@ -9121,6 +9800,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_vertex_array_range(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_vertex_array_range")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2219, 2220
@@ -9130,6 +9812,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_vertex_attrib_integer_64bit(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_vertex_attrib_integer_64bit")) {
+            return false;
+        }
 
         int flag0 = ext.contains("GL_NV_vertex_buffer_unified_memory") ? 0 : Integer.MIN_VALUE;
 
@@ -9144,6 +9829,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_vertex_buffer_unified_memory(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_vertex_buffer_unified_memory")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2240, 2241, 2242, 2243, 2244, 2245, 2246, 2247, 2248, 2249, 2250, 2251
@@ -9154,6 +9842,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NV_viewport_swizzle(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NV_viewport_swizzle")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2252
@@ -9163,6 +9854,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NVX_conditional_render(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NVX_conditional_render")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2253, 2254
@@ -9172,6 +9866,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NVX_gpu_multicast2(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NVX_gpu_multicast2")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2255, 2256, 2257, 2258, 2259, 2260
@@ -9182,6 +9879,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_NVX_progress_fence(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_NVX_progress_fence")) {
+            return false;
+        }
 
         return (checkFunctions(provider, caps, new int[] {
             2261, 2262, 2263, 2264
@@ -9191,6 +9891,9 @@ public final class GLCapabilities {
     }
 
     private static boolean check_OVR_multiview(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
+        if (RendererInit.strictCapabilities() && !ext.contains("GL_OVR_multiview")) {
+            return false;
+        }
 
         int flag0 = hasDSA(ext) ? 0 : Integer.MIN_VALUE;
 
