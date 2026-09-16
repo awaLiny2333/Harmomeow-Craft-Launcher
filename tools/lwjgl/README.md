@@ -120,11 +120,17 @@ Why those two are version-pinned:
   ```
   our **six** deterministic edits:
   1. inject `RendererInit.onCreateCapabilities(provider);`;
-  2. keep every advertised-vs-resolvable guard, but make it **runtime-conditional**:
-     `if (RendererInit.strictCapabilities() && !ext.contains("…"))`. Upstream gates each version group and
-     extension on what the driver ADVERTISES; we used to delete all **234** guards process-wide, which made
-     `OpenGL46` (and ARB flags) true on this GL 4.2 device purely because Mesa's dispatch resolves the entry
-     points — that lie sent Flywheel down the compute path and into the driver bug (2026-09-16);
+  2. keep every advertised-vs-resolvable guard, but make it **runtime-conditional**, splitting the two kinds:
+     * version groups: `if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 4, 2))`
+       — Mesa never advertises the `OpenGLxy` pseudo-extension names, so the advertised-name test ALONE makes
+       every version group false (under-report), while deleting the guards made them all true (over-report:
+       4.2 claimed as 4.6, which is what sent Flywheel down the compute path). `allowsVersionGroup` accepts
+       the advertised name OR the real `GL_VERSION`, read during capabilities construction through LWJGL's
+       own `JNI.invokeP(0x1F02, …)` (no native change); on device: `GL_VERSION=[4.2 …] -> version groups
+       OpenGL11..OpenGL42 on, higher off`;
+     * extensions: `if (RendererInit.strictCapabilities() && !ext.contains("…"))` — the upstream contract
+       (advertised + resolvable) holds here because Mesa does advertise them;
+     `strict` is ON except on the gl4es compat context, which needs the permissive probe;
   3. de-short-circuit `||`/`&&` so every probe evaluates;
   4. neutralise the pure-logging `reportMissing("GL","…")` → `false` (without it, edit 3's `|` makes
      LWJGL log `[GL] … an entry point is missing` for **every** probe);
@@ -268,10 +274,10 @@ cp stuffs/research/meowcraft_extras.tar.gz entry/src/main/resources/rawfile/
 
 | artifact | sha256 |
 |---|---|
-| `lwjgl-3.4.3.jar` (carries the 5 3.4.x compat shims; no `Multi-Release` claim; honest capability guards + the runtime capability-mask interface) | `0eb7c8a0ee3734f1544abdaf8b8f59d763915b64077618d0b38422ef17cbc5a6` |
+| `lwjgl-3.4.3.jar` (carries the 5 3.4.x compat shims; no `Multi-Release` claim; GL_VERSION-derived version groups + the runtime capability-mask interface) | `0671ae94718f1e795bd36c17b9ab20bba383ff82918a6af517421ac38d0f0ad3` |
 | `liblwjgl_343.so` / `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (3.4.3) | `16298280…` / `e1f1413b…` / `8eb4a1b8…` |
 | `libffi.a` (3.8.0, aarch64-linux-ohos) | `238cadb7bfa70ca5b4f718cc66878f1f3d26107bc6f6b0e272380c3f3f1fda5b` |
-| `meowcraft_extras.tar.gz` (shipped; single modern generation; EXTRAS_VERSION=20260916-lwjgl-honest) | `6052db8fae4ead6432921ac223073151a7b616eb3dfd914d8b68c437811ad9c5` |
+| `meowcraft_extras.tar.gz` (shipped; single modern generation; EXTRAS_VERSION=20260916-lwjgl-glversion) | `e27a1394ff37ab977985589c721f35ebd325b9d49bd93ddcd3832b5ad54d9f4c` |
 
 Reproducibility caveats (verified 2026-09-10):
 - **Native builds are byte-reproducible only when the absolute `--src`/`--out` paths are

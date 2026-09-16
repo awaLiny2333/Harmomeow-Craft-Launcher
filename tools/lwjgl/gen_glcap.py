@@ -17,18 +17,21 @@ Our overlay differs from the official file by exactly six deterministic edits:
 
   1. inject  RendererInit.onCreateCapabilities(provider);  as the first statement
      of the package-private capabilities constructor (hooks our renderer/GL init)
-  2. keep every advertised-vs-resolvable guard, but make it RUNTIME-conditional:
-         if (!ext.contains("OpenGL46")) { ... }
-      -> if (RendererInit.strictCapabilities() && !ext.contains("OpenGL46")) { ... }
-     (upstream gates each version group and extension on what the driver
-      ADVERTISES and then requires the entry points to resolve. We used to delete
-      these guards process-wide, which made a version group - and an extension -
-      report "supported" merely because Mesa's dispatch table resolves the symbol:
-      on this GL 4.2 device `OpenGL46` became true and Flywheel's
-      `if (CAPABILITIES.OpenGL46) return true;` shortcut took the compute path
-      (measured 2026-09-16). Now the guards are honoured wherever the advertised
-      version can be trusted, and skipped ONLY on the gl4es compat path, whose
-      context advertises a low version while the higher entry points still resolve.)
+  2. keep every advertised-vs-resolvable guard, but make it RUNTIME-conditional, and
+     split the two kinds (their sources of truth differ on this stack):
+         version group:  if (!ext.contains("OpenGL42")) { ... }
+           -> if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 4, 2)) { ... }
+         extension:      if (!ext.contains("GL_ARB_x")) { ... }
+           -> if (RendererInit.strictCapabilities() && !ext.contains("GL_ARB_x")) { ... }
+     Why the split: Mesa (Zink) never advertises the "OpenGLxy" pseudo-extension names, so
+     the advertised-name test alone makes EVERY version group false (measured 2026-09-16:
+     under-report - this context really is 4.2), while deleting the guards made them all true
+     (over-report - 4.2 claimed as 4.6, which is what sent Flywheel down the compute path and
+     into the driver bug). allowsVersionGroup() accepts the advertised name OR the parsed
+     GL_VERSION, so the reported version groups match the context. Extensions keep the
+     upstream contract (advertised name + resolvable entry points), which holds here because
+     Mesa does advertise them. Both are skipped on the gl4es compat path (strict = OFF),
+     whose context advertises a low version while the higher entry points still resolve.
   3. force every capability probe to evaluate (no short-circuit):
          `||` -> `|`   and   `&&` -> `&`
   4. neutralise the pure-logging call `reportMissing("GL","...")` -> `false`.
@@ -81,19 +84,33 @@ def transform(src: str) -> str:
     src = src.replace('||', '|').replace('&&', '&')
     src = re.sub(r'reportMissing\("[^"]*"\s*,\s*"[^"]*"\)', 'false', src)
 
-    # (2) keep the advertised-vs-resolvable guards, but decide at runtime. Upstream gates
-    #     every version group / extension on what the driver advertises; deleting the
-    #     guards process-wide made OpenGL46 (and ARB flags) true on a GL 4.2 context.
+    # (2) keep the advertised-vs-resolvable guards, but decide at runtime - and SPLIT them,
+    #     because the two kinds have different sources of truth on this stack:
+    #       * version groups (`OpenGL42`): Mesa never advertises those pseudo-extension names,
+    #         so `ext.contains(...)` alone makes every version group false (measured 2026-09-16:
+    #         under-report - the context really is 4.2), while deleting the guard made them all
+    #         true (over-report - 4.2 claimed as 4.6, which sent Flywheel down the compute path).
+    #         RendererInit.allowsVersionGroup() therefore accepts the advertised name OR the
+    #         parsed GL_VERSION.
+    #       * extensions (`GL_ARB_*`): "advertised name + resolvable entry points" is the
+    #         upstream contract and it holds here, because Mesa does advertise them.
     expected = len(re.findall(r'if \(!ext\.contains\("', src))
-    src, guarded = re.subn(
-        r'if \(!ext\.contains\("([^"]+)"\)\) \{',
-        r'if (RendererInit.strictCapabilities() && !ext.contains("\1")) {',
-        src,
-    )
+    version_guards = len(re.findall(r'if \(!ext\.contains\("OpenGL\d\d"\)\) \{', src))
+
+    def _conditional(match) -> str:
+        name = match.group(1)
+        groups = re.fullmatch(r'OpenGL(\d)(\d)', name)
+        if groups:
+            return ('if (RendererInit.strictCapabilities() && '
+                    '!RendererInit.allowsVersionGroup(ext, %s, %s)) {'
+                    % (groups.group(1), groups.group(2)))
+        return 'if (RendererInit.strictCapabilities() && !ext.contains("%s")) {' % name
+
+    src, guarded = re.subn(r'if \(!ext\.contains\("([^"]+)"\)\) \{', _conditional, src)
     assert guarded == expected and guarded > 0, (
         'guard rewrite mismatch: expected %d, rewrote %d' % (expected, guarded))
-    print('  edit 2: %d advertised-vs-resolvable guards made runtime-conditional'
-          % guarded, file=sys.stderr)
+    print('  edit 2: %d guards made runtime-conditional (%d version groups take GL_VERSION)'
+          % (guarded, version_guards), file=sys.stderr)
 
     # (1) hook our renderer init into the capabilities constructor, and (5) filter the
     #     extension set the probes are handed. Both go in through the same anchor; (5) is

@@ -6520,7 +6520,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL11(FunctionProvider provider, PointerBuffer caps, Set<String> ext, boolean fc) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL11")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 1, 1)) {
             return false;
         }
 
@@ -6584,7 +6584,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL12(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL12")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 1, 2)) {
             return false;
         }
 
@@ -6596,7 +6596,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL13(FunctionProvider provider, PointerBuffer caps, Set<String> ext, boolean fc) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL13")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 1, 3)) {
             return false;
         }
 
@@ -6620,7 +6620,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL14(FunctionProvider provider, PointerBuffer caps, Set<String> ext, boolean fc) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL14")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 1, 4)) {
             return false;
         }
 
@@ -6643,7 +6643,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL15(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL15")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 1, 5)) {
             return false;
         }
 
@@ -6657,7 +6657,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL20(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL20")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 2, 0)) {
             return false;
         }
 
@@ -6685,7 +6685,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL21(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL21")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 2, 1)) {
             return false;
         }
 
@@ -6697,7 +6697,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL30(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL30")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 3, 0)) {
             return false;
         }
 
@@ -6724,7 +6724,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL31(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL31")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 3, 1)) {
             return false;
         }
 
@@ -6738,7 +6738,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL32(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL32")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 3, 2)) {
             return false;
         }
 
@@ -6753,7 +6753,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL33(FunctionProvider provider, PointerBuffer caps, Set<String> ext, boolean fc) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL33")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 3, 3)) {
             return false;
         }
 
@@ -6778,7 +6778,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL40(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL40")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 4, 0)) {
             return false;
         }
 
@@ -6798,7 +6798,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL41(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL41")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 4, 1)) {
             return false;
         }
 
@@ -6828,7 +6828,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL42(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL42")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 4, 2)) {
             return false;
         }
 
@@ -6842,7 +6842,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL43(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL43")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 4, 3)) {
             return false;
         }
 
@@ -6862,7 +6862,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL44(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL44")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 4, 4)) {
             return false;
         }
 
@@ -6875,7 +6875,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL45(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL45")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 4, 5)) {
             return false;
         }
 
@@ -6924,7 +6924,7 @@ public final class GLCapabilities {
     }
 
     private static boolean check_GL46(FunctionProvider provider, PointerBuffer caps, Set<String> ext) {
-        if (RendererInit.strictCapabilities() && !ext.contains("OpenGL46")) {
+        if (RendererInit.strictCapabilities() && !RendererInit.allowsVersionGroup(ext, 4, 6)) {
             return false;
         }
 
