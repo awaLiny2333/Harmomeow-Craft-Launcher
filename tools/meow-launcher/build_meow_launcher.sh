@@ -1,6 +1,9 @@
 #!/bin/sh
 # Build the clean-room meow.launcher jar from source.
 #
+# Reproducibility: with javac 17.0.13 this script plus finalize_for_meowcraft.sh rebuilds the
+# shipped launcher.jar byte for byte (72426aca..., 21191 B) -- measured, so the JDK version is
+# part of the recipe (javac is invoked with --release 17).
 # Contents: `meow.launcher.*` (own implementation) + clean-room `com.mojang.text2speech`
 # narrator stub + vendored Apache-2.0 `android/util/*` (needed by our lwjgl.jar GLFW).
 # NO third-party/GPL code, no `net.kdt`, no native loadLibrary.
