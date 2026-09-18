@@ -53,13 +53,6 @@ typedef unsigned int jsize;
 #define JNI_TRUE 1
 #endif
 
-// F29 Vulkan sustained-present probe (implemented in meowcraftbridge/meowvkprobe.c,
-// compiled into this same target so entry can reach it through the HSP NAPI).
-// Both run the bare system ICD (/system/lib64/libvulkan.so); the wrapper only
-// starts a worker thread and copies the result string back to ArkTS.
-extern "C" int meowVkProbeStart(int64_t surfaceId, int frames);
-extern "C" int meowVkProbeResultCopy(char* out, int cap);
-
 namespace {
 
 /* Defined further down; the launch path installs the crash dumper through it. Declared here because
@@ -1189,39 +1182,6 @@ napi_value TakeFullscreenRequest(napi_env env, napi_callback_info info) {
     return obj;
 }
 
-// F29: start the bare-ICD Vulkan sustained-present probe on a worker thread.
-// Returns false when a probe is already running (the caller polls the result).
-napi_value VulkanPresentProbeStart(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2] = {nullptr, nullptr};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) {
-        return MkBool(env, false);
-    }
-    int64_t sid = 0;
-    int32_t frames = 120;
-    napi_get_value_int64(env, args[0], &sid);
-    if (argc >= 2) {
-        napi_get_value_int32(env, args[1], &frames);
-    }
-    int rc = meowVkProbeStart(sid, frames);
-    return MkBool(env, rc == 0);
-}
-
-// F29: copy the current probe report. Empty while the probe is still running;
-// the caller stops polling once a non-empty string arrives.
-napi_value VulkanPresentProbeResult(napi_env env, napi_callback_info info) {
-    (void)info;
-    char buf[16384];
-    int n = meowVkProbeResultCopy(buf, (int)sizeof(buf));
-    if (n < 0) {
-        n = 0;
-    }
-    napi_value s = nullptr;
-    napi_create_string_utf8(env, buf, (size_t)n, &s);
-    return s;
-}
-
 napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {        {"launchJvm", nullptr, LaunchJvm, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setGameSurface", nullptr, SetGameSurface, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -1246,10 +1206,6 @@ napi_value Init(napi_env env, napi_value exports) {
         {"meowGetInputRate", nullptr, MeowGetInputRate, nullptr, nullptr, nullptr, napi_default,
          nullptr},
         {"takeFullscreenRequest", nullptr, TakeFullscreenRequest, nullptr, nullptr, nullptr,
-         napi_default, nullptr},
-        {"vulkanPresentProbeStart", nullptr, VulkanPresentProbeStart, nullptr, nullptr, nullptr,
-         napi_default, nullptr},
-        {"vulkanPresentProbeResult", nullptr, VulkanPresentProbeResult, nullptr, nullptr, nullptr,
          napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);

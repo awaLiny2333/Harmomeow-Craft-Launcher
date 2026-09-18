@@ -7,7 +7,6 @@ project(meowcraftlib)
 add_library(meowjrebridge SHARED
     meowjrebridge/meowjrebridge.cpp
     meowcraftbridge/meowqos.c
-    meowcraftbridge/meowvkprobe.c
 )
 
 target_link_libraries(meowjrebridge PUBLIC

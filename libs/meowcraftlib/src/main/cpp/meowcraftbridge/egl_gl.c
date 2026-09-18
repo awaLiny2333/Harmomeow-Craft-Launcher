@@ -64,8 +64,9 @@ static int g_hintPair[2];        /* last meowSetWindowHint (hint, value) */
 static int g_appliedWidth;
 static int g_appliedHeight;
 
-/* Defined below; called from the render-thread window paths so a file override
- * written after surface creation still takes effect once HOME (filesDir) exists. */
+/* Defined below. VULKAN-ONLY (F78): the EGL/GL window path must keep the window
+ * buffer usage exactly as base did, so this is applied only from the Vulkan WSI
+ * surface path (glfwCreateWindowSurface), never from the GL path. */
 static void meow_apply_window_usage(OHNativeWindow *win);
 
 /* ------------------------------------------------------------------------- */
@@ -362,9 +363,10 @@ static EGLSurface egl_build_surface(void) {
             OH_NativeWindow_NativeWindowHandleOpt((OHNativeWindow *)win, SET_BUFFER_GEOMETRY,
                                                   meow_environ->width, meow_environ->height);
         }
-        /* Render thread, after JVM launch: HOME (filesDir) is set by now, so a
-         * meow-win-usage.txt written after surface creation still applies. */
-        meow_apply_window_usage((OHNativeWindow *)win);
+        /* F78: no window-usage mutation on the GL path -- the EGL window surface
+         * must present with the platform's original buffer usage, exactly as
+         * before the Vulkan work (A23 F-M1). The Vulkan WSI path applies its own
+         * CPU_READ clear in glfwCreateWindowSurface. */
         EGLSurface surface = eglCreateWindowSurface(
             g_egl.display, g_egl.config, (EGLNativeWindowType)(uintptr_t)win, NULL);
         if (surface != EGL_NO_SURFACE) {
@@ -882,11 +884,17 @@ void meowSwapInterval(int interval) {
  * constant, so `$HOME/<name>` is used verbatim rather than inventing a path. If
  * HOME is unset/empty the file is simply not read and the default applies.
  *
- * TIMING: meowSetSurfaceId runs before the JVM starts (GameWindow.injectAndLaunch
- * injects the surface first, launches the JVM second), so HOME may not exist on
- * the first call. The render-thread window paths (egl_build_surface for GL,
- * glfwCreateWindowSurface for Vulkan) call this again once HOME is available;
- * the state below re-resolves if the files dir was not seen the first time.
+ * SCOPE (F78): this is VULKAN-ONLY. Clearing CPU_READ was introduced together
+ * with the Vulkan work and applied to the shared window-acquisition path, which
+ * is a real GL behaviour change (A23 F-M1) and made the GL picture flicker
+ * intermittently (the GL driver may legitimately expect CPU access to the window
+ * buffer). glfwCreateWindowSurface is therefore the sole caller; the EGL/GL path
+ * mutates nothing and matches base byte-for-byte.
+ *
+ * TIMING: glfwCreateWindowSurface runs on the render thread after JVM launch,
+ * after GameWindow.injectAndLaunch injected the surface, so HOME (filesDir) is
+ * already set and a <filesDir>/meow-win-usage.txt override applies before the
+ * VkSurface and its buffers exist. If HOME is unset/empty the default applies.
  *
  * GET -> compute -> SET -> GET-readback are logged with the value's source
  * (default|file) for external self-proof.
@@ -1004,8 +1012,8 @@ static void meow_apply_window_usage(OHNativeWindow *win) {
 
 /*
  * Read-only window buffer FORMAT probe: called exactly once per window, at the
- * first OHNativeWindow acquisition (meowSetSurfaceId), right after
- * meow_apply_window_usage(). It logs the window format so it can be compared
+ * first OHNativeWindow acquisition (meowSetSurfaceId). It logs the window format
+ * so it can be compared
  * with the swapchain imageFormat (logged as 37, i.e. VK_FORMAT_R8G8B8A8_UNORM)
  * in the field. It performs NO mutation.
  *
@@ -1072,11 +1080,10 @@ int meowSetSurfaceId(int64_t sid, int width, int height) {
     env->window = (void *)win;
     env->surfaceId = sid;
     OH_NativeWindow_NativeWindowHandleOpt(win, SET_SOURCE_TYPE, OH_SURFACE_SOURCE_GAME);
-    /* First window handle acquired (OnSurfaceCreated path): resolve the window buffer
-     * usage -- default clears CPU_READ only; a <filesDir>/meow-win-usage.txt override
-     * wins if readable. Never env-gated (render env applies ~25 ms later, see F25); the
-     * render-thread window paths retry once HOME is set. */
-    meow_apply_window_usage(win);
+    /* F78: window buffer usage is deliberately NOT touched here. This is the shared
+     * GL/Vulkan window-acquisition point; the Vulkan WSI path applies its CPU_READ
+     * clear later in glfwCreateWindowSurface, leaving the GL path on the pre-Vulkan
+     * (base) behaviour. See meow_apply_window_usage(). */
     /* Read-only GET_FORMAT probe plus env-gated FORMAT/USAGE/SOURCE_TYPE diagnostics. */
     meow_window_format_usage_probe(win);
     if (width > 0 && height > 0) {

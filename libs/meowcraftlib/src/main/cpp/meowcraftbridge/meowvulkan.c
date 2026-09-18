@@ -22,41 +22,43 @@
 // a lie -- maxVertexAttribDivisor is 1 -- but vanilla never uses a divisor other than 1 (section
 // 5.4), so it is safe for our target while being wrong for mods. See section 7.6.
 //
-// MASTER SWITCH: MEOW_VK_SHIM. F75 (shim build 2026-09-18.55 env-cleanup): the shim now HOOKS BY
-// DEFAULT WHEN LOADED (g_hooks defaults to 1) -- the launcher selects it through the Vulkan library
-// NAME (`-Dorg.lwjgl.vulkan.libname`), which is the parameter that carries "use Vulkan". Set
-// MEOW_VK_SHIM=0 (or an empty value) for PURE PASSTHROUGH -- i.e. exactly the system loader's
-// behaviour -- as an escape hatch. See notes section 7.5 for the rollback ladder.
+// MASTER SWITCH: MEOW_VK_SHIM. F75 (shim build 2026-09-18.55 env-cleanup): the shim HOOKS BY DEFAULT
+// WHEN LOADED -- being loaded is the parameter (the launcher selects it through the Vulkan library
+// NAME `-Dorg.lwjgl.vulkan.libname`, which carries "use Vulkan"). MEOW_VK_SHIM=0 (or empty) is PURE
+// PASSTHROUGH -- exactly the system loader's behaviour -- an escape hatch, not a master on-switch.
+// See notes section 7.5 for the rollback ladder.
 //
-// ============ ENV SWITCH TIERS (F75, shim build 2026-09-18.55 env-cleanup) ============
-// Every env var this file reads, grouped by what the user is expected to do with it. This is the
-// authoritative list; keep it in sync when a switch is added or retired. (meowvkprobe.c is a
-// long-lived diagnostic instrument; its MEOW_VK_PROBE_* names are listed there.)
+// ============ ENV SWITCH TIERS (F80, shim build 2026-09-18.58 env-grading) ============
+// ONE rule, by DEFAULT VALUE: TIER A = functionally required / default ON (the user sets none of
+// these); TIER B = diagnostic / default OFF (opened by hand only to investigate). Authoritative list;
+// keep it in sync when a switch is added or retired. The old temporary probes (16 MEOW_VK_PROBE_* and
+// meowvkprobe.c) were deleted along with their tier.
 //
-// --- TIER A: FUNCTIONALLY REQUIRED -- baked-in defaults, the user sets NONE of these -------------
-//   MEOW_VK_SHIM=0 (or empty)      OPTIONAL escape hatch: pure passthrough. Unset/1 = hooks on.
-//   F66 (no env)                   merge submit entries instead of splitting them -- compiled in.
-//   MEOW_VK_TIMELINE_AS_FENCE=1    translate MC's timeline-semaphore waits to fences (F69).
-//   MEOW_VK_PUSH_AS_SET=1          emulate vkCmdPushDescriptorSet with a normal descriptor set (F72).
-//   MEOW_VK_FIX_SURFACE_TRANSFORM  force preTransform=IDENTITY (F73). F74: unset = identity (default);
-//                                  "requested"/"0" = keep caller value (A/B escape); "identity" = same.
+// --- TIER A: FUNCTIONALLY REQUIRED -- default ON, the user sets NONE of these --------------------
+//   MEOW_VK_SHIM=0 (or empty)          escape hatch: pure passthrough. Unset/1 = hooks on.
+//   F66 (no env)                       merge submit entries; this ICD accepts exactly one entry.
+//   MEOW_VK_SYNC2_TO_V1                sync2 -> v1 (follows hooks); both sync2 entries used together
+//                                      kill the first submit.
+//   MEOW_VK_SYNC2_TO_V1_MERGE          merge v1 entries (follows hooks); one-entry ICD (F66).
+//   MEOW_VK_WAIT_VIA_QUEUE_IDLE        real vkQueueWaitIdle (default ON); vkWaitSemaphores times out.
+//   MEOW_VK_TIMELINE_AS_FENCE          timeline -> real fence (F69); the counter never advances.
+//   MEOW_VK_PUSH_AS_SET                emulate push with a normal set (F72); MC's only descriptor path.
+//   MEOW_VK_FIX_SURFACE_TRANSFORM      force IDENTITY (F73/F74, default); WSI rotates 90 here.
+//                                      "requested"/"0" = keep caller value.
+//   MEOW_VK_STRIP_UNSUPPORTED_FEATURES zero unsupported bits (F36, default); else createDevice rc=-8.
 //
 // --- TIER B: DIAGNOSTIC -- default OFF, kept so a defect can be re-investigated -----------------
-//   MEOW_VK_VERBOSE, MEOW_VK_WD,
-//   MEOW_VK_DROP_DRAW, MEOW_VK_DROP_PUSH_DESCRIPTOR,
-//   MEOW_VK_FIX_EXTENT, MEOW_VK_FIX_COPY_BUFFER_TO_IMAGE, MEOW_VK_NO_DIVISOR_FEATURE,
-//   MEOW_VK_STRIP_UNSUPPORTED_FEATURES, MEOW_VK_SYNC2_TO_V1, MEOW_VK_SYNC2_TO_V1_MERGE,
-//   MEOW_VK_WAIT_VIA_QUEUE_IDLE
-//
-// --- TIER C: LONG-LIVED DIAGNOSTIC -- on demand only; kept for regression/perf work ------------
-//   meowvkprobe.c (the whole file) and its MEOW_VK_PROBE_* switches: DEVFEAT, LIB, MC_BLIT, MC_DIV,
-//   MC_DR, MC_PUSH, MC_TS, MC_UPLOAD, NOSPLIT, PATTERN, PIPELINE, SHAPE, SUBMIT, SYNC, TAIL,
-//   TEXTURED -- plus the F29 probe host (devtools/VulkanProbeHost.ets, mounted only when the
-//   launcher's render-env text contains MEOW_VK_PROBE; it owns the surfaceId hand-off + result readout).
+//   MEOW_VK_VERBOSE                    per-call / detail logs (high volume, perturbs timing).
+//   MEOW_VK_WD=<seconds>               hang watchdog: SIGQUIT for a thread dump when Vulkan goes quiet.
+//   MEOW_VK_FIX_EXTENT=current         force imageExtent = caps.currentExtent (not needed here yet).
+//   MEOW_VK_FIX_COPY_BUFFER_TO_IMAGE=1 F53 CopyBufferToImage rewrite (default OFF since F61).
+//   MEOW_VK_NO_DIVISOR_FEATURE=1       skip the divisor feature lie (would make MC refuse Vulkan).
+//   MEOW_VK_DROP_DRAW=1                drop all draws, to bisect a failing frame.
+//   MEOW_VK_DROP_PUSH_DESCRIPTOR=1     drop all push descriptors, to bisect a failing frame.
 // ===============================================================================
 //
 // STATUS: production shim. The four corrections above are the shipped Vulkan path -- the launcher
-// selects this library by name when the Vulkan backend is chosen; the env tiers below are the
+// selects this library by name when the Vulkan backend is chosen; the env tiers above are the
 // supported switches. The M1 milestone (get MC's Vulkan backend to start so its real calls could be
 // observed) is complete. See notes/20-design/render/Vulkan后端-绕过可行性-调研与方案.md section 11.
 #define _GNU_SOURCE
@@ -1544,11 +1546,67 @@ static MeowF69PFN_waitForFences meow_f69_waitForFences(void) {
 static MeowF69PFN_getFenceStatus meow_f69_getFenceStatus(void) {
     return (MeowF69PFN_getFenceStatus)(g_gdpa ? g_gdpa(g_dev_seen, "vkGetFenceStatus") : NULL);
 }
-static void meow_f69_destroyFence(uint64_t fence) {
+static void meow_f69_destroyFence_raw(uint64_t fence) {
     if (fence == 0) return;
     MeowF69PFN_destroyFence df =
         (MeowF69PFN_destroyFence)(g_gdpa ? g_gdpa(g_dev_seen, "vkDestroyFence") : NULL);
     if (df != NULL) df(g_dev_seen, fence, NULL);
+}
+
+// F78 (review A24 F-1): an F69-created fence is also BORROWED by F72 pools
+// (meow_f72_bind_submit) as the completion fence of the submit it covers, but F72 can
+// outlive the F69 map entry (64-entry eviction, or vkDestroySemaphore while pools are
+// still pending). Destroying the fence from F69 alone would leave F72's pools holding a
+// dangling handle that meow_f72_pool_free() still passes to vkGetFenceStatus. Each borrow
+// takes a reference; meow_f69_destroyFence() relinquishes F69's ownership but DEFERS the
+// real destroy while references remain, and the last meow_f69_borrow_unref() reaps it.
+// Bounded by the F72 pool cap (MEOW_F72_NPOOLS <= 64 pending pools) -> no env, no switch.
+#define MEOW_F69_MAX_BORROWS 64
+typedef struct { uint64_t fence; int refs; int released; } MeowF69Borrow;
+static MeowF69Borrow g_f69_borrows[MEOW_F69_MAX_BORROWS];
+
+static MeowF69Borrow* meow_f69_borrow_find(uint64_t fence) {
+    for (int i = 0; i < MEOW_F69_MAX_BORROWS; i++) {
+        if (g_f69_borrows[i].fence == fence) return &g_f69_borrows[i];
+    }
+    return NULL;
+}
+
+static void meow_f69_borrow_ref(uint64_t fence) {
+    if (fence == 0) return;
+    MeowF69Borrow* b = meow_f69_borrow_find(fence);
+    if (b != NULL) { ++b->refs; return; }
+    for (int i = 0; i < MEOW_F69_MAX_BORROWS; i++) {
+        if (g_f69_borrows[i].fence == 0) {
+            g_f69_borrows[i].fence = fence;
+            g_f69_borrows[i].refs = 1;
+            g_f69_borrows[i].released = 0;
+            return;
+        }
+    }
+    MEOWLOGW("meowvulkan: F78 borrow table full (%{public}d); fence=0x%{public}llx untracked",
+             MEOW_F69_MAX_BORROWS, (unsigned long long)fence);
+}
+
+static void meow_f69_borrow_unref(uint64_t fence) {
+    if (fence == 0) return;
+    MeowF69Borrow* b = meow_f69_borrow_find(fence);
+    if (b == NULL) return;
+    if (--b->refs > 0) return;
+    int released = b->released;
+    b->fence = 0;
+    b->refs = 0;
+    b->released = 0;
+    if (released) meow_f69_destroyFence_raw(fence);
+}
+
+// F78: F69 gives up its ownership here. If F72 still borrows the fence, the destroy is
+// deferred to the last meow_f69_borrow_unref(); otherwise it happens now (unchanged path).
+static void meow_f69_destroyFence(uint64_t fence) {
+    if (fence == 0) return;
+    MeowF69Borrow* b = meow_f69_borrow_find(fence);
+    if (b != NULL) { b->released = 1; return; }
+    meow_f69_destroyFence_raw(fence);
 }
 
 static int meow_f69_find_sem(uint64_t sem) {
@@ -1968,6 +2026,10 @@ static int meow_f72_reset_pool(int i) {
             meow_f69_destroyFence((uint64_t)g_f72_owned_fence);
             g_f72_owned_fence = VK_NULL_HANDLE;
         }
+    } else if (p->fence != 0) {
+        // F78: this pool borrowed the F69/caller fence -- release that reference. The fence is
+        // reaped here only if F69 has already relinquished it (see meow_f69_borrow_unref).
+        meow_f69_borrow_unref((uint64_t)p->fence);
     }
     p->fence = 0;
     p->ownsFence = 0;
@@ -2057,6 +2119,7 @@ static void meow_f72_bind_submit(VkFence submitFence, int ownsFence, int ok) {
         g_f72_pools[i].ownsFence = ownsFence;
         g_f72_pools[i].pending = 1;
         if (ownsFence && submitFence != 0) ++g_f72_owned_refs;
+        else if (submitFence != 0) meow_f69_borrow_ref((uint64_t)submitFence);   // F78
     }
     g_f72_active = -1;
 }
@@ -2161,6 +2224,11 @@ static void meow_f72_shutdown(void) {
                 (void (*)(void*, void*, const void*))meow_f72_real("vkDestroyDescriptorPool");
             if (dp != NULL) dp(g_dev_seen, g_f72_pools[i].pool, NULL);
             g_f72_pools[i].pool = VK_NULL_HANDLE;
+        }
+        // F78: drop any borrow on an F69/caller fence before clearing the slot. meow_f69_forget_all()
+        // has already run, so a borrowed fence whose F69 entry is gone is reaped here.
+        if (g_f72_pools[i].fence != 0 && !g_f72_pools[i].ownsFence) {
+            meow_f69_borrow_unref((uint64_t)g_f72_pools[i].fence);
         }
         g_f72_pools[i].fence = 0;
         g_f72_pools[i].ownsFence = 0;
@@ -2817,11 +2885,15 @@ static int log_DeviceWaitIdle(void* dev) {
     return rc;
 }
 
-// Entry-only probes for the init tail. Rationale: the crash sits right after the first VMA block, and
-// the calls we already hook (bind/map/queue submit) never appear -- so the dying call is a LATER-INIT
-// operation that we simply could not see. The last entry line printed before death names it. Entry
-// logging is enough: the next entry implies the previous call returned.
-static PFN_vkVoidFunctionLocal probe_resolve(const char* name) {
+// Entry-only forwarding for the init tail. Rationale: the crash sits right after the first VMA block,
+// and the calls we already hook (bind/map/queue submit) never appear -- so the dying call is a
+// LATER-INIT operation that we simply could not see. The last entry line printed before death names
+// it. Entry logging is enough: the next entry implies the previous call returned.
+//
+// NAMING NOTE: meow_resolve_device_fn() and MEOW_FORWARD_3OUT (below) are this shim's OWN generic
+// "resolve a device-level function / forward a 3-out call" helpers used by 10+ wrappers. They were
+// once named probe_*, but they are NOT the (now deleted) F29 diagnostic probe -- never delete them.
+static PFN_vkVoidFunctionLocal meow_resolve_device_fn(const char* name) {
     PFN_vkVoidFunctionLocal p = g_gdpa ? g_gdpa(g_dev_seen, name) : NULL;
     if (p == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve %{public}s", name);
@@ -2831,25 +2903,25 @@ static PFN_vkVoidFunctionLocal probe_resolve(const char* name) {
     return p;
 }
 
-// NOTE: the local typedef is prefixed (MeowProbePFN_) so it cannot collide with the official
+// NOTE: the local typedef is prefixed (MeowForwardPFN_) so it cannot collide with the official
 // PFN_vkCreateXXX typedefs that <vulkan/vulkan.h> now provides.
-#define PROBE_3OUT(NAME, A, B, C, D)                                            \
-    typedef int (*MeowProbePFN_##NAME)(A, B, C, D);                             \
-    static int log_##NAME(A a1, B a2, C a3, D a4) {                             \
-        wd_note("" #NAME "");                                                   \
-        MeowProbePFN_##NAME real = (MeowProbePFN_##NAME)probe_resolve("" #NAME ""); \
-        if (real == NULL) return -3;                                            \
-        return real(a1, a2, a3, a4);                                            \
+#define MEOW_FORWARD_3OUT(NAME, A, B, C, D) \
+    typedef int (*MeowForwardPFN_##NAME)(A, B, C, D); \
+    static int log_##NAME(A a1, B a2, C a3, D a4) { \
+        wd_note("" #NAME ""); \
+        MeowForwardPFN_##NAME real = (MeowForwardPFN_##NAME)meow_resolve_device_fn("" #NAME ""); \
+        if (real == NULL) return -3; \
+        return real(a1, a2, a3, a4); \
     }
 
-// F72 (build .49): vkCreatePipelineLayout is hand-written (not PROBE_3OUT) so the
+// F72 (build .49): vkCreatePipelineLayout is hand-written (not MEOW_FORWARD_3OUT) so the
 // (pipelineLayout, set) -> VkDescriptorSetLayout map can be captured for the push-as-set emulation.
-// The entry probe + forward are identical to the macro; the capture call is a no-op when F72 is off.
+// The entry log + forward are identical to the macro; the capture call is a no-op when F72 is off.
 typedef int (*MeowF72PFN_createPipelineLayout)(void*, const void*, const void*, void**);
 static int log_vkCreatePipelineLayout(void* dev, const void* ci, const void* alloc, void** out) {
     wd_note("vkCreatePipelineLayout");
     MeowF72PFN_createPipelineLayout real =
-        (MeowF72PFN_createPipelineLayout)probe_resolve("vkCreatePipelineLayout");
+        (MeowF72PFN_createPipelineLayout)meow_resolve_device_fn("vkCreatePipelineLayout");
     if (real == NULL) return -3;
     int rc = real(dev, ci, alloc, out);
     if (rc == 0 && out != NULL && *out != NULL) meow_f72_capture_layout(ci, *out);
@@ -2862,7 +2934,7 @@ typedef int (*MeowF72PFN_createDescriptorSetLayout)(void*, const void*, const vo
 static int log_vkCreateDescriptorSetLayout(void* dev, const void* ci, const void* alloc, void** out) {
     wd_note("vkCreateDescriptorSetLayout");
     MeowF72PFN_createDescriptorSetLayout real =
-        (MeowF72PFN_createDescriptorSetLayout)probe_resolve("vkCreateDescriptorSetLayout");
+        (MeowF72PFN_createDescriptorSetLayout)meow_resolve_device_fn("vkCreateDescriptorSetLayout");
     if (real == NULL) return -3;
     int rc = real(dev, ci, alloc, out);
     if (rc == 0 && out != NULL && *out != NULL) meow_f72_capture_dsl(ci, *out);
@@ -2878,13 +2950,13 @@ static void log_vkDestroyDescriptorSetLayout(void* dev, void* dsl, const void* a
     if (meow_f72_on()) meow_f72_forget_dsl((uint64_t)(uintptr_t)dsl);
     real(dev, dsl, alloc);
 }
-PROBE_3OUT(vkCreateCommandPool, void*, const void*, const void*, void**)
-// F69: vkCreateSemaphore is hand-written (not PROBE_3OUT) so TIMELINE semaphores can be registered
-// for the timeline->fence translation. Same entry probe + forward as before when F69 is off.
+MEOW_FORWARD_3OUT(vkCreateCommandPool, void*, const void*, const void*, void**)
+// F69: vkCreateSemaphore is hand-written (not MEOW_FORWARD_3OUT) so TIMELINE semaphores can be registered
+// for the timeline->fence translation. Same entry + forward as before when F69 is off.
 typedef int (*PFN_createSemaphoreF69)(void*, const void*, const void*, void**);
 static int log_vkCreateSemaphore(void* dev, const void* ci, const void* alloc, void** out) {
     wd_note("vkCreateSemaphore");
-    PFN_createSemaphoreF69 real = (PFN_createSemaphoreF69)probe_resolve("vkCreateSemaphore");
+    PFN_createSemaphoreF69 real = (PFN_createSemaphoreF69)meow_resolve_device_fn("vkCreateSemaphore");
     if (real == NULL) return -3;
     int rc = real(dev, ci, alloc, out);
     if (rc == 0 && out != NULL && *out != NULL && meow_f69_on() && meow_f69_createinfo_is_timeline(ci)) {
@@ -2913,10 +2985,10 @@ static void log_DestroyDevice(void* dev, const void* alloc) {
     meow_f72_shutdown();   // F72: destroy the emulation pools (and any tracking fences we own)
     real(dev, alloc);
 }
-PROBE_3OUT(vkCreateFence, void*, const void*, const void*, void**)
-// NOTE: vkCreateSwapchainKHR is NOT probed here any more -- F9 (.12) replaces the entry-only
-// PROBE_3OUT with a real field-logging wrapper (log_vkCreateSwapchainKHR, defined in the F9 block
-// below). Same name, same dispatch site in vkGetDeviceProcAddr, unchanged forward.
+MEOW_FORWARD_3OUT(vkCreateFence, void*, const void*, const void*, void**)
+// NOTE: vkCreateSwapchainKHR is NOT forwarded here any more -- F9 (.12) replaces the entry-only
+// MEOW_FORWARD_3OUT with a real field-logging wrapper (log_vkCreateSwapchainKHR, defined in the F9
+// block below). Same name, same dispatch site in vkGetDeviceProcAddr, unchanged forward.
 
 typedef int (*PFN_createGraphicsPipelines)(void*, void*, uint32_t, const void*, const void*, void*);
 static int log_CreateGraphicsPipelines(void* dev, void* cache, uint32_t count, const void* cis,
@@ -2973,7 +3045,7 @@ static int log_CreateGraphicsPipelines(void* dev, void* cache, uint32_t count, c
         MEOWLOGI("meowvulkan: F71 divisor summary: pipelines=%{public}u withDivisorState=%{public}u maxDivisor=%{public}u",
                  pipesTotal, pipesWithDiv, maxDivSeen);
     }
-    PFN_createGraphicsPipelines real = (PFN_createGraphicsPipelines)probe_resolve("vkCreateGraphicsPipelines");
+    PFN_createGraphicsPipelines real = (PFN_createGraphicsPipelines)meow_resolve_device_fn("vkCreateGraphicsPipelines");
     if (real == NULL) return -3;
     return real(dev, cache, count, cis, alloc, pipes);
 }
@@ -2983,7 +3055,7 @@ typedef VkCommandBufferAllocateInfo VkCommandBufferAllocateInfoL;
 typedef int (*PFN_allocateCommandBuffers)(void*, const void*, void*);
 static int log_AllocateCommandBuffers(void* dev, const void* ai, void* cbs) {
     wd_note("vkAllocateCommandBuffers");
-    PFN_allocateCommandBuffers real = (PFN_allocateCommandBuffers)probe_resolve("vkAllocateCommandBuffers");
+    PFN_allocateCommandBuffers real = (PFN_allocateCommandBuffers)meow_resolve_device_fn("vkAllocateCommandBuffers");
     if (real == NULL) return -3;
     const VkCommandBufferAllocateInfoL* a = (const VkCommandBufferAllocateInfoL*)ai;
     uint32_t count = (a != NULL) ? a->commandBufferCount : 0u;
@@ -3012,14 +3084,14 @@ static int log_AllocateCommandBuffers(void* dev, const void* ai, void* cbs) {
 typedef void (*PFN_getDeviceQueue)(void*, uint32_t, uint32_t, void**);
 static void log_GetDeviceQueue(void* dev, uint32_t family, uint32_t index, void** queue) {
     wd_note("vkGetDeviceQueue");
-    PFN_getDeviceQueue real = (PFN_getDeviceQueue)probe_resolve("vkGetDeviceQueue");
+    PFN_getDeviceQueue real = (PFN_getDeviceQueue)meow_resolve_device_fn("vkGetDeviceQueue");
     if (real != NULL) real(dev, family, index, queue);
 }
 
 typedef int (*PFN_beginCommandBuffer)(void*, const void*);
 static int log_BeginCommandBuffer(void* cmd, const void* bi) {
     wd_note("vkBeginCommandBuffer");
-    PFN_beginCommandBuffer real = (PFN_beginCommandBuffer)probe_resolve("vkBeginCommandBuffer");
+    PFN_beginCommandBuffer real = (PFN_beginCommandBuffer)meow_resolve_device_fn("vkBeginCommandBuffer");
     if (real == NULL) return -3;
     // F15 (.14): command-buffer ownership tagging -- cmd IS the first parameter, printed verbatim.
     if (meow_vk_verbose())
@@ -3031,7 +3103,7 @@ static int log_BeginCommandBuffer(void* cmd, const void* bi) {
 typedef void (*PFN_cmdBeginRendering)(void*, const void*);
 static void log_CmdBeginRendering(void* cmd, const void* ri) {
     wd_note("vkCmdBeginRendering");
-    PFN_cmdBeginRendering real = (PFN_cmdBeginRendering)probe_resolve("vkCmdBeginRendering");
+    PFN_cmdBeginRendering real = (PFN_cmdBeginRendering)meow_resolve_device_fn("vkCmdBeginRendering");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdBeginRendering");
         return;
@@ -4867,7 +4939,7 @@ static void meow_crosscheck_swapchain(const VkSwapchainCIKHRL* c) {
 }
 
 // vkCreateSwapchainKHR -- header :9166. Device-level: resolved through g_gdpa exactly as the
-// PROBE_3OUT it replaces did, and forwarded with the identical 4-argument list.
+// MEOW_FORWARD_3OUT it replaces did, and forwarded with the identical 4-argument list.
 typedef int (*PFN_createSwapchainKHR)(void*, const void*, const void*, void**);
 static int log_vkCreateSwapchainKHR(void* dev, const void* ci, const void* alloc, void** out) {
     wd_note("vkCreateSwapchainKHR");
@@ -5109,8 +5181,8 @@ static void init_once(void) {
              g_real, g_hooks, sw ? sw : "(unset)");
     // Deployment self-certification: this campaign lost a run to "the fix was in the tree but not on
     // the device", so every shim build now names itself. Bump the tag whenever the shim changes.
-    // F74 env switch tiers (A/B/C) are documented in the header comment at the top of this file.
-    MEOWLOGI("meowvulkan: shim build 2026-09-18.55 env-cleanup");
+    // F74 env switch tiers (A/B) are documented in the header comment at the top of this file.
+    MEOWLOGI("meowvulkan: shim build 2026-09-18.58 env-grading");
     // Crash backtraces for the Vulkan path are handled by meowbt, which the bridge now installs from
     // meowSetSurfaceId (see egl_gl.c) -- reachable on this path, unlike the GL-only install sites.
     // Enable with the documented envs: MEOW_BT=1 (and optionally MEOW_BT_FILE=<path>).

@@ -13,7 +13,6 @@ import { AdvancedOptionsView } from '../components/AdvancedOptionsView';
 import { GameDirsView } from '../components/GameDirsView';
 import { GameVersionsView } from '../components/GameVersionsView';
 import { JavaEnvView } from '../components/JavaEnvView';
-import { VulkanProbeHost } from '../devtools/VulkanProbeHost';
 import { AccountState, getAccountState } from '../common/state/AccountState';
 import { getLauncherState, LauncherState } from '../common/state/LauncherState';
 
@@ -50,14 +49,7 @@ struct Index {
   /** 媒体查询监听句柄（窄/宽断点）。 */
   private wideListener: mediaquery.MediaQueryListener | null = null;
 
-  /** 开发者诊断：render-env 命中 MEOW_VK_PROBE 时才挂载 VulkanProbeHost（正常用户 false）。 */
-  @Local vkProbeEnabled: boolean = false;
-
   aboutToAppear(): void {
-    // 开发者诊断：仅当 render-env 命中 MEOW_VK_PROBE 时挂载探针宿主（正常用户零行为/零渲染）。
-    const probeCtx = this.getUIContext().getHostContext() as common.UIAbilityContext;
-    this.vkProbeEnabled = new SettingsTools(probeCtx).vkProbeFrames() > 0;
-
     const query = `(min-width: ${LAYOUT_WIDE_MIN_W}vp)`;
     this.wideListener = this.getUIContext().getMediaQuery().matchMediaSync(query);
     this.wide = this.wideListener.matches;
@@ -195,11 +187,6 @@ struct Index {
       }
       .width('100%')
       .height('100%');
-
-      // 开发者诊断挂载：仅 render-env 命中 MEOW_VK_PROBE 时渲染 VulkanProbeHost（否则零行为/零渲染）。
-      if (this.vkProbeEnabled) {
-        VulkanProbeHost();
-      }
     }
     .width('100%')
     .height('100%');
