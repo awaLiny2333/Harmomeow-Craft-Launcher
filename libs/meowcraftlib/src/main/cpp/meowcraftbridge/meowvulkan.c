@@ -592,7 +592,7 @@ static int meow_f53_ensure_intermediate(MeowF53ImgEntry* e) {
                      "layers=%{public}u samples=%{public}u memType=%{public}d bytes=%{public}llu",
                      e->image, lin, ab, mem, e->format, e->width, e->height, e->depth, e->mipLevels,
                      e->arrayLayers, e->samples, mt, (unsigned long long)bytes);
-        } else if ((s_f53_inter_ready % 500ul) == 0ul) {
+        } else if ((s_f53_inter_ready % 20000ul) == 0ul) {
             MEOWLOGI("meowvulkan: F53 intermediate ready summary: total=%{public}lu format=%{public}u "
                      "extent=%{public}ux%{public}ux%{public}u memType=%{public}d bytes=%{public}llu",
                      s_f53_inter_ready, e->format, e->width, e->height, e->depth, mt,
@@ -782,7 +782,7 @@ static int meow_f53_redirect_copy(void* cmd, void* src, void* dst, uint32_t dstL
         MEOWLOGI("meowvulkan: F53 redirect vkCmdCopyBufferToImage dst=%{public}p regions=%{public}u "
                  "bufRegions=%{public}llu bpp=%{public}u lin=%{public}p alias=%{public}p ok=1",
                  dst, regionCount, (unsigned long long)n, bpp, e->linImage, e->aliasBuffer);
-    } else if ((g_meow_f53_redirects % 500ul) == 0ul) {
+    } else if ((g_meow_f53_redirects % 20000ul) == 0ul) {
         MEOWLOGI("meowvulkan: F53 redirect summary: total=%{public}lu dst=%{public}p regions=%{public}u "
                  "bufRegions=%{public}llu bpp=%{public}u",
                  g_meow_f53_redirects, dst, regionCount, (unsigned long long)n, bpp);
@@ -903,7 +903,7 @@ static void meow_log_drop(const char* what) {
     if (meow_vk_verbose() || total <= 4ul) {
         MEOWLOGW("meowvulkan: %{public}s DROPPED (causal test, not forwarded) -- #%{public}lu",
                  what, total);
-    } else if ((total % 4000ul) == 0ul) {
+    } else if ((total % 20000ul) == 0ul) {
         MEOWLOGW("meowvulkan: causal-test drops so far: %{public}lu (rate-limited; "
                  "MEOW_VK_VERBOSE=1 shows every call)", total);
     }
@@ -1642,7 +1642,7 @@ static void meow_f69_add_entry(uint64_t sem, uint64_t value, uint64_t fence) {
         s->count = MEOW_F69_MAX_ENTRIES - 1;
         meow_f69_destroyFence(victim);
         unsigned long n = ++g_f69_evicts;
-        if (n <= 8 || (n % 256) == 0)
+        if (n <= 8 || (n % 2000) == 0)
             MEOWLOGW("meowvulkan: F69 map full sem=0x%{public}llx; evicted oldest fence=0x%{public}llx (evict#%{public}lu)",
                      (unsigned long long)sem, (unsigned long long)victim, n);
     }
@@ -1773,7 +1773,7 @@ static void meow_f72_warn(const char* what, long a, long b) {
     if (meow_vk_verbose() || n <= 4ul) {
         MEOWLOGW("meowvulkan: F72b push forwarded(reason=%{public}s a=%{public}ld b=%{public}ld) -- #%{public}lu",
                  what, a, b, n);
-    } else if ((n % 4000ul) == 0ul) {
+    } else if ((n % 20000ul) == 0ul) {
         MEOWLOGW("meowvulkan: F72 push-as-set fallbacks so far: %{public}lu (rate-limited; "
                  "MEOW_VK_VERBOSE=1 shows every call)", n);
     }
@@ -1808,7 +1808,7 @@ static void meow_f72_capture_layout(const void* ci, void* layout) {
         memset(&g_f72_layouts[MEOW_F72_LAYOUTS - 1], 0, sizeof(MeowF72LayoutSlot));
         slot = MEOW_F72_LAYOUTS - 1;
         unsigned long e = ++g_f72_layout_evicts;
-        if (e <= 4ul || (e % 256ul) == 0ul)
+        if (e <= 4ul || (e % 2000ul) == 0ul)
             MEOWLOGW("meowvulkan: F72 pipeline-layout table full (%{public}d); evicted oldest (evict#%{public}lu)",
                      MEOW_F72_LAYOUTS, e);
     }
@@ -1867,7 +1867,7 @@ static MeowF72DslSlot* meow_f72_dsl_find(uint64_t key) {
 
 static void meow_f72_dsl_log(const MeowF72DslSlot* s, int slot) {
     unsigned long n = ++g_f72_dsl_logged;
-    if (meow_vk_verbose() || n <= 16ul || (n % 64ul) == 0ul)
+    if (meow_vk_verbose() || n <= 8ul || (n % 2000ul) == 0ul)
         MEOWLOGI("meowvulkan: F72b setLayout #%{public}lu flags=0x%{public}x pushBit=%{public}d bindings=%{public}u "
                  "slot=%{public}d mirror=%{public}s", n, s->flags, s->pushBit, s->bindings, slot,
                  (s->mirror != 0) ? (s->ownsMirror ? "created" : "identity") : "FAILED");
@@ -1894,7 +1894,7 @@ static void meow_f72_capture_dsl(const void* ci, void* orig) {
         memset(&g_f72_dsl[MEOW_F72_DSL_MAX - 1], 0, sizeof(MeowF72DslSlot));
         slot = MEOW_F72_DSL_MAX - 1;
         unsigned long e = ++g_f72_dsl_evicts;
-        if (e <= 4ul || (e % 256ul) == 0ul)
+        if (e <= 4ul || (e % 2000ul) == 0ul)
             MEOWLOGW("meowvulkan: F72b mirror table full (%{public}d); evicted oldest (evict#%{public}lu)",
                      MEOW_F72_DSL_MAX, e);
     }
@@ -2196,24 +2196,27 @@ static int meow_f72_emulate_push_inner(void* cmd, uint32_t bindPoint, void* layo
     return 1;
 }
 
-// Public entry: counts the outcome and emits the F72c rate-limited totals line.
+// Public entry: counts the outcome and emits the F72c totals line on meaningful change.
 static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, uint32_t set,
                                  uint32_t n, const void* writes) {
-    static unsigned long attempts = 0;
-    unsigned long att = ++attempts;
     int r = meow_f72_emulate_push_inner(cmd, bindPoint, layout, set, n, writes);
     if (r == 1) {
-        unsigned long e = ++g_f72_emulated;
-        if (e <= 4ul || (e % 2000ul) == 0ul)
-            MEOWLOGI("meowvulkan: F72b push emulated #%{public}lu set=%{public}u writes=%{public}u",
-                     e, set, n);
+        // F86: the per-push MEOWLOGI line is deleted; the counter is still incremented for the totals.
+        ++g_f72_emulated;
     } else {
         ++g_f72_forwarded;   // r == 0 (no writes) or -1 (failure): the original push is forwarded
     }
-    if ((att % 4000ul) == 0ul)
+    // F86: emit the totals line only when something a human must see changed: a new forward (emulation
+    // fell back to the real push) or a pool grow. Otherwise stay silent -- no periodic heartbeat at
+    // all. verbose still prints every call for debugging.
+    static unsigned long f86_last_fwd = 0ul, f86_last_grow = 0ul;
+    if (meow_vk_verbose() || g_f72_forwarded != f86_last_fwd || g_f72_grows != f86_last_grow) {
         MEOWLOGI("meowvulkan: F72b push totals: emulated=%{public}lu forwarded=%{public}lu pools=%{public}d "
                  "resets=%{public}lu grow=%{public}lu",
                  g_f72_emulated, g_f72_forwarded, g_f72_npools, g_f72_resets, g_f72_grows);
+        f86_last_fwd = g_f72_forwarded;
+        f86_last_grow = g_f72_grows;
+    }
     return (r == 1) ? 1 : 0;
 }
 
@@ -2275,10 +2278,13 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
         // return forwarded with NO "SYNC2->V1 translate ..." line, so "the translation did not
         // run" and "there was nothing to translate" were indistinguishable in the log.
         int rc0 = realSubmit(queue, 0, NULL, fence);
-        MEOWLOGI("meowvulkan: SYNC2->V1 translate vkQueueSubmit2 -> vkQueueSubmit #%{public}lu "
-                 "submits=0 waits=0 cmdBufs=0 signals=0 timelineChains=0 foldedMaskBits=0 diverged=0 "
-                 "rc=%{public}d fence=0x%{public}llx rcSeq=%{public}d",
-                 ++g_sync2v1_submits, rc0, (unsigned long long)fence, rc0);
+        unsigned long subN0 = ++g_sync2v1_submits;
+        if (meow_vk_verbose() || rc0 != 0) {
+            MEOWLOGI("meowvulkan: SYNC2->V1 translate vkQueueSubmit2 -> vkQueueSubmit #%{public}lu "
+                     "submits=0 waits=0 cmdBufs=0 signals=0 timelineChains=0 foldedMaskBits=0 diverged=0 "
+                     "rc=%{public}d fence=0x%{public}llx rcSeq=%{public}d",
+                     subN0, rc0, (unsigned long long)fence, rc0);
+        }
         return rc0;
     }
     const VkSubmitInfo2L* s = (const VkSubmitInfo2L*)submits;
@@ -2487,9 +2493,13 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
                                                          (unsigned long long)wf);
                                             continue;   /* satisfied on host; do not ask the GPU */
                                         }
-                                        MEOWLOGW("meowvulkan: F69 vkWaitForFences rc=%{public}d sem=0x%{public}llx "
-                                                 "value=%{public}llu -- leaving the wait to the GPU", wrc,
-                                                 (unsigned long long)ws, (unsigned long long)mwVals[k]);
+                                        // F85: a wait result is only news when it is a REAL error (rc < 0).
+                                        // VK_TIMEOUT(2)/VK_NOT_READY(1) are normal "not done yet" and are
+                                        // silent by default; verbose restores the line.
+                                        if (meow_vk_verbose() || wrc < 0)
+                                            MEOWLOGW("meowvulkan: F69 vkWaitForFences rc=%{public}d sem=0x%{public}llx "
+                                                     "value=%{public}llu -- leaving the wait to the GPU", wrc,
+                                                     (unsigned long long)ws, (unsigned long long)mwVals[k]);
                                     }
                                 }
                                 mwSems[dst] = mwSems[k];
@@ -2544,11 +2554,12 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
                                     }
                                     totalSignals = dst;
                                     f69Active = 1;
-                                    MEOWLOGI("meowvulkan: F69 timeline->fence queue=0x%{public}p fence=0x%{public}llx "
-                                             "sigN=%{public}u sigVal0=%{public}llu waitN=%{public}u why=%{public}s",
-                                             queue, (unsigned long long)f69FenceUsed, f69SigN,
-                                             (unsigned long long)((f69SigN > 0) ? f69Pairs[0].value : 0ULL),
-                                             f69WaitN, f69Why ? f69Why : "(unset)");
+                                    if (meow_vk_verbose())
+                                        MEOWLOGI("meowvulkan: F69 timeline->fence queue=0x%{public}p fence=0x%{public}llx "
+                                                 "sigN=%{public}u sigVal0=%{public}llu waitN=%{public}u why=%{public}s",
+                                                 queue, (unsigned long long)f69FenceUsed, f69SigN,
+                                                 (unsigned long long)((f69SigN > 0) ? f69Pairs[0].value : 0ULL),
+                                                 f69WaitN, f69Why ? f69Why : "(unset)");
                                 }
                             }
                         }
@@ -2633,25 +2644,30 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
         for (uint32_t i = 0; i < issued && off + 8 < sizeof(rcseq); i++) {
             off += (size_t)snprintf(rcseq + off, sizeof(rcseq) - off, "%s%d", (i ? "," : ""), rcSeq[i]);
         }
-        MEOWLOGI("meowvulkan: SYNC2->V1 translate vkQueueSubmit2 -> vkQueueSubmit #%{public}lu "
-                 "submitsIn=%{public}u submits=%{public}u waits=%{public}u cmdBufs=%{public}u signals=%{public}u "
-                 "timelineChains=%{public}u foldedMaskBits=%{public}d rc=%{public}d stoppedAt=%{public}u "
-                 "fence=0x%{public}llx rcSeq=%{public}s "
-                 "f69=%{public}d f69SigN=%{public}u f69WaitN=%{public}u f69OwnFence=%{public}d f69Fence=0x%{public}llx "
-                 "diverged=%{public}d divergedReason=%{public}s merged=%{public}d",
-                 ++g_sync2v1_submits, submitCount, issued, totalWaits, totalCmds, totalSignals,
-                 timelineChains, lostBits, rc, stoppedAt, (unsigned long long)fence, rcseq,
-                 f69Active, f69SigN, f69WaitN, f69OwnFence, (unsigned long long)f69FenceUsed,
-                 diverged, divergedReason, merged);
+        unsigned long subN = ++g_sync2v1_submits;
+        if (meow_vk_verbose() || rc != 0) {
+            MEOWLOGI("meowvulkan: SYNC2->V1 translate vkQueueSubmit2 -> vkQueueSubmit #%{public}lu "
+                     "submitsIn=%{public}u submits=%{public}u waits=%{public}u cmdBufs=%{public}u signals=%{public}u "
+                     "timelineChains=%{public}u foldedMaskBits=%{public}d rc=%{public}d stoppedAt=%{public}u "
+                     "fence=0x%{public}llx rcSeq=%{public}s "
+                     "f69=%{public}d f69SigN=%{public}u f69WaitN=%{public}u f69OwnFence=%{public}d f69Fence=0x%{public}llx "
+                     "diverged=%{public}d divergedReason=%{public}s merged=%{public}d",
+                     subN, submitCount, issued, totalWaits, totalCmds, totalSignals,
+                     timelineChains, lostBits, rc, stoppedAt, (unsigned long long)fence, rcseq,
+                     f69Active, f69SigN, f69WaitN, f69OwnFence, (unsigned long long)f69FenceUsed,
+                     diverged, divergedReason, merged);
+        }
         // F47/F48/F49: compact summary of the TRANSLATED PRODUCT (counts + masks only, never a
         // pointer dump). Counts are the per-batch totals across all entry-products; waitDstMask0
         // is the first translated wait stage. arrays=heap documents the storage lifetime.
-        MEOWLOGI("meowvulkan: translated submit: cbCount=%{public}u waitCount=%{public}u "
-                 "sigCount=%{public}u timelineInfo=%{public}d waitDstMask0=0x%{public}x "
-                 "waitPtr=%{public}s arrays=heap",
-                 totalCmds, totalWaits, totalSignals, timelineChains > 0 ? 1 : 0,
-                 waitDstMask0,
-                 (totalWaits > 0 && haveMask0) ? "valid" : "null");
+        if (meow_vk_verbose() || rc != 0) {
+            MEOWLOGI("meowvulkan: translated submit: cbCount=%{public}u waitCount=%{public}u "
+                     "sigCount=%{public}u timelineInfo=%{public}d waitDstMask0=0x%{public}x "
+                     "waitPtr=%{public}s arrays=heap",
+                     totalCmds, totalWaits, totalSignals, timelineChains > 0 ? 1 : 0,
+                     waitDstMask0,
+                     (totalWaits > 0 && haveMask0) ? "valid" : "null");
+        }
     } else {
         MEOWLOGE("meowvulkan: SYNC2->V1: translation aborted (counts/alloc); vkQueueSubmit2 NOT forwarded");
     }
@@ -2662,6 +2678,39 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
 
 // Defined after the v1 VkImageMemoryBarrier mirror (it reuses VkImgBarrierL).
 static int meow_translate_cmd_pipeline_barrier2(void* cmd, const void* di);
+
+// F84 (shim build 2026-09-18.62 quiet-frames) / F85 (shim build 2026-09-18.63 quiet-all): the submit /
+// wait proof lines below fire on EVERY frame (every submit / every wait), which floods the device log
+// and perturbs timing. They are DEFAULT SILENT: MEOW_VK_VERBOSE=1 prints them individually, and a real
+// failure (rc < 0) is ALWAYS printed regardless of verbose (the debugging lifeline). On top of that,
+// one slow heartbeat every 20000 calls (F85: was 600) is emitted regardless of verbose, so a quiet run
+// still shows liveness, the rough frame pace and the latest error. Same policy as meow_log_drop
+// (F55/F56 project rule).
+// F85 WAIT RULE: a wait/poll result is only an error when rc < 0. VK_TIMEOUT(2) / VK_NOT_READY(1)
+// from a timeout=0 poll are the NORMAL "not done yet" answer and are NEVER logged (not even at
+// verbose for the zero-timeout case is desirable, but they are verbose-gated too). See the
+// F69 vkWaitSemaphores->vkWaitForFences site.
+static unsigned long g_meow_f84_submit_calls;
+static unsigned long g_meow_f84_wait_calls;
+static int g_meow_f84_wait_last_rc;
+
+static void meow_f84_submit_heartbeat(int rc, long long gap_ms, long long max_gap_ms) {
+    unsigned long total = ++g_meow_f84_submit_calls;
+    if ((total % 20000ul) == 0ul) {
+        MEOWLOGW("meowvulkan: F84 submit heartbeat total=%{public}lu rc=%{public}d gapMs=%{public}lld "
+                 "maxGapMs=%{public}lld (per-submit lines quiet; MEOW_VK_VERBOSE=1 restores them)",
+                 total, rc, gap_ms, max_gap_ms);
+    }
+}
+
+static void meow_f84_wait_heartbeat(void) {
+    unsigned long total = ++g_meow_f84_wait_calls;
+    if ((total % 20000ul) == 0ul) {
+        MEOWLOGW("meowvulkan: F84 wait heartbeat total=%{public}lu lastRc=%{public}d "
+                 "(per-wait lines quiet; MEOW_VK_VERBOSE=1 restores them)",
+                 total, g_meow_f84_wait_last_rc);
+    }
+}
 
 typedef int (*PFN_queueSubmit2)(void*, uint32_t, const void*, uint64_t);
 static int log_QueueSubmit2(void* queue, uint32_t submitCount, const void* submits, uint64_t fence) {
@@ -2756,8 +2805,11 @@ static int log_QueueSubmit2(void* queue, uint32_t submitCount, const void* submi
     // F54: kept -- one line per submit, the plain device-loss / success verdict.
     // F58: gapMs = ms since the previous vkQueueSubmit2 (0 on the first submit); maxGapMs = running
     // max. This is the in-log measurement the .37 report §D asked for ("相邻两次提交的间隔").
-    MEOWLOGI("meowvulkan: vkQueueSubmit2 returned rc=%{public}d gapMs=%{public}lld maxGapMs=%{public}lld "
-             "(-4 = VK_ERROR_DEVICE_LOST)", rc, gap_ms, g_meow_max_gap_ms);
+    if (meow_vk_verbose() || rc != 0) {
+        MEOWLOGI("meowvulkan: vkQueueSubmit2 returned rc=%{public}d gapMs=%{public}lld maxGapMs=%{public}lld "
+                 "(-4 = VK_ERROR_DEVICE_LOST)", rc, gap_ms, g_meow_max_gap_ms);
+    }
+    meow_f84_submit_heartbeat(rc, gap_ms, g_meow_max_gap_ms);
     return rc;
 }
 
@@ -2778,9 +2830,12 @@ static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
         if (w->pSemaphores != NULL) sem0 = (uint64_t)(uintptr_t)w->pSemaphores[0];
         if (w->pValues != NULL) val0 = w->pValues[0];
     }
-    MEOWLOGI("meowvulkan: vkWaitSemaphores CALLED flags=0x%{public}x timeout=%{public}llu ns count=%{public}u "
-             "sem0=0x%{public}llx val0=%{public}llu -- real wait if a queue is cached (else forwarding)",
-             flags, (unsigned long long)timeout, count, (unsigned long long)sem0, (unsigned long long)val0);
+    if (meow_vk_verbose()) {
+        MEOWLOGI("meowvulkan: vkWaitSemaphores CALLED flags=0x%{public}x timeout=%{public}llu ns count=%{public}u "
+                 "sem0=0x%{public}llx val0=%{public}llu -- real wait if a queue is cached (else forwarding)",
+                 flags, (unsigned long long)timeout, count, (unsigned long long)sem0, (unsigned long long)val0);
+    }
+    meow_f84_wait_heartbeat();
     // F69 (shim build .45): if EVERY semaphore in the wait is a tracked TIMELINE semaphore with a
     // mapped fence, answer with vkWaitForFences -- a REAL GPU-completion wait, never a host forge.
     // Mixed/partial waits are not guessed at: they fall through to the existing F60 path untouched.
@@ -2801,14 +2856,22 @@ static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
             }
             if (allMapped && nf > 0) {
                 int wrc = wff(g_dev_seen, nf, ff, VK_TRUE, timeout);
-                MEOWLOGI("meowvulkan: F69 vkWaitSemaphores->vkWaitForFences count=%{public}u timeout=%{public}llu "
-                         "rc=%{public}d sem0=0x%{public}llx val0=%{public}llu flags=0x%{public}x (%{public}s)",
-                         nf, (unsigned long long)timeout, wrc, (unsigned long long)sem0,
-                         (unsigned long long)val0, flags, f69Why ? f69Why : "(unset)");
+                g_meow_f84_wait_last_rc = wrc;
+                // F85: MC polls with timeout=0; VK_TIMEOUT(2) there is the NORMAL "not done yet" answer,
+                // not a failure -- so it must never print. The line is unconditional only for a REAL
+                // error (rc < 0); everything else needs MEOW_VK_VERBOSE=1.
+                if (meow_vk_verbose() || wrc < 0) {
+                    MEOWLOGI("meowvulkan: F69 vkWaitSemaphores->vkWaitForFences count=%{public}u timeout=%{public}llu "
+                             "rc=%{public}d sem0=0x%{public}llx val0=%{public}llu flags=0x%{public}x (%{public}s)",
+                             nf, (unsigned long long)timeout, wrc, (unsigned long long)sem0,
+                             (unsigned long long)val0, flags, f69Why ? f69Why : "(unset)");
+                }
                 return wrc;
             }
-            MEOWLOGI("meowvulkan: F69 wait not fully mapped (count=%{public}u); using the legacy wait path",
-                     count);
+            // F85: per-wait path detail -> verbose only (a poll loop reaches this every call).
+            if (meow_vk_verbose())
+                MEOWLOGI("meowvulkan: F69 wait not fully mapped (count=%{public}u); using the legacy wait path",
+                         count);
         }
     }
     // F60 (shim build .40): real wait. The ICD's timeline completion is unusable (host-forge -> early
@@ -2824,15 +2887,18 @@ static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
             int qrc = ((PFN_queueWaitIdleF)idle)(g_meow_last_queue);
             unsigned long n = ++g_meow_wait_qidle;
             if (qrc == VK_SUCCESS) {
-                if (n <= 8 || (n % 500) == 0)
+                // F85: per-wait success line -> verbose (poll loop). Slow heartbeat every 20000.
+                if (meow_vk_verbose() || n <= 4ul || (n % 20000ul) == 0ul)
                     MEOWLOGI("meowvulkan: wait->queueIdle #%{public}lu (ok=1 qrc=%{public}d "
                              "sem0=0x%{public}llx val0=%{public}llu timeout=%{public}llu flags=0x%{public}x)",
                              n, qrc, (unsigned long long)sem0, (unsigned long long)val0,
                              (unsigned long long)timeout, flags);
-                MEOWLOGI("meowvulkan: vkWaitSemaphores returned rc=0 (-4 = VK_ERROR_DEVICE_LOST)");
+                if (meow_vk_verbose())
+                    MEOWLOGI("meowvulkan: vkWaitSemaphores returned rc=0 (-4 = VK_ERROR_DEVICE_LOST)");
+                g_meow_f84_wait_last_rc = VK_SUCCESS;
                 return VK_SUCCESS;
             }
-            if (n <= 8 || (n % 500) == 0)
+            if (meow_vk_verbose() || n <= 4ul || (n % 20000ul) == 0ul)
                 MEOWLOGI("meowvulkan: wait->queueIdle #%{public}lu (ok=0 qrc=%{public}d) -- fallback",
                          n, qrc);
             MEOWLOGW("meowvulkan: vkQueueWaitIdle failed rc=%{public}d; forwarding to the real vkWaitSemaphores",
@@ -2845,7 +2911,10 @@ static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
                  qidleWhy ? qidleWhy : "(unset)");
     }
     int rc = ((PFN_waitSemaphores)real)(dev, wi, timeout);
-    MEOWLOGI("meowvulkan: vkWaitSemaphores returned rc=%{public}d (-4 = VK_ERROR_DEVICE_LOST)", rc);
+    // F85: per-wait result -> verbose; only a real error prints by default.
+    if (meow_vk_verbose() || rc < 0)
+        MEOWLOGI("meowvulkan: vkWaitSemaphores returned rc=%{public}d (-4 = VK_ERROR_DEVICE_LOST)", rc);
+    g_meow_f84_wait_last_rc = rc;
     return rc;
 }
 
@@ -2864,14 +2933,17 @@ static int log_GetSemaphoreCounterValue(void* dev, uint64_t sem, uint64_t* pValu
     if (meow_f69_decide(&f69Why) && meow_f69_is_timeline((uint64_t)sem)) {
         uint64_t v = meow_f69_signaled_value((uint64_t)sem);
         if (pValue != NULL) *pValue = v;
-        MEOWLOGI("meowvulkan: F69 vkGetSemaphoreCounterValue->max signaled value=%{public}llu sem=0x%{public}llx "
-                 "(%{public}s)", (unsigned long long)v, (unsigned long long)sem, f69Why ? f69Why : "(unset)");
+        // F85: per-call query line -> verbose (MC polls this too).
+        if (meow_vk_verbose())
+            MEOWLOGI("meowvulkan: F69 vkGetSemaphoreCounterValue->max signaled value=%{public}llu sem=0x%{public}llx "
+                     "(%{public}s)", (unsigned long long)v, (unsigned long long)sem, f69Why ? f69Why : "(unset)");
         return VK_SUCCESS;
     }
     int rc = ((PFN_getSemaphoreCounterValue)real)(dev, sem, pValue);
-    MEOWLOGI("meowvulkan: vkGetSemaphoreCounterValue rc=%{public}d sem=0x%{public}llx value=%{public}llu",
-             rc, (unsigned long long)sem,
-             (unsigned long long)((pValue != NULL) ? *pValue : 0ULL));
+    if (meow_vk_verbose() || rc < 0)
+        MEOWLOGI("meowvulkan: vkGetSemaphoreCounterValue rc=%{public}d sem=0x%{public}llx value=%{public}llu",
+                 rc, (unsigned long long)sem,
+                 (unsigned long long)((pValue != NULL) ? *pValue : 0ULL));
     return rc;
 }
 
@@ -2881,7 +2953,9 @@ static int log_DeviceWaitIdle(void* dev) {
     PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkDeviceWaitIdle") : NULL;
     if (real == NULL) return -3;
     int rc = ((PFN_devIdle)real)(dev);
-    MEOWLOGI("meowvulkan: vkDeviceWaitIdle rc=%{public}d", rc);
+    // F85: wait result -> verbose; real error always visible.
+    if (meow_vk_verbose() || rc < 0)
+        MEOWLOGI("meowvulkan: vkDeviceWaitIdle rc=%{public}d", rc);
     return rc;
 }
 
@@ -3059,24 +3133,28 @@ static int log_AllocateCommandBuffers(void* dev, const void* ai, void* cbs) {
     if (real == NULL) return -3;
     const VkCommandBufferAllocateInfoL* a = (const VkCommandBufferAllocateInfoL*)ai;
     uint32_t count = (a != NULL) ? a->commandBufferCount : 0u;
-    MEOWLOGI("meowvulkan: vkAllocateCommandBuffers CALLED commandPool=0x%{public}llx level=%{public}d "
-             "commandBufferCount=%{public}u -- forwarding",
-             (unsigned long long)(uintptr_t)((a != NULL) ? a->commandPool : VK_NULL_HANDLE),
-             (a != NULL) ? (int)a->level : 0, count);
+    // F85: command-buffer allocation is a per-frame hot path -> verbose (real errors stay visible).
+    if (meow_vk_verbose())
+        MEOWLOGI("meowvulkan: vkAllocateCommandBuffers CALLED commandPool=0x%{public}llx level=%{public}d "
+                 "commandBufferCount=%{public}u -- forwarding",
+                 (unsigned long long)(uintptr_t)((a != NULL) ? a->commandPool : VK_NULL_HANDLE),
+                 (a != NULL) ? (int)a->level : 0, count);
     int rc = real(dev, ai, cbs);
-    if (cbs != NULL && count > 0 && count <= 4) {
-        const void* const* h = (const void* const*)cbs;
-        const void* h0 = h[0];
-        const void* h1 = (count > 1) ? h[1] : NULL;
-        const void* h2 = (count > 2) ? h[2] : NULL;
-        const void* h3 = (count > 3) ? h[3] : NULL;
-        MEOWLOGI("meowvulkan: vkAllocateCommandBuffers rc=%{public}d handles=[%{public}p,%{public}p,%{public}p,%{public}p]",
-                 rc, h0, h1, h2, h3);
-    } else if (count > 4) {
-        MEOWLOGI("meowvulkan: vkAllocateCommandBuffers rc=%{public}d allocated %{public}u command buffers "
-                 "(handles omitted: >4)", rc, count);
-    } else {
-        MEOWLOGI("meowvulkan: vkAllocateCommandBuffers rc=%{public}d count=%{public}u", rc, count);
+    if (meow_vk_verbose() || rc != 0) {
+        if (cbs != NULL && count > 0 && count <= 4) {
+            const void* const* h = (const void* const*)cbs;
+            const void* h0 = h[0];
+            const void* h1 = (count > 1) ? h[1] : NULL;
+            const void* h2 = (count > 2) ? h[2] : NULL;
+            const void* h3 = (count > 3) ? h[3] : NULL;
+            MEOWLOGI("meowvulkan: vkAllocateCommandBuffers rc=%{public}d handles=[%{public}p,%{public}p,%{public}p,%{public}p]",
+                     rc, h0, h1, h2, h3);
+        } else if (count > 4) {
+            MEOWLOGI("meowvulkan: vkAllocateCommandBuffers rc=%{public}d allocated %{public}u command buffers "
+                     "(handles omitted: >4)", rc, count);
+        } else {
+            MEOWLOGI("meowvulkan: vkAllocateCommandBuffers rc=%{public}d count=%{public}u", rc, count);
+        }
     }
     return rc;
 }
@@ -3896,7 +3974,7 @@ static int meow_translate_cmd_pipeline_barrier2(void* cmd, const void* di) {
                      "#%{public}lu mem=%{public}u buf=%{public}u img=%{public}u "
                      "srcStage=0x%{public}x dstStage=0x%{public}x depFlags=0x%{public}x foldedMaskBits=%{public}d",
                      g_sync2v1_barriers, mc, bc, ic, srcStage, dstStage, d->dependencyFlags, lostBits);
-        } else if ((s_barrier_xlate_total % 500ul) == 0ul) {
+        } else if ((s_barrier_xlate_total % 20000ul) == 0ul) {
             MEOWLOGI("meowvulkan: SYNC2->V1 barrier translate summary: total=%{public}lu (#%{public}lu) "
                      "mem=%{public}u buf=%{public}u img=%{public}u srcStage=0x%{public}x dstStage=0x%{public}x "
                      "foldedMaskBits=%{public}d",
@@ -4222,7 +4300,7 @@ static void log_CmdPushDescriptorSetWithTemplate(void* cmd, void* tmpl, void* la
     unsigned long wtN = ++f72bWtN;
     if (meow_vk_verbose() || wtN <= 4ul)
         MEOWLOGW("meowvulkan: F72b WithTemplate push seen: %{public}lu (not emulated, forwarding)", wtN);
-    else if ((wtN % 2000ul) == 0ul)
+    else if ((wtN % 20000ul) == 0ul)
         MEOWLOGW("meowvulkan: F72b WithTemplate pushes so far: %{public}lu (rate-limited, not emulated)", wtN);
     if (meow_vk_verbose()) {
         MEOWLOGI("meowvulkan: vkCmdPushDescriptorSetWithTemplate CALLED cmdBuf=%{public}p "
@@ -5182,7 +5260,7 @@ static void init_once(void) {
     // Deployment self-certification: this campaign lost a run to "the fix was in the tree but not on
     // the device", so every shim build now names itself. Bump the tag whenever the shim changes.
     // F74 env switch tiers (A/B) are documented in the header comment at the top of this file.
-    MEOWLOGI("meowvulkan: shim build 2026-09-18.58 env-grading");
+    MEOWLOGI("meowvulkan: shim build 2026-09-18.64 quiet-push-counters");
     // Crash backtraces for the Vulkan path are handled by meowbt, which the bridge now installs from
     // meowSetSurfaceId (see egl_gl.c) -- reachable on this path, unlike the GL-only install sites.
     // Enable with the documented envs: MEOW_BT=1 (and optionally MEOW_BT_FILE=<path>).
