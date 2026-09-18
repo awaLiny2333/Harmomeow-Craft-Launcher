@@ -115,6 +115,11 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     'vkdiag mcVersion=%{public}s backendFromDisk=%{public}s choiceGb=%{public}s gate=%{public}s',
     mcVersion, instance.rendererBackend, renderer.graphicsBackend,
     supportsVulkanBackend(mcVersion) ? 'true' : 'false');
+  // 【F74】选了 Vulkan 档（且该 MC 版本支持）时，除了游戏参数 `--graphicsBackend vulkan`，还要把
+  // `MEOW_VK_SHIM=1` 送进游戏进程环境（走下方既有"额外渲染环境变量"通道）。libmeowvulkan.so 的
+  // 加载器 shim 读的是 **getenv**（不是 -D），所以不能做成 JVM 属性。auto/GL 档不注入 ⇒ 与今天一致。
+  const vulkanBackendSelected =
+    renderer.graphicsBackend.length > 0 && supportsVulkanBackend(mcVersion);
   const argv = buildLaunchArgv({
     gameRoot: gameRoot,
     gameDir: gameDir,
@@ -139,8 +144,7 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     cpuChip: cpuChip,
     rendererLib: renderer.lib,
     // 选了 Vulkan 档时才让 MC 去试（26.2+ 才认这个游戏参数；失败仍回退 GL）。见 RendererPolicy。
-    graphicsBackend: (renderer.graphicsBackend.length > 0 && supportsVulkanBackend(mcVersion))
-      ? renderer.graphicsBackend : undefined,
+    graphicsBackend: vulkanBackendSelected ? renderer.graphicsBackend : undefined,
     jvmArgs: settings.jvmArgs,
     logsDir: logsDir,
   });
@@ -210,6 +214,8 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   const renderEnv = `GALLIUM_THREAD=${glthread ? '1' : '0'}`
     + (guardSyncNone ? '\nMEOW_GUARD_SYNC=none' : '')
     + (maskEnv.length > 0 ? `\n${maskEnv}` : '')
+    // 【F74】Vulkan 档自动注入 shim 门控；拼在用户 env 之前 ⇒ 用户可显式覆盖。
+    + (vulkanBackendSelected ? '\nMEOW_VK_SHIM=1' : '')
     + `\n${userRenderEnv}`;
   // 用户「额外渲染环境变量」里若**显式**写 none，会让守卫对"本需要同步的版本"也纯透传（fail-open）——
   // 不改用户语义（用户优先），但记一条 WARN 便于实机排障（见 notes 00-current/运行时环境变量.md 回滚阶梯）。

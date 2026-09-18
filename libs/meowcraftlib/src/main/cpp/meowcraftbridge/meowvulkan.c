@@ -26,6 +26,36 @@
 // loader's behaviour. Diagnostic switches default off in this project, so enabling the shim is
 // explicit. See notes section 7.5 for the rollback ladder.
 //
+// ============ ENV SWITCH TIERS (F74, shim build 2026-09-18.54 wrapup) ============
+// Every env var this file reads, grouped by what the user is expected to do with it. This is the
+// authoritative list; keep it in sync when a switch is added or retired. (meowvkprobe.c is itself
+// Tier C; its MEOW_VK_PROBE_* names are listed there and in the F74 report.)
+//
+// --- TIER A: FUNCTIONALLY REQUIRED -- baked-in defaults, the user sets NONE of these -------------
+//   MEOW_VK_SHIM=1                 master gate; the launcher now injects it automatically when the
+//                                  instance picks the Vulkan backend (F74; GameLauncher.ets). getenv.
+//   F66 (no env)                   merge submit entries instead of splitting them -- compiled in.
+//   MEOW_VK_TIMELINE_AS_FENCE=1    translate MC's timeline-semaphore waits to fences (F69).
+//   MEOW_VK_PUSH_AS_SET=1          emulate vkCmdPushDescriptorSet with a normal descriptor set (F72).
+//   MEOW_VK_FIX_SURFACE_TRANSFORM  force preTransform=IDENTITY (F73). F74: unset = identity (default);
+//                                  "requested"/"0" = keep caller value (A/B escape); "identity" = same.
+//
+// --- TIER B: DIAGNOSTIC -- default OFF, kept so a defect can be re-investigated -----------------
+//   MEOW_VK_VERBOSE, MEOW_VK_WD,
+//   MEOW_VK_DROP_DRAW, MEOW_VK_DROP_PUSH_DESCRIPTOR,
+//   MEOW_VK_FIX_EXTENT, MEOW_VK_FIX_COPY_BUFFER_TO_IMAGE, MEOW_VK_FIX_COMPOSITE_ALPHA,
+//   MEOW_VK_SWAPCHAIN_USAGE_EXTRA, MEOW_VK_FIX_MIN_IMAGE_COUNT, MEOW_VK_FIX_PRESENT_MODE,
+//   MEOW_VK_NO_DIVISOR_FEATURE, MEOW_VK_KEEP_SYNC2, MEOW_VK_STRIP_UNSUPPORTED_FEATURES,
+//   MEOW_VK_SYNC2_TO_V1, MEOW_VK_SYNC2_TO_V1_BARRIER, MEOW_VK_SYNC2_TO_V1_MERGE,
+//   MEOW_VK_SYNC2_TO_V1_SUBMIT, MEOW_VK_TIMELINE_HOST_SIGNAL, MEOW_VK_WAIT_VIA_QUEUE_IDLE,
+//   MEOW_VK_NO_FLIP_BLIT, MEOW_VK_F53_FAST_CACHE, MEOW_VK_NO_VK13_WRITE, MEOW_VK_ACQ_SLOW_QUIET
+//
+// --- TIER C: TEMPORARY PROBES -- TO BE REMOVED once the Vulkan campaign closes -------------------
+//   meowvkprobe.c (the whole file) and its MEOW_VK_PROBE_* switches: DEVFEAT, LIB, MC_BLIT, MC_DIV,
+//   MC_DR, MC_PUSH, MC_TS, MC_UPLOAD, NOSPLIT, PATTERN, PIPELINE, SHAPE, SUBMIT, SYNC, TAIL,
+//   TEXTURED -- plus the F29 probe UI (AdvancedOptionsView.ets surfaceId hand-off + result readout).
+// ===============================================================================
+//
 // TEMPORARY/EXPERIMENTAL: this is milestone M1 (get MC's Vulkan backend to start so its real calls
 // can be observed). See notes/20-design/render/Vulkan后端-绕过可行性-调研与方案.md section 11.
 #define _GNU_SOURCE
@@ -1759,7 +1789,7 @@ static int meow_f69_createinfo_is_timeline(const void* ci) {
 //     to forwarding the ORIGINAL push with a rate-limited WARN -- no guessing, no silent drop.
 // MEOW_VK_PUSH_AS_SET: 0 = off (EXACTLY today's behaviour), 1 = on, unset = follows g_hooks.
 // =====================================================================================
-#define MEOW_F72_NPOOLS   8
+#define MEOW_F72_NPOOLS   64   // F72c (.53): hard cap; pools start at 0 and grow on demand
 #define MEOW_F72_MAXSETS  256
 #define MEOW_F72_PER_TYPE 16
 #define MEOW_F72_LAYOUTS  256
@@ -1782,10 +1812,16 @@ static int meow_f72_on(void) { return meow_f72_decide(NULL); }
 // Rate-limited reporter (same policy as meow_log_drop, F55/F56 project rule): the first 4 failures
 // are named, then one running total every 4000; MEOW_VK_VERBOSE=1 restores every call.
 static unsigned long g_f72_fallbacks;
-static void meow_f72_warn(const char* what, unsigned long a, unsigned long b) {
+// F72c (.53): `a`/`b` are SIGNED. `a` is a VkResult or a value; `b` is the set index or the pool
+// index (0 where not applicable). VkResult code table (all negative):
+//   -1 = VK_ERROR_OUT_OF_HOST_MEMORY        -2 = VK_ERROR_OUT_OF_DEVICE_MEMORY
+//   -3 = VK_ERROR_INITIALIZATION_FAILED     -4 = VK_ERROR_DEVICE_LOST
+//   -5 = VK_ERROR_MEMORY_MAP_FAILED         -1000069000 = VK_ERROR_OUT_OF_POOL_MEMORY
+//   -1000069001 = VK_ERROR_INVALID_EXTERNAL_HANDLE
+static void meow_f72_warn(const char* what, long a, long b) {
     unsigned long n = ++g_f72_fallbacks;
     if (meow_vk_verbose() || n <= 4ul) {
-        MEOWLOGW("meowvulkan: F72b push forwarded(reason=%{public}s a=%{public}lu b=%{public}lu) -- #%{public}lu",
+        MEOWLOGW("meowvulkan: F72b push forwarded(reason=%{public}s a=%{public}ld b=%{public}ld) -- #%{public}lu",
                  what, a, b, n);
     } else if ((n % 4000ul) == 0ul) {
         MEOWLOGW("meowvulkan: F72 push-as-set fallbacks so far: %{public}lu (rate-limited; "
@@ -1964,12 +2000,18 @@ static void meow_f72_forget_dsl(uint64_t key) {
 typedef struct {
     VkDescriptorPool pool;
     VkFence fence;     // fence covering the submit that last used this pool (0 = unknown)
-    int ownsFence;     // 1 = this shim created it (destroy on reuse/teardown)
+    int ownsFence;     // 1 = the shim created it (shared; ref-counted via g_f72_owned_refs)
     int pending;       // 1 = a submit using this pool has not been confirmed complete
+    int used;          // 1 = already used for the frame currently being recorded
 } MeowF72Pool;
-static MeowF72Pool g_f72_pools[MEOW_F72_NPOOLS];
+static MeowF72Pool g_f72_pools[MEOW_F72_NPOOLS];   // MEOW_F72_NPOOLS == hard cap
+static int g_f72_npools;                           // pools created so far (grow-on-demand)
 static int g_f72_active = -1;                 // pool used for the frame being recorded; -1 = none
-static unsigned long g_f72_emulated;
+static unsigned long g_f72_emulated, g_f72_forwarded, g_f72_resets, g_f72_grows;
+// F72c: at most ONE shim-owned tracking fence may be outstanding (created only when no F69/caller
+// fence exists); g_f72_owned_refs counts the pending pools still referencing it.
+static VkFence g_f72_owned_fence = VK_NULL_HANDLE;
+static int g_f72_owned_refs;
 
 static VkDescriptorPool meow_f72_create_pool(void) {
     int (*create)(void*, const void*, const void*, void**) =
@@ -2022,13 +2064,23 @@ static VkFence meow_f72_track_fence_create(void) {
 static int meow_f72_reset_pool(int i) {
     int (*reset)(void*, void*, uint32_t) =
         (int (*)(void*, void*, uint32_t))meow_f72_real("vkResetDescriptorPool");
-    if (reset == NULL) { meow_f72_warn("no-vkResetDescriptorPool", (unsigned long)i, 0); return -1; }
+    if (reset == NULL) { meow_f72_warn("no-vkResetDescriptorPool", (long)i, 0); return -1; }
     int rc = reset(g_dev_seen, g_f72_pools[i].pool, 0);
-    if (rc != 0) { meow_f72_warn("reset-pool-rc", (unsigned long)rc, (unsigned long)i); return -1; }
-    if (g_f72_pools[i].ownsFence) meow_f69_destroyFence((uint64_t)g_f72_pools[i].fence);
-    g_f72_pools[i].fence = 0;
-    g_f72_pools[i].ownsFence = 0;
-    g_f72_pools[i].pending = 0;
+    if (rc != 0) { meow_f72_warn("reset-pool-rc", (long)rc, (long)i); return -1; }
+    MeowF72Pool* p = &g_f72_pools[i];
+    // F72c: a shim-owned fence is shared by every pool used in the frame; destroy it only when the
+    // last referencing pool has been reset (no pool may call vkGetFenceStatus on a dead handle).
+    if (p->ownsFence && p->fence != 0) {
+        if (g_f72_owned_refs > 0) --g_f72_owned_refs;
+        if (g_f72_owned_refs == 0 && g_f72_owned_fence == p->fence) {
+            meow_f69_destroyFence((uint64_t)g_f72_owned_fence);
+            g_f72_owned_fence = VK_NULL_HANDLE;
+        }
+    }
+    p->fence = 0;
+    p->ownsFence = 0;
+    p->pending = 0;
+    ++g_f72_resets;
     return 0;
 }
 
@@ -2043,66 +2095,99 @@ static int meow_f72_pool_free(int i) {
     return (gfs(g_dev_seen, (uint64_t)p->fence) == VK_SUCCESS) ? 1 : 0;
 }
 
+static int meow_f72_used_count(void) {
+    int c = 0;
+    for (int i = 0; i < g_f72_npools; i++) {
+        if (g_f72_pools[i].used) ++c;
+    }
+    return c;
+}
+
+// F72c: pick the pool for the next allocation. (1) first RECLAIM every pending pool whose fence has
+// signaled (reset -> reusable); (2) pick a free pool not already used by this frame; (3) if none is
+// free, GROW by one pool (hard cap MEOW_F72_NPOOLS). Only a failed grow makes the push forward.
 static int meow_f72_ensure_active(void) {
     if (g_f72_active >= 0 && g_f72_pools[g_f72_active].pool != VK_NULL_HANDLE) return g_f72_active;
+    for (int i = 0; i < g_f72_npools; i++) {
+        if (g_f72_pools[i].pending && meow_f72_pool_free(i)) {
+            if (meow_f72_reset_pool(i) != 0) continue;
+        }
+    }
     static int nextScan = 0;
-    for (int k = 0; k < MEOW_F72_NPOOLS; k++) {
+    for (int k = 0; k < g_f72_npools; k++) {
         int i = nextScan;
-        nextScan = (nextScan + 1) % MEOW_F72_NPOOLS;
+        nextScan = (g_f72_npools > 0) ? ((nextScan + 1) % g_f72_npools) : 0;
+        if (g_f72_pools[i].used) continue;              // already part of the current frame
         if (!meow_f72_pool_free(i)) continue;
         if (g_f72_pools[i].pool == VK_NULL_HANDLE) {
             g_f72_pools[i].pool = meow_f72_create_pool();
-            if (g_f72_pools[i].pool == VK_NULL_HANDLE) { meow_f72_warn("create-pool", (unsigned long)i, 0); return -1; }
-        } else if (meow_f72_reset_pool(i) != 0) {
-            continue;
+            if (g_f72_pools[i].pool == VK_NULL_HANDLE) { meow_f72_warn("create-pool", (long)i, 0); return -1; }
+            ++g_f72_grows;
         }
         g_f72_pools[i].pending = 0;
+        g_f72_pools[i].used = 1;
         g_f72_active = i;
         return i;
+    }
+    if (g_f72_npools < MEOW_F72_NPOOLS) {
+        int i = g_f72_npools;
+        g_f72_pools[i].pool = meow_f72_create_pool();
+        if (g_f72_pools[i].pool != VK_NULL_HANDLE) {
+            g_f72_npools = i + 1;
+            ++g_f72_grows;
+            g_f72_pools[i].pending = 0;
+            g_f72_pools[i].used = 1;
+            g_f72_active = i;
+            return i;
+        }
+        meow_f72_warn("create-pool", (long)i, 0);
+        return -1;
     }
     meow_f72_warn("no-free-pool", 0, 0);
     return -1;
 }
 
-// Called at the submit point (F66 merged path, and the v1 wrapper for completeness). Associates the
-// pool used for the frame just submitted with the fence that covers that submit, then closes the
-// frame so the next allocation picks a fresh, fence-confirmed pool.
+// Called at the submit point (F66 merged path, and the v1 wrapper for completeness). Associates EVERY
+// pool used while recording this frame with the fence that covers the submit, then closes the frame.
 static void meow_f72_bind_submit(VkFence submitFence, int ownsFence, int ok) {
     if (!meow_f72_on()) return;
-    if (g_f72_active >= 0) {
-        MeowF72Pool* p = &g_f72_pools[g_f72_active];
-        if (ok) {
-            p->fence = submitFence;
-            p->ownsFence = ownsFence;
-            p->pending = 1;
-        } else if (ownsFence && submitFence != 0) {
-            meow_f69_destroyFence((uint64_t)submitFence);   // rejected submit: not in flight
-        }
-    } else if (ownsFence && submitFence != 0) {
-        meow_f69_destroyFence((uint64_t)submitFence);
+    if (!ok) {
+        if (ownsFence && submitFence != 0) meow_f69_destroyFence((uint64_t)submitFence);
+        for (int i = 0; i < g_f72_npools; i++) g_f72_pools[i].used = 0;
+        g_f72_active = -1;
+        return;
+    }
+    if (ownsFence && submitFence != 0) g_f72_owned_fence = submitFence;
+    for (int i = 0; i < g_f72_npools; i++) {
+        if (!g_f72_pools[i].used) continue;
+        g_f72_pools[i].used = 0;
+        g_f72_pools[i].fence = submitFence;
+        g_f72_pools[i].ownsFence = ownsFence;
+        g_f72_pools[i].pending = 1;
+        if (ownsFence && submitFence != 0) ++g_f72_owned_refs;
     }
     g_f72_active = -1;
 }
 
-// The emulation itself. Returns 1 when the push was fully recorded via the ordinary set path, 0 when
-// the caller must forward the original push (every 0 carries a rate-limited WARN).
-static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, uint32_t set,
-                                 uint32_t n, const void* writes) {
+// The emulation body. Returns 1 = recorded via the ordinary set path, 0 = nothing to do (no writes),
+// -1 = must forward the original push (rate-limited WARN already emitted).
+static int meow_f72_emulate_push_inner(void* cmd, uint32_t bindPoint, void* layout, uint32_t set,
+                                       uint32_t n, const void* writes) {
     if (n == 0 || writes == NULL) return 0;
-    if (n > 4096) { meow_f72_warn("too-many-writes", (unsigned long)n, (unsigned long)set); return 0; }
+    if (n > 4096) { meow_f72_warn("too-many-writes", (long)n, (long)set); return -1; }
     VkDescriptorSetLayout dsl = meow_f72_lookup_dsl(layout, set);
     if (dsl == VK_NULL_HANDLE) {
-        meow_f72_warn("layout-not-captured", (unsigned long)set, 0);
-        return 0;
+        meow_f72_warn("layout-not-captured", (long)set, 0);
+        return -1;
     }
     // F72b: allocate from the mirror (push bit removed); bind still uses the ORIGINAL pipeline layout.
     VkDescriptorSetLayout allocDsl = meow_f72_mirror_of(dsl);
     if (allocDsl == VK_NULL_HANDLE) {
-        meow_f72_warn("no-mirror-layout", (unsigned long)set, 0);
-        return 0;
+        meow_f72_warn("no-mirror-layout", (long)set, 0);
+        return -1;
     }
     int pi = meow_f72_ensure_active();
-    if (pi < 0) return 0;
+    if (pi < 0) return -1;
     int (*alloc)(void*, const void*, void**) =
         (int (*)(void*, const void*, void**))meow_f72_real("vkAllocateDescriptorSets");
     void (*update)(void*, uint32_t, const void*, uint32_t, const void*) =
@@ -2112,7 +2197,7 @@ static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, ui
             meow_f72_real("vkCmdBindDescriptorSets");
     if (alloc == NULL || update == NULL || bind == NULL) {
         meow_f72_warn("missing-forward", 0, 0);
-        return 0;
+        return -1;
     }
     VkDescriptorSetAllocateInfo ai;
     memset(&ai, 0, sizeof(ai));
@@ -2123,12 +2208,27 @@ static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, ui
     ai.pSetLayouts = &allocDsl;
     VkDescriptorSet ds = VK_NULL_HANDLE;
     int arc = alloc(g_dev_seen, &ai, (void**)&ds);
+    if (arc != 0) {
+        // F72c: a pool can fill mid-frame (>MEOW_F72_MAXSETS pushes before the submit). Reclaim any
+        // signaled pool and switch to a fresh one; only if that also fails do we forward.
+        if (arc == VK_ERROR_OUT_OF_POOL_MEMORY) {
+            g_f72_active = -1;
+            int npi = meow_f72_ensure_active();
+            if (npi >= 0 && npi != pi) {
+                pi = npi;
+                ai.descriptorPool = g_f72_pools[pi].pool;
+                ds = VK_NULL_HANDLE;
+                arc = alloc(g_dev_seen, &ai, (void**)&ds);
+            }
+        }
+    }
     if (arc != 0 || ds == VK_NULL_HANDLE) {
-        meow_f72_warn("allocate-set-failed", (unsigned long)arc, (unsigned long)set);
-        return 0;
+        // F72c: VkResult printed SIGNED (see the code table at meow_f72_warn).
+        meow_f72_warn("allocate-set-failed", (long)arc, (long)set);
+        return -1;
     }
     VkWriteDescriptorSet* w = (VkWriteDescriptorSet*)malloc((size_t)n * sizeof(VkWriteDescriptorSet));
-    if (w == NULL) { meow_f72_warn("oom-writes", (unsigned long)n, 0); return 0; }
+    if (w == NULL) { meow_f72_warn("oom-writes", (long)n, 0); return -1; }
     // The push ignores dstSet, but vkUpdateDescriptorSets requires it -> copy and point every write
     // at the set just allocated. The pointed-to image/buffer arrays are used synchronously by the
     // update call, so no deep copy of those is needed.
@@ -2138,11 +2238,28 @@ static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, ui
     // Push descriptors carry no dynamic offsets (pDynamicOffsets is NULL / count 0).
     bind(cmd, bindPoint, layout, set, 1, &ds, 0, NULL);
     free(w);
-    unsigned long e = ++g_f72_emulated;
-    if (e <= 4ul || (e % 2000ul) == 0ul)
-        MEOWLOGI("meowvulkan: F72b push emulated #%{public}lu set=%{public}u writes=%{public}u pool=%{public}d",
-                 e, set, n, pi);
     return 1;
+}
+
+// Public entry: counts the outcome and emits the F72c rate-limited totals line.
+static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, uint32_t set,
+                                 uint32_t n, const void* writes) {
+    static unsigned long attempts = 0;
+    unsigned long att = ++attempts;
+    int r = meow_f72_emulate_push_inner(cmd, bindPoint, layout, set, n, writes);
+    if (r == 1) {
+        unsigned long e = ++g_f72_emulated;
+        if (e <= 4ul || (e % 2000ul) == 0ul)
+            MEOWLOGI("meowvulkan: F72b push emulated #%{public}lu set=%{public}u writes=%{public}u",
+                     e, set, n);
+    } else {
+        ++g_f72_forwarded;   // r == 0 (no writes) or -1 (failure): the original push is forwarded
+    }
+    if ((att % 4000ul) == 0ul)
+        MEOWLOGI("meowvulkan: F72b push totals: emulated=%{public}lu forwarded=%{public}lu pools=%{public}d "
+                 "resets=%{public}lu grow=%{public}lu",
+                 g_f72_emulated, g_f72_forwarded, g_f72_npools, g_f72_resets, g_f72_grows);
+    return (r == 1) ? 1 : 0;
 }
 
 static void meow_f72_shutdown(void) {
@@ -2153,11 +2270,18 @@ static void meow_f72_shutdown(void) {
             if (dp != NULL) dp(g_dev_seen, g_f72_pools[i].pool, NULL);
             g_f72_pools[i].pool = VK_NULL_HANDLE;
         }
-        if (g_f72_pools[i].ownsFence) meow_f69_destroyFence((uint64_t)g_f72_pools[i].fence);
         g_f72_pools[i].fence = 0;
         g_f72_pools[i].ownsFence = 0;
         g_f72_pools[i].pending = 0;
+        g_f72_pools[i].used = 0;
     }
+    // F72c: the shim-owned fence is shared, so destroy it exactly once.
+    if (g_f72_owned_fence != VK_NULL_HANDLE) {
+        meow_f69_destroyFence((uint64_t)g_f72_owned_fence);
+        g_f72_owned_fence = VK_NULL_HANDLE;
+    }
+    g_f72_owned_refs = 0;
+    g_f72_npools = 0;
     g_f72_active = -1;
     for (int i = 0; i < MEOW_F72_LAYOUTS; i++) {
         free(g_f72_layouts[i].sets);
@@ -2497,7 +2621,9 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
                 // observes changes. bind_submit() closes the frame so the next allocation rotates.
                 VkFence f72Fence = (VkFence)(uintptr_t)f69FenceUsed;
                 int f72OwnFence = 0;
-                if (meow_f72_on() && g_f72_active >= 0 && f72Fence == 0) {
+                // F72c: cover EVERY pool used this frame; only create a shim fence when none exists
+                // (and at most one such fence may be outstanding).
+                if (meow_f72_on() && meow_f72_used_count() > 0 && f72Fence == 0 && g_f72_owned_refs == 0) {
                     f72Fence = meow_f72_track_fence_create();
                     f72OwnFence = (f72Fence != 0);
                 }
@@ -4885,6 +5011,37 @@ static int meow_vk_fix_present_mode(int32_t* out) {
     return enabled;
 }
 
+// F74 (shim build 2026-09-18.54 wrapup). Resolve MEOW_VK_FIX_SURFACE_TRANSFORM once and return its
+// SOURCE label, which the receipt line prints:
+//   "default"   -> env unset/empty/unknown => identity is applied (F74 default-on)
+//   "identity"  -> env explicitly "identity" => identity is applied
+//   "requested" -> env "requested"/"0"       => the caller's preTransform is kept (A/B escape hatch)
+// Read-once is safe here: env does not change after process start, and this path runs once per
+// swapchain creation (NOT a hot path), so a single receipt line per create is emitted.
+static const char* meow_vk_fix_surface_transform_source(void) {
+    static const char* src;
+    static int done = 0;
+    if (!done) {
+        const char* t = getenv("MEOW_VK_FIX_SURFACE_TRANSFORM");
+        if (t != NULL && (strcmp(t, "requested") == 0 || strcmp(t, "0") == 0)) {
+            src = "requested";
+        } else if (t != NULL && strcmp(t, "identity") == 0) {
+            src = "identity";
+        } else {
+            src = "default";
+        }
+        done = 1;
+    }
+    return src;
+}
+
+// True when the F73/F74 transform override should be applied (default and identity sources; NOT
+// "requested"). Used by the cross-check so a deliberate IDENTITY override is not reported as a VUID
+// violation.
+static int meow_vk_fix_surface_transform_active(void) {
+    return strcmp(meow_vk_fix_surface_transform_source(), "requested") != 0;
+}
+
 // Lazily materialise a mutable LOCAL copy of the caller's create-info. Untouched requests keep
 // forwarding the caller's original pointer byte-for-byte (`*fwdCi` is only repointed here).
 static VkSwapchainCIKHRL* meow_swapchain_mut(const VkSwapchainCIKHRL* c, VkSwapchainCIKHRL* copy,
@@ -4893,24 +5050,25 @@ static VkSwapchainCIKHRL* meow_swapchain_mut(const VkSwapchainCIKHRL* c, VkSwapc
         *copy = *c;
         *fwdCi = (const void*)copy;
     }
-    /* F73 (shim build .51): WSI orientation / extent overrides.
+    /* F73 (shim build .51) / F74 (shim build 2026-09-18.54 wrapup): WSI orientation / extent overrides.
      * WHY: with F72 (push->descriptor-set) MC's native Vulkan backend finally RENDERS on this device,
      * but the picture arrives rotated 90 deg counter-clockwise and stretched ("lying on its side,
      * skinny and long"). This platform's OHOS surface reports currentTransform = 0x2
      * (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR, measured repeatedly in the surface-capabilities logs),
-     * and a 90-degree presentation transform rotates the presented image unless the app swapped its
-     * rendering/extent to match -- which produces exactly that symptom on a landscape 2-in-1 window.
-     * Both overrides are opt-in so that today's behaviour stays byte-identical by default, and each is
-     * a single variable:
-     *   MEOW_VK_FIX_SURFACE_TRANSFORM=identity  -> force preTransform = IDENTITY (the WSI stops rotating)
-     *   MEOW_VK_FIX_EXTENT=current              -> force imageExtent = cached caps.currentExtent
+     * and the WSI really does rotate the presented image, so forwarding the caller's value verbatim
+     * ALWAYS lands the picture on its side. F74 therefore makes the transform override DEFAULT-ON:
+     *   MEOW_VK_FIX_SURFACE_TRANSFORM unset/""/identity -> force preTransform = IDENTITY (default)
+     *   MEOW_VK_FIX_SURFACE_TRANSFORM=requested (or 0)  -> keep the caller's value (A/B escape hatch)
+     * The extent override stays opt-in:
+     *   MEOW_VK_FIX_EXTENT=current -> force imageExtent = cached caps.currentExtent
      */
     {
-        const char* t = getenv("MEOW_VK_FIX_SURFACE_TRANSFORM");
-        if (t != NULL && strcmp(t, "identity") == 0) {
+        const char* ts = meow_vk_fix_surface_transform_source();
+        if (meow_vk_fix_surface_transform_active()) {
             if ((uint32_t)copy->preTransform != MEOW_VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
                 MEOWLOGI("meowvulkan: F73 forcing preTransform 0x%{public}x -> IDENTITY(0x1) "
-                         "(MEOW_VK_FIX_SURFACE_TRANSFORM=identity)", (unsigned)copy->preTransform);
+                         "(MEOW_VK_FIX_SURFACE_TRANSFORM source=%{public}s)",
+                         (unsigned)copy->preTransform, ts);
                 copy->preTransform = (int32_t)MEOW_VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
             }
         }
@@ -4991,10 +5149,11 @@ static void meow_crosscheck_swapchain(const VkSwapchainCIKHRL* c) {
                  (((k->supportedTransforms & (uint32_t)c->preTransform) != 0u) &&
                   (k->currentTransform == MEOW_VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR ||
                    c->preTransform == (int32_t)k->currentTransform ||
-                   /* F73: a preTransform forced to IDENTITY by MEOW_VK_FIX_SURFACE_TRANSFORM is a
-                    * deliberate override, not a violation -- do not cry wolf about it. */
+                   /* F73/F74: a preTransform forced to IDENTITY by MEOW_VK_FIX_SURFACE_TRANSFORM
+                    * (default, identity or requested sources all report the override as active only
+                    * for default/identity) is a deliberate override, not a violation. */
                    (((uint32_t)c->preTransform) == MEOW_VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR &&
-                    getenv("MEOW_VK_FIX_SURFACE_TRANSFORM") != NULL)))
+                    meow_vk_fix_surface_transform_active())))
                      ? "[OK]" : "[*** VIOLATION ***]");
         MEOWLOGI("meowvulkan:   compositeAlpha req=0x%{public}x supported=0x%{public}x %{public}s",
                  (unsigned)c->compositeAlpha, (unsigned)k->supportedCompositeAlpha,
@@ -5079,12 +5238,12 @@ static int log_vkCreateSwapchainKHR(void* dev, const void* ci, const void* alloc
     // exists so that silence can never again be mistaken for "the switch did not reach us".
     if (c != NULL) {
         VkSwapchainCIKHRL* mPre = meow_swapchain_mut(c, &ciCopy, &fwdCi);
-        const char* tPre = getenv("MEOW_VK_FIX_SURFACE_TRANSFORM");
+        const char* srcPre = meow_vk_fix_surface_transform_source();
         const char* ePre = getenv("MEOW_VK_FIX_EXTENT");
-        MEOWLOGI("meowvulkan: F73 receipt: FIX_SURFACE_TRANSFORM=%{public}s FIX_EXTENT=%{public}s | "
+        MEOWLOGI("meowvulkan: F73 receipt: FIX_SURFACE_TRANSFORM source=%{public}s FIX_EXTENT=%{public}s | "
                  "requested preTransform=0x%{public}x extent=%{public}ux%{public}u -> forwarded "
                  "preTransform=0x%{public}x extent=%{public}ux%{public}u",
-                 tPre != NULL ? tPre : "(unset)", ePre != NULL ? ePre : "(unset)",
+                 srcPre, ePre != NULL ? ePre : "(unset)",
                  (unsigned)c->preTransform, c->imageExtent.width, c->imageExtent.height,
                  (unsigned)mPre->preTransform, mPre->imageExtent.width, mPre->imageExtent.height);
     }
@@ -5439,7 +5598,8 @@ static void init_once(void) {
              g_real, g_hooks, sw ? sw : "(unset)");
     // Deployment self-certification: this campaign lost a run to "the fix was in the tree but not on
     // the device", so every shim build now names itself. Bump the tag whenever the shim changes.
-    MEOWLOGI("meowvulkan: shim build 2026-09-18.52 f73-reachable");
+    // F74 env switch tiers (A/B/C) are documented in the header comment at the top of this file.
+    MEOWLOGI("meowvulkan: shim build 2026-09-18.54 wrapup");
     // Crash backtraces for the Vulkan path are handled by meowbt, which the bridge now installs from
     // meowSetSurfaceId (see egl_gl.c) -- reachable on this path, unlike the GL-only install sites.
     // Enable with the documented envs: MEOW_BT=1 (and optionally MEOW_BT_FILE=<path>).

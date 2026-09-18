@@ -1,4 +1,6 @@
 /*
+ * TEMPORARY DIAGNOSTIC INSTRUMENT -- to be removed once the Vulkan campaign closes
+ *
  * meowvkprobe.c - F29 minimal "sustained present" probe (bare ICD + WSI).
  *
  * WHY: the MC 26.2 Vulkan backend builds instance/surface/device/swapchain/pipeline,

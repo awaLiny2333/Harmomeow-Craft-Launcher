@@ -256,10 +256,10 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     argv.push(`-Dmeow.lwjgl.gen=${lwjglGen}`);
     argv.push('-Dorg.lwjgl.system.allocator=system');
     argv.push('-Dorg.lwjgl.glfw.checkThread0=false');
-    // 【M1 实验】Vulkan 库名指向自研 shim（libmeowvulkan.so，随包 native）。它可以修正本机 ICD 的
-    // "上报面裁剪"（补 KHR 扩展名 / 补 post-1.2 feature 位 / createDevice 剔名 / KHR→core 名字映射），
-    // 但**默认纯透传**（env MEOW_VK_SHIM 未设 = 与真 loader 行为一致）⇒ MC 的 Vulkan 探测照样失败、
-    // 照样回退 OpenGL（= 今天的行为）。要做实验再设 MEOW_VK_SHIM=1。回退阶梯见方案文 §7.5。
+    // Vulkan 库名指向自研 shim（libmeowvulkan.so，随包 native）。它修正本机 ICD 的"上报面裁剪"
+    // 并翻译提交与 WSI（见 meowvulkan.c 头注释）。【2026-09-18 起 Vulkan 档已可用】：选 Vulkan 时
+    // 启动器自动注入 `MEOW_VK_SHIM=1`（见 GameLauncher.ets），不再需要用户手填；未选 Vulkan 时不注入
+    // ⇒ shim 纯透传、与系统 loader 行为一致。回退阶梯见方案文 §7.5 / §13。
     argv.push(`-Dorg.lwjgl.vulkan.libname=${VULKAN_LIB_SHIM}`);
     argv.push('-DDEBUG=true');
     argv.push(`-Dcpu.name=${SPOOF_CPU_NAME}`);

@@ -52,11 +52,12 @@ export const VULKAN_LIB: string = 'libvulkan.so';
 // （本工程不随包这些模块）。把 LWJGL 的 Vulkan 库名指向一个不存在的名字 → 探测失败 → 跳过 Vulkan 组；
 // 本工程渲染走 GL/GLES（见 RendererPolicy：≥1.17 桌面 GL，≤1.16 gl4es），不依赖 LWJGL 的 Vulkan 绑定。
 export const VULKAN_LIB_DISABLED: string = 'libmeow-no-vulkan.so';
-// 【M1 实验，验证完按需回退】自研 Vulkan loader shim（随包 native，见 meowvulkan.c 头注释）：
-// 转发到真 loader，只在 env MEOW_VK_SHIM 打开时才做四个修正（补扩展名/补 feature 位/createDevice 剔名/KHR→core）。
-// ⇒ **默认纯透传**：未设 env 时 MC 的 Vulkan 探测仍会失败并回退 OpenGL（今天的行为），
-//    所以翻这一个名字本身是安全的；要做实验再把 MEOW_VK_SHIM=1 加到「额外渲染环境变量」。
-// 回退阶梯见 notes/20-design/render/Vulkan后端-绕过可行性-调研与方案.md §7.5。
+// 自研 Vulkan loader shim（随包 native，见 meowvulkan.c 头注释）：转发到真 loader，并做必要修正
+// （补扩展名 / 补 feature 位 / createDevice 剔名 / KHR→core 名字映射 + 提交与 WSI 的翻译）。
+// 【2026-09-18 起：Vulkan 档已可用】选「渲染后端 = Vulkan」时，启动器会把 `MEOW_VK_SHIM=1`
+// **自动注入游戏进程环境**（见 GameLauncher.ets 的 vulkanBackendSelected 分支）——
+// **不再需要用户手填「额外渲染环境变量」**；未选 Vulkan（auto/GL）时不注入 ⇒ shim 纯透传。
+// 回退阶梯见 notes/20-design/render/Vulkan后端-绕过可行性-调研与方案.md §7.5 / §13。
 export const VULKAN_LIB_SHIM: string = 'libmeowvulkan.so';
 
 // ---- 启动器标识（品牌：Harmomeow Craft Launcher，HarmonyOS + meow）----
