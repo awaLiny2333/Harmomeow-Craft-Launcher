@@ -34,7 +34,7 @@ commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61
 
 | 工具 | 产出 | 说明 |
 |---|---|---|
-| `lwjgl/` | `lwjgl-3.4.3.jar`、`liblwjgl_343{,_opengl,_stb}.so`、`libffi.a`、`meowcraft_extras.tar.gz` | LWJGL 现代**单代 3.4.3**（含 3.4.x 兼容 shim；旧 3.3.3 已于 2026-09-14 退役）；含净室 overlay、GLCapabilities 生成器、libffi 交叉编、`install_natives.sh`（扁平目录治理）、多件打包 |
+| `lwjgl/` | `lwjgl-3.4.3.jar`、`liblwjgl_343{,_opengl,_stb}.so`、`liblwjgl_vma.so`、`libffi.a`、`meowcraft_extras.tar.gz` | LWJGL 现代**单代 3.4.3**（含 3.4.x 兼容 shim；旧 3.3.3 已于 2026-09-14 退役）；含净室 overlay、GLCapabilities 生成器、libffi 交叉编、`install_natives.sh`（扁平目录治理）、多件打包 |
 | `lwjgl2/` | `liblwjgl.so` | 自编 **LWJGL2** OHOS native（aarch64 裸名 `liblwjgl.so`，不带后缀）；**MC 1.6.x–1.12.2** 的 legacy 平台绑定（JNI_VERSION=19 跨 2.9.x 稳定）；只编 native，不重编 MC 的 `lwjgl-2.9.x.jar` |
 | `gl4es/` | `libgl4es.so` | 自编 **gl4es v1.1.7** OHOS 移植（桌面固定管线 GL → 原生 GLES 翻译层）；**MC ≤1.16**（含 1.6.x–1.12.2，经 LWJGL2 `extgl` 取址）的渲染翻译层 |
 | `openal/` | `libopenal.so` | OpenAL Soft **1.24.3** OHOS 移植（OHAudio 默认后端 + 导出 `ALC_SOFT_system_events`） |
@@ -46,8 +46,23 @@ commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61
 | `oshi/` | `oshi-core-<v>-meow.jar` ×10 | CPU 拓扑合成补丁；**现代 9 项 + legacy `oshi-core-1.1`（MC 1.16.x）** |
 | `meow-launcher/` | `launcher.jar` | 净室自研 `meow.launcher`（无 GPL/Pojav/HMCL） |
 | `relocate_gson.py` | `gson-for-launcher.jar` | `com.google.gson` → `meow.gson`（launcher 专用） |
-| ~~`slim_jre_data.py`~~ | ~~`meow_jre*.tar.gz`~~ | **已废弃**（旧 JRE 时代工具）。现用 `tools/jre26/linux_slim_jre.sh`（jlink 裁 modules）+ `tools/jre26/pack_jre_data.py`（确定性打包） |
+| ~~`slim_jre_data.py`~~ | ~~`meow_jre*.tar.gz`~~ | **已删除 2026-09-18**（旧 JRE 时代工具，代码卫生清理时随废弃项移除）。现用 `tools/jre26/linux_slim_jre.sh`（jlink 裁 modules）+ `tools/jre26/pack_jre_data.py`（确定性打包） |
 | `oshi/pack_jar.py` | — | **确定性** jar 打包器（launcher/lwjgl/oshi 共用） |
+| `lwjgl/build_lwjgl_core_aligned_alloc_fix.sh` | `liblwjgl_343.so`（F2 对齐修复） | 单件重编 core：把 `posix_memalign` 前的 `alignment` clamp 到 `>= sizeof(void*)`（OHOS musl 对 `alignment < 8` 返 EINVAL）。详见下方「单件脚本」 |
+| `lwjgl/build_lwjgl_vma.sh` | `liblwjgl_vma.so`（`--release` 默认 / `--diagnostic`） | 参数化自编 VMA：release = 随包纯净件（逐字节一致）；diagnostic = 带 `[vma]` 诊断串、**不随包**。详见下方「单件脚本」 |
+
+**单件重编 / 诊断脚本（native；均可独立跑通，`ref/` 只读）**：
+
+- **`lwjgl/build_lwjgl_core_aligned_alloc_fix.sh`（F2 对齐 clamp）**
+  - **用途**：重编 LWJGL core，在生成的 `__aligned_alloc` 里把 `alignment` clamp 到 `>= sizeof(void*)`（修 OHOS musl `posix_memalign` 对小对齐返 EINVAL——VMA 用 `alignof(RegionInfo)==2` 申请 32 MiB 块页表 ⇒ `memset(NULL,…)` SIGSEGV）。
+  - **何时需要**：换 LWJGL core 源码/tag 重编、或怀疑该修复丢失时。
+  - **与随包产物**：产出即随包 `liblwjgl_343.so`（`2a6fcf99…`）；旧件备份 `stuffs/research/vulkan/fixes/liblwjgl_343.so.pre-f2`（`16298280…`）。
+  - **如何自证**：默认只编不装，跑完在 `stuffs/research/lwjgl_f2_align/out/liblwjgl.so` 打印 sha，并断言导出集与随包**集合一致**；加 `--install` 才落盘 + 更新 `natives.manifest`。
+- **`lwjgl/build_lwjgl_vma.sh`（VMA 参数化：`--release` 默认 / `--diagnostic`）**
+  - **用途**：自编 `liblwjgl_vma.so`（MC 的所有 Vulkan 分配都走 VMA；LibVma 无 override key ⇒ 缺件是硬失败 "Failed to create VMA allocator"）。VMA 只从 Java 拿 Vulkan 函数指针 ⇒ 无 Vulkan `DT_NEEDED`，libc++ 静态链入（`DT_NEEDED` 仅 `libc.so`）。
+  - **何时需要**：VMA 模块重编/升级。`--diagnostic` 仅用于排查函数表 NULL / `memset` 野指针，**不随包**。
+  - **与随包产物**：**默认 release 与随包 `liblwjgl_vma.so` 逐字节一致**（`479a619f…`）；随包的是 release，随包件**不含任何 `[vma]` 串**。release 的可复现性同其它 native：链接器把绝对输出路径写进二进制，故只有用默认 `WORK`（`stuffs/research/vulkan/vma_build`，即该件的原始构建路径）才逐字节一致。
+  - **如何自证**：`sh tools/lwjgl/build_lwjgl_vma.sh && cmp stuffs/research/vulkan/vma_build/out/liblwjgl_vma.so Harmomeow-Craft-Launcher/libs/meowlwjgls/libs/arm64-v8a/liblwjgl_vma.so && echo IDENTICAL`；`--diagnostic` 产物必须 **sha 不同**且 `strings … | grep '\[vma\]'` 命中。
 
 ## 3. 从零复现顺序（关键产物）
 
@@ -62,6 +77,12 @@ sh tools/lwjgl/build_lwjgl_jar.sh --version 3.4.3 --overlay tools/lwjgl/deltas/o
     --overlay tools/lwjgl/deltas/overlay-3.4.3      # ③ 3.4.3 jar（人跑 javac）；≥3.4.x 自动补 sdl/vma/spvc/shaderc 模块（MC 26.3）
 sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3                                # ④ 3.4.3 natives → liblwjgl_343{,_opengl,_stb}.so（自动带 libffi）
 # （natives 由 install_natives.sh 统一命名 + 维护 libs/meowlwjgls/libs/natives.manifest；勿手工拷/改名）
+
+# A0. 单件重编 / 诊断脚本（可选；详见 §2 末「单件脚本」）
+sh tools/lwjgl/build_lwjgl_core_aligned_alloc_fix.sh          # F2 对齐修复（默认只编；--install 才随包 + 更新 manifest）
+sh tools/lwjgl/build_lwjgl_vma.sh                             # VMA release（默认；应与随包 liblwjgl_vma.so 逐字节一致）
+#   sh tools/lwjgl/build_lwjgl_vma.sh --diagnostic            # 诊断版（带 [vma] 串；勿随包）
+
 python3 tools/lwjgl/pack_extras.py --base-tar entry/.../rawfile/meowcraft_extras.tar.gz \
     --jar lwjgl-3.4.3.jar=… --out entry/.../rawfile/meowcraft_extras.tar.gz   # ⑤ 组包
 
@@ -122,7 +143,7 @@ devecocli run --module entry meowjre --device <serial>
   `python3 tools/relocate_gson.py <base.tar.gz>` → `python3 tools/lwjgl/pack_extras.py --base-tar <base.tar.gz> --jar lwjgl-3.4.3.jar=<built> --require lwjgl-3.4.3.jar --out <final>`
   → 覆盖 `entry/.../rawfile/meowcraft_extras.tar.gz` 并**升 `EXTRAS_VERSION`**。
 - **JRE 可复现**：`libc6.so`/`libjli.so`、官方 26 件魔改、数据 tar（`tools/jre26/pack_jre_data.py`）均**逐字节**；自编 `libjvm` 同 OS/工具链/源/**同路径** + `SOURCE_DATE_EPOCH=1784133400`（`jdk-26.0.2.1-ga` 提交）**2× cmp 一致**（`d28164cd…`；`linux_verify_jvm_repro.sh` 默认 2，`MEOW_REPRO_N` 可调高。见 `tools/jre26/README.md` §可复现性）。
-- **native 可复现**：同 tag + 同 SDK + **同 `--src`/`--out` 绝对路径** → 逐字节一致（链接器把输出路径写进 `.dynstr`；换路径同功能、哈希不同）。本工具链的新原生已 **3× 干净重建 `cmp` 一致**（对照 2026-09-11 盘上随包件）：`libSDL3.so`(`241bbfef…`)、`libshaderc.so`(`0cff3465…`)、`libspirv-cross.so`(`93ad9907…`)、`liblwjgl.so`(`df886466…`)；其中 `spirv-cross` 需 `SOURCE_DATE_EPOCH`（`tools/shaderc/build_shaderc_meow.sh` 已内置，取 pinned 提交时间）。`libgl4es.so`(`90c6ff6b…`) 同路径下**预期**可复现（见 `tools/gl4es/README.md`，尚未 3× 验证）。
+- **native 可复现**：同 tag + 同 SDK + **同 `--src`/`--out` 绝对路径** → 逐字节一致（链接器把输出路径写进 `.dynstr`；换路径同功能、哈希不同）。本工具链的新原生已 **3× 干净重建 `cmp` 一致**（对照 2026-09-11 盘上随包件）：`libSDL3.so`(`241bbfef…`)、`libshaderc.so`(`0cff3465…`)、`libspirv-cross.so`(`93ad9907…`)、`liblwjgl.so`(`df886466…`)；其中 `spirv-cross` 需 `SOURCE_DATE_EPOCH`（`tools/shaderc/build_shaderc_meow.sh` 已内置，取 pinned 提交时间）。`libgl4es.so`(`90c6ff6b…`) 同路径下**预期**可复现（见 `tools/gl4es/README.md`，尚未 3× 验证）。**VMA / F2 单件**：`liblwjgl_vma.so` release(`479a619f…`，默认 `WORK=stuffs/research/vulkan/vma_build`) 与随包件 `cmp` 一致、`liblwjgl_343.so` F2(`2a6fcf99…`，`libs/meowlwjgls/libs/arm64-v8a/`) —— 见 §2「单件脚本」；VMA 诊断版(`64cba35f…`)仅存在于 `stuffs/`、**不随包**。
 - **构建期断言（缺件在发包时拦下，运行期不加防护）**：`pack_extras.py --require <member>`（断言 tar 成员齐，如 `lwjgl-3.4.3.jar`）；
   `install_natives.sh --verify`（断言 `natives.manifest` 每项在盘且 sha 匹配）。缺件属"我们发包可掌控"→ 只在构建期拦，不在运行时查（省开销）。
 - **javac**：任何 `.jar` 步骤沙箱内不可跑，须人在有 JDK 的 shell 执行。

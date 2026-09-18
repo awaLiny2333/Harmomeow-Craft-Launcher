@@ -13,6 +13,7 @@ import { AdvancedOptionsView } from '../components/AdvancedOptionsView';
 import { GameDirsView } from '../components/GameDirsView';
 import { GameVersionsView } from '../components/GameVersionsView';
 import { JavaEnvView } from '../components/JavaEnvView';
+import { VulkanProbeHost } from '../devtools/VulkanProbeHost';
 import { AccountState, getAccountState } from '../common/state/AccountState';
 import { getLauncherState, LauncherState } from '../common/state/LauncherState';
 
@@ -49,7 +50,14 @@ struct Index {
   /** 媒体查询监听句柄（窄/宽断点）。 */
   private wideListener: mediaquery.MediaQueryListener | null = null;
 
+  /** 开发者诊断：render-env 命中 MEOW_VK_PROBE 时才挂载 VulkanProbeHost（正常用户 false）。 */
+  @Local vkProbeEnabled: boolean = false;
+
   aboutToAppear(): void {
+    // 开发者诊断：仅当 render-env 命中 MEOW_VK_PROBE 时挂载探针宿主（正常用户零行为/零渲染）。
+    const probeCtx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    this.vkProbeEnabled = new SettingsTools(probeCtx).vkProbeFrames() > 0;
+
     const query = `(min-width: ${LAYOUT_WIDE_MIN_W}vp)`;
     this.wideListener = this.getUIContext().getMediaQuery().matchMediaSync(query);
     this.wide = this.wideListener.matches;
@@ -142,14 +150,35 @@ struct Index {
   }
 
   build() {
-    Row() {
-      if (this.wide) {
-        // 左侧栏：账户区（可滚动）+ 底部「继续上次」按钮（与账户 Scroll 并列）
+    Stack() {
+      Row() {
+        if (this.wide) {
+          // 左侧栏：账户区（可滚动）+ 底部「继续上次」按钮（与账户 Scroll 并列）
+          Column({ space: LAYOUT_SPACE }) {
+            Scroll() {
+              Column({ space: LAYOUT_SPACE }) {
+                AccountView();
+              }
+              .width('100%')
+              .alignItems(HorizontalAlign.Start);
+            }
+            .edgeEffect(EdgeEffect.Spring)
+            .layoutWeight(1)
+            .width('100%')
+            .align(Alignment.TopStart);
+            this.continueLastButton();
+          }
+          .padding({ left: LAYOUT_PADDING, top: LAYOUT_PADDING, bottom: LAYOUT_PADDING })
+          .width(LAYOUT_ACCOUNT_PANEL_W)
+          .height('100%');
+        }
+        // 主区：可上下滚动的原页面（+ 窄屏时底部「继续上次」按钮，与主区 Scroll 并列）
         Column({ space: LAYOUT_SPACE }) {
           Scroll() {
             Column({ space: LAYOUT_SPACE }) {
-              AccountView();
+              this.mainSections();
             }
+            .padding(LAYOUT_PADDING)
             .width('100%')
             .alignItems(HorizontalAlign.Start);
           }
@@ -157,32 +186,20 @@ struct Index {
           .layoutWeight(1)
           .width('100%')
           .align(Alignment.TopStart);
-          this.continueLastButton();
+          if (!this.wide) {
+            this.continueLastButton();
+          }
         }
-        .padding({ left: LAYOUT_PADDING, top: LAYOUT_PADDING, bottom: LAYOUT_PADDING })
-        .width(LAYOUT_ACCOUNT_PANEL_W)
+        .layoutWeight(1)
         .height('100%');
       }
-      // 主区：可上下滚动的原页面（+ 窄屏时底部「继续上次」按钮，与主区 Scroll 并列）
-      Column({ space: LAYOUT_SPACE }) {
-        Scroll() {
-          Column({ space: LAYOUT_SPACE }) {
-            this.mainSections();
-          }
-          .padding(LAYOUT_PADDING)
-          .width('100%')
-          .alignItems(HorizontalAlign.Start);
-        }
-        .edgeEffect(EdgeEffect.Spring)
-        .layoutWeight(1)
-        .width('100%')
-        .align(Alignment.TopStart);
-        if (!this.wide) {
-          this.continueLastButton();
-        }
-      }
-      .layoutWeight(1)
+      .width('100%')
       .height('100%');
+
+      // 开发者诊断挂载：仅 render-env 命中 MEOW_VK_PROBE 时渲染 VulkanProbeHost（否则零行为/零渲染）。
+      if (this.vkProbeEnabled) {
+        VulkanProbeHost();
+      }
     }
     .width('100%')
     .height('100%');

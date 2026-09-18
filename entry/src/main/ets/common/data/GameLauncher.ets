@@ -109,15 +109,11 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   // 注意：versionId 现在是实例名（目录名，玩家可任取），不能拿它判版本。
   const mcVersion = readVersionId(jsonPath);
   const renderer = rendererForVersion(mcVersion, instance.rendererBackend);
-  // 【临时诊断，查完即删】把 Vulkan 开关这条链上的四个值一次暴露出来：盘上的后端值、选择函数给出的
-  // graphicsBackend、以及版本把关的结果。任何一环不对，CMD_TAIL 里就不会出现 --graphicsBackend。
-  hilog.info(LOG_DOMAIN, LOG_TAG,
-    'vkdiag mcVersion=%{public}s backendFromDisk=%{public}s choiceGb=%{public}s gate=%{public}s',
-    mcVersion, instance.rendererBackend, renderer.graphicsBackend,
-    supportsVulkanBackend(mcVersion) ? 'true' : 'false');
-  // 【F74】选了 Vulkan 档（且该 MC 版本支持）时，除了游戏参数 `--graphicsBackend vulkan`，还要把
-  // `MEOW_VK_SHIM=1` 送进游戏进程环境（走下方既有"额外渲染环境变量"通道）。libmeowvulkan.so 的
-  // 加载器 shim 读的是 **getenv**（不是 -D），所以不能做成 JVM 属性。auto/GL 档不注入 ⇒ 与今天一致。
+  // 【F75 env-cleanup】选了 Vulkan 档（且该 MC 版本支持）时，只需带上游戏参数
+  // `--graphicsBackend vulkan`；"选哪个 Vulkan 库"由 MinecraftLauncher 的
+  // `-Dorg.lwjgl.vulkan.libname` 承载（选 Vulkan = shim，否则 = no-vulkan 占位库）。因此这里
+  // **不再注入 MEOW_VK_SHIM**：shim 一经加载即默认挂钩；需要纯透传时由用户「额外渲染环境变量」
+  // 显式写 `MEOW_VK_SHIM=0`。
   const vulkanBackendSelected =
     renderer.graphicsBackend.length > 0 && supportsVulkanBackend(mcVersion);
   const argv = buildLaunchArgv({
@@ -214,8 +210,8 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   const renderEnv = `GALLIUM_THREAD=${glthread ? '1' : '0'}`
     + (guardSyncNone ? '\nMEOW_GUARD_SYNC=none' : '')
     + (maskEnv.length > 0 ? `\n${maskEnv}` : '')
-    // 【F74】Vulkan 档自动注入 shim 门控；拼在用户 env 之前 ⇒ 用户可显式覆盖。
-    + (vulkanBackendSelected ? '\nMEOW_VK_SHIM=1' : '')
+    // 【F75 env-cleanup】不再注入 MEOW_VK_SHIM：选 Vulkan 由 libname 承载；逃生口仍是用户
+    // 「额外渲染环境变量」里的 `MEOW_VK_SHIM=0`（显式写空同理 = 纯透传）。
     + `\n${userRenderEnv}`;
   // 用户「额外渲染环境变量」里若**显式**写 none，会让守卫对"本需要同步的版本"也纯透传（fail-open）——
   // 不改用户语义（用户优先），但记一条 WARN 便于实机排障（见 notes 00-current/运行时环境变量.md 回滚阶梯）。

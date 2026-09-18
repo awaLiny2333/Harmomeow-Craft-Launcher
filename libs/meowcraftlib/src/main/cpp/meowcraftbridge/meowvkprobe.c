@@ -1,5 +1,6 @@
 /*
- * TEMPORARY DIAGNOSTIC INSTRUMENT -- to be removed once the Vulkan campaign closes
+ * LONG-LIVED DIAGNOSTIC INSTRUMENT -- kept for regression and performance work on the Vulkan
+ * path; only runs on demand (probe entry / MEOW_VK_PROBE_*).
  *
  * meowvkprobe.c - F29 minimal "sustained present" probe (bare ICD + WSI).
  *
@@ -1926,27 +1927,11 @@ static void probe_run_one(int64_t surfaceId, int frames) {
         }
     }
 
-    /* F47: the split switches. -1 when unset (the shim then falls back to the legacy
-     * MEOW_VK_SYNC2_TO_V1 and finally to its hooks default). Recorded/reported only; the
-     * shim reads these envs itself, the probe never acts on them. */
+    /* F75 env-cleanup: the F47 split envs MEOW_VK_SYNC2_TO_V1_BARRIER / _SUBMIT were retired from
+     * the shim (the barrier and submit translations now share the single MEOW_VK_SYNC2_TO_V1
+     * decision). These fields only recorded/reported the env, so they stay constant -1. */
     int sync2ToV1Barrier = -1;
-    {
-        const char* t = getenv("MEOW_VK_SYNC2_TO_V1_BARRIER");
-        if (t != NULL && strcmp(t, "0") == 0) {
-            sync2ToV1Barrier = 0;
-        } else if (t != NULL && t[0] == '1') {
-            sync2ToV1Barrier = 1;
-        }
-    }
     int sync2ToV1Submit = -1;
-    {
-        const char* t = getenv("MEOW_VK_SYNC2_TO_V1_SUBMIT");
-        if (t != NULL && strcmp(t, "0") == 0) {
-            sync2ToV1Submit = 0;
-        } else if (t != NULL && t[0] == '1') {
-            sync2ToV1Submit = 1;
-        }
-    }
 
     /* F63 frame submit/present PATTERN. DEFAULT is "mc": reproduce MC 26.2's shape
      * (one vkQueueSubmit2 carrying two VkSubmitInfo2 entries, no fence, present
@@ -4284,8 +4269,8 @@ static void* probe_main(void* arg) {
         const char* devfeat = getenv("MEOW_VK_PROBE_DEVFEAT");
         const char* pattern = getenv("MEOW_VK_PROBE_PATTERN");
         const char* sync2v1 = getenv("MEOW_VK_SYNC2_TO_V1");
-        const char* sync2v1b = getenv("MEOW_VK_SYNC2_TO_V1_BARRIER");
-        const char* sync2v1s = getenv("MEOW_VK_SYNC2_TO_V1_SUBMIT");
+        const char* sync2v1b = "(retired-F75)";   /* F75: split env removed */
+        const char* sync2v1s = "(retired-F75)";   /* F75: split env removed */
         sb_add(&sb,
                "MeowVkProbe report F63+F65+F65b+F67 (mode=%s) frames=%d shape=%s pipeline=%s sync=%s"
                " pattern_env=%s devfeat_env=%s sync2v1_env=%s sync2v1B_env=%s"
@@ -4400,8 +4385,7 @@ static void* probe_main(void* arg) {
             setenv("MEOW_VK_PROBE_SUBMIT", f47Cell[ci][5], 1);
             setenv("MEOW_VK_SYNC2_TO_V1", f47Cell[ci][6], 1);
             setenv("MEOW_VK_PROBE_SYNC", f47Cell[ci][7], 1);
-            setenv("MEOW_VK_SYNC2_TO_V1_BARRIER", f47Cell[ci][8], 1);
-            setenv("MEOW_VK_SYNC2_TO_V1_SUBMIT", f47Cell[ci][9], 1);
+            /* F75: f47Cell columns 8/9 (the retired split envs) are no longer applied. */
             setenv("MEOW_VK_PROBE_TEXTURED", f47Cell[ci][10], 1);
             setenv("MEOW_VK_PROBE_PATTERN", f47Cell[ci][11], 1);
             setenv("MEOW_VK_PROBE_MC_BLIT", f47Cell[ci][12], 1);   /* F65 */
@@ -4426,8 +4410,6 @@ static void* probe_main(void* arg) {
         unsetenv("MEOW_VK_PROBE_MC_DIV");
         unsetenv("MEOW_VK_SYNC2_TO_V1");
         unsetenv("MEOW_VK_PROBE_SYNC");
-        unsetenv("MEOW_VK_SYNC2_TO_V1_BARRIER");
-        unsetenv("MEOW_VK_SYNC2_TO_V1_SUBMIT");
         unsetenv("MEOW_VK_PROBE_TEXTURED");
         unsetenv("MEOW_VK_PROBE_MC_BLIT");   /* F65 */
         unsetenv("MEOW_VK_PROBE_NOSPLIT");   /* F65b */

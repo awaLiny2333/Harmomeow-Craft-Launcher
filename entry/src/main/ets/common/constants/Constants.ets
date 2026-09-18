@@ -58,8 +58,13 @@ export const DOWNLOAD_CARD_MAX_W: number = 420;
 // 若该回调迟迟不来，等这么久后按默认尺寸启动，避免"永不启动"。
 export const LAUNCH_FALLBACK_MS: number = 1500;
 
-// F29 Vulkan 可持续送显探针：默认送显帧数、结果轮询间隔（ms）、临时 surface 高度（vp）。
+// F29/F76 Vulkan 可持续送显探针：默认送显帧数、结果轮询间隔（ms）、临时 surface 高度（vp）。
+// F76 起不再有 UI 按钮；由「高级选项 → 渲染环境变量」文本里的 VK_PROBE_ENV_KEY 触发（开发者诊断）。
 export const VK_PROBE_FRAMES: number = 120;
 export const VK_PROBE_POLL_MS: number = 200;
 export const VK_PROBE_SURFACE_HEIGHT: number = 120;
 export const VK_PROBE_RESULT_HEIGHT: number = 240;
+// F76 探针 env 触发键：render-env 文本出现 `MEOW_VK_PROBE`（可带帧数 `MEOW_VK_PROBE=120`）时，
+// 启动器窗口/表面就绪后自动跑一次裸 ICD + WSI 送显探针；正常用户不会填（已无 UI 入口）。
+// 省略值 / `=1` / 非法值 → 用 VK_PROBE_FRAMES 默认帧数。
+export const VK_PROBE_ENV_KEY: string = 'MEOW_VK_PROBE';

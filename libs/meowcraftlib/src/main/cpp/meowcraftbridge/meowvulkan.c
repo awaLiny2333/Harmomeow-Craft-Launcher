@@ -22,18 +22,19 @@
 // a lie -- maxVertexAttribDivisor is 1 -- but vanilla never uses a divisor other than 1 (section
 // 5.4), so it is safe for our target while being wrong for mods. See section 7.6.
 //
-// MASTER SWITCH: MEOW_VK_SHIM. Unset (or "0") means PURE PASSTHROUGH -- i.e. exactly the system
-// loader's behaviour. Diagnostic switches default off in this project, so enabling the shim is
-// explicit. See notes section 7.5 for the rollback ladder.
+// MASTER SWITCH: MEOW_VK_SHIM. F75 (shim build 2026-09-18.55 env-cleanup): the shim now HOOKS BY
+// DEFAULT WHEN LOADED (g_hooks defaults to 1) -- the launcher selects it through the Vulkan library
+// NAME (`-Dorg.lwjgl.vulkan.libname`), which is the parameter that carries "use Vulkan". Set
+// MEOW_VK_SHIM=0 (or an empty value) for PURE PASSTHROUGH -- i.e. exactly the system loader's
+// behaviour -- as an escape hatch. See notes section 7.5 for the rollback ladder.
 //
-// ============ ENV SWITCH TIERS (F74, shim build 2026-09-18.54 wrapup) ============
+// ============ ENV SWITCH TIERS (F75, shim build 2026-09-18.55 env-cleanup) ============
 // Every env var this file reads, grouped by what the user is expected to do with it. This is the
-// authoritative list; keep it in sync when a switch is added or retired. (meowvkprobe.c is itself
-// Tier C; its MEOW_VK_PROBE_* names are listed there and in the F74 report.)
+// authoritative list; keep it in sync when a switch is added or retired. (meowvkprobe.c is a
+// long-lived diagnostic instrument; its MEOW_VK_PROBE_* names are listed there.)
 //
 // --- TIER A: FUNCTIONALLY REQUIRED -- baked-in defaults, the user sets NONE of these -------------
-//   MEOW_VK_SHIM=1                 master gate; the launcher now injects it automatically when the
-//                                  instance picks the Vulkan backend (F74; GameLauncher.ets). getenv.
+//   MEOW_VK_SHIM=0 (or empty)      OPTIONAL escape hatch: pure passthrough. Unset/1 = hooks on.
 //   F66 (no env)                   merge submit entries instead of splitting them -- compiled in.
 //   MEOW_VK_TIMELINE_AS_FENCE=1    translate MC's timeline-semaphore waits to fences (F69).
 //   MEOW_VK_PUSH_AS_SET=1          emulate vkCmdPushDescriptorSet with a normal descriptor set (F72).
@@ -43,21 +44,21 @@
 // --- TIER B: DIAGNOSTIC -- default OFF, kept so a defect can be re-investigated -----------------
 //   MEOW_VK_VERBOSE, MEOW_VK_WD,
 //   MEOW_VK_DROP_DRAW, MEOW_VK_DROP_PUSH_DESCRIPTOR,
-//   MEOW_VK_FIX_EXTENT, MEOW_VK_FIX_COPY_BUFFER_TO_IMAGE, MEOW_VK_FIX_COMPOSITE_ALPHA,
-//   MEOW_VK_SWAPCHAIN_USAGE_EXTRA, MEOW_VK_FIX_MIN_IMAGE_COUNT, MEOW_VK_FIX_PRESENT_MODE,
-//   MEOW_VK_NO_DIVISOR_FEATURE, MEOW_VK_KEEP_SYNC2, MEOW_VK_STRIP_UNSUPPORTED_FEATURES,
-//   MEOW_VK_SYNC2_TO_V1, MEOW_VK_SYNC2_TO_V1_BARRIER, MEOW_VK_SYNC2_TO_V1_MERGE,
-//   MEOW_VK_SYNC2_TO_V1_SUBMIT, MEOW_VK_TIMELINE_HOST_SIGNAL, MEOW_VK_WAIT_VIA_QUEUE_IDLE,
-//   MEOW_VK_NO_FLIP_BLIT, MEOW_VK_F53_FAST_CACHE, MEOW_VK_NO_VK13_WRITE, MEOW_VK_ACQ_SLOW_QUIET
+//   MEOW_VK_FIX_EXTENT, MEOW_VK_FIX_COPY_BUFFER_TO_IMAGE, MEOW_VK_NO_DIVISOR_FEATURE,
+//   MEOW_VK_STRIP_UNSUPPORTED_FEATURES, MEOW_VK_SYNC2_TO_V1, MEOW_VK_SYNC2_TO_V1_MERGE,
+//   MEOW_VK_WAIT_VIA_QUEUE_IDLE
 //
-// --- TIER C: TEMPORARY PROBES -- TO BE REMOVED once the Vulkan campaign closes -------------------
+// --- TIER C: LONG-LIVED DIAGNOSTIC -- on demand only; kept for regression/perf work ------------
 //   meowvkprobe.c (the whole file) and its MEOW_VK_PROBE_* switches: DEVFEAT, LIB, MC_BLIT, MC_DIV,
 //   MC_DR, MC_PUSH, MC_TS, MC_UPLOAD, NOSPLIT, PATTERN, PIPELINE, SHAPE, SUBMIT, SYNC, TAIL,
-//   TEXTURED -- plus the F29 probe UI (AdvancedOptionsView.ets surfaceId hand-off + result readout).
+//   TEXTURED -- plus the F29 probe host (devtools/VulkanProbeHost.ets, mounted only when the
+//   launcher's render-env text contains MEOW_VK_PROBE; it owns the surfaceId hand-off + result readout).
 // ===============================================================================
 //
-// TEMPORARY/EXPERIMENTAL: this is milestone M1 (get MC's Vulkan backend to start so its real calls
-// can be observed). See notes/20-design/render/Vulkan后端-绕过可行性-调研与方案.md section 11.
+// STATUS: production shim. The four corrections above are the shipped Vulkan path -- the launcher
+// selects this library by name when the Vulkan backend is chosen; the env tiers below are the
+// supported switches. The M1 milestone (get MC's Vulkan backend to start so its real calls could be
+// observed) is complete. See notes/20-design/render/Vulkan后端-绕过可行性-调研与方案.md section 11.
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -70,7 +71,6 @@
 #include <pthread.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <ucontext.h>
 #include <unistd.h>
 
 #include "meowlog.h"
@@ -98,13 +98,11 @@ typedef VkDeviceCreateInfo VkDeviceCI;   // fields use the official spellings (s
 typedef VkPhysicalDeviceVulkan13Features Vk13Features;
 typedef VkPhysicalDeviceDynamicRenderingFeatures VkDynRenderFeatures;
 typedef VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT VkDivisorFeaturesExt;
-typedef VkPhysicalDeviceSynchronization2Features VkSync2Features;
 
 // sType values: official enum constants from vulkan_core.h (no hand-typed numbers).
 #define ST_VK13_FEATURES        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES
 #define ST_DYNREND_FEATURES     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES
 #define ST_DIVISOR_FEATURES_EXT VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT
-#define ST_SYNC2_FEATURES       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES
 
 // The names MC needs that the ICD implements but does not advertise. Measured addition (2026-09-17):
 // VK_KHR_get_physical_device_properties2. On this 1.2-core device LWJGL does not resolve the KHR
@@ -195,8 +193,8 @@ static int meow_vk_verbose(void);
 #define MEOW_F53_IMG_CACHE_MAX 512
 // F57 (shim build .37): O(1) slot lookup. A fixed 1024-bucket separate-chaining table (load factor
 // 0.5 at 512 entries) plus an intrusive free list turns a saturated cache from a 512-entry scan into
-// an O(1) early exit. MEOW_VK_F53_FAST_CACHE=0 restores the legacy linear scan for A/B. Semantics are
-// unchanged: at most the same 512 live images tracked by exact pointer, same hit/miss decisions.
+// an O(1) early exit. Semantics are unchanged: at most the same 512 live images tracked by exact
+// pointer, same hit/miss decisions.
 #define MEOW_F53_IMG_HASH_SIZE 1024
 
 /* F53 mirrors are now aliases to the official SDK types (vulkan_core.h): no handwritten layout
@@ -323,17 +321,6 @@ static int32_t g_meow_f53_buckets[MEOW_F53_IMG_HASH_SIZE];
 static int32_t g_meow_f53_free_head;
 static int g_meow_f53_fast_ready;
 
-// F57 A/B switch: default ON; MEOW_VK_F53_FAST_CACHE=0 picks the legacy linear scan. Read once so the
-// hot path never calls getenv.
-static int meow_f53_fast_cache(void) {
-    static int cached = -1;
-    if (cached < 0) {
-        const char* s = getenv("MEOW_VK_F53_FAST_CACHE");
-        cached = (s != NULL && s[0] == '0' && s[1] == '\0') ? 0 : 1;
-    }
-    return cached;
-}
-
 static uint32_t meow_f53_hash_ptr(const void* p) {
     uint64_t x = (uint64_t)(uintptr_t)p;
     x ^= x >> 33;
@@ -435,7 +422,6 @@ static void meow_f53_stage_created(void* img, const void* ci) {
 static int meow_f53_register_target(void* img) {
     if (img == NULL) return -1;
     int slot = -1;
-    int fast = meow_f53_fast_cache();
     pthread_mutex_lock(&g_meow_f53_img_lock);
     MeowF53ImgInfo* s = &g_meow_f53_info[meow_f53_hash_ptr(img)];
     if (!s->used || s->image != img) {
@@ -444,14 +430,8 @@ static int meow_f53_register_target(void* img) {
     }
     MeowF53ImgInfo info = *s;
     s->used = 0;                 /* consumed on promotion: one staged entry per tracked target */
-    if (fast) {
-        if (!g_meow_f53_fast_ready) meow_f53_fast_init_locked();
-        slot = meow_f53_claim_locked();
-    } else {
-        for (int i = 0; i < MEOW_F53_IMG_CACHE_MAX; i++) {
-            if (!g_meow_f53_imgs[i].used) { slot = i; break; }
-        }
-    }
+    if (!g_meow_f53_fast_ready) meow_f53_fast_init_locked();
+    slot = meow_f53_claim_locked();
     if (slot < 0) {
         static int s_f53_full_noted;
         if (!s_f53_full_noted) {
@@ -476,7 +456,7 @@ static int meow_f53_register_target(void* img) {
     e->width = info.width;
     e->height = info.height;
     e->depth = info.depth;
-    if (fast) meow_f53_link_locked(slot, img);
+    meow_f53_link_locked(slot, img);
     pthread_mutex_unlock(&g_meow_f53_img_lock);
     return slot;
 }
@@ -485,13 +465,7 @@ static int meow_f53_find(void* img) {
     if (img == NULL) return -1;
     int found = -1;
     pthread_mutex_lock(&g_meow_f53_img_lock);
-    if (meow_f53_fast_cache()) {
-        found = meow_f53_lookup_locked(img);
-    } else {
-        for (int i = 0; i < MEOW_F53_IMG_CACHE_MAX; i++) {
-            if (g_meow_f53_imgs[i].used && g_meow_f53_imgs[i].image == img) { found = i; break; }
-        }
-    }
+    found = meow_f53_lookup_locked(img);
     pthread_mutex_unlock(&g_meow_f53_img_lock);
     return found;
 }
@@ -633,24 +607,12 @@ static void meow_f53_record_destroyed(void* img) {
     void* mem = NULL;
     pthread_mutex_lock(&g_meow_f53_img_lock);
     meow_f53_info_drop_locked(img);   /* F61: drop the staged create-info if it was never promoted */
-    if (meow_f53_fast_cache()) {
-        int idx = meow_f53_lookup_locked(img);
-        if (idx >= 0) {
-            lin = g_meow_f53_imgs[idx].linImage;
-            ab = g_meow_f53_imgs[idx].aliasBuffer;
-            mem = g_meow_f53_imgs[idx].linMem;
-            meow_f53_release_locked(idx);   /* keeps the free-list link intact (no memset) */
-        }
-    } else {
-        for (int i = 0; i < MEOW_F53_IMG_CACHE_MAX; i++) {
-            if (g_meow_f53_imgs[i].used && g_meow_f53_imgs[i].image == img) {
-                lin = g_meow_f53_imgs[i].linImage;
-                ab = g_meow_f53_imgs[i].aliasBuffer;
-                mem = g_meow_f53_imgs[i].linMem;
-                memset(&g_meow_f53_imgs[i], 0, sizeof(g_meow_f53_imgs[i]));
-                break;
-            }
-        }
+    int idx = meow_f53_lookup_locked(img);
+    if (idx >= 0) {
+        lin = g_meow_f53_imgs[idx].linImage;
+        ab = g_meow_f53_imgs[idx].aliasBuffer;
+        mem = g_meow_f53_imgs[idx].linMem;
+        meow_f53_release_locked(idx);   /* keeps the free-list link intact (no memset) */
     }
     pthread_mutex_unlock(&g_meow_f53_img_lock);
     if (lin != NULL || ab != NULL || mem != NULL) {
@@ -881,10 +843,10 @@ static void log_CmdCopyBufferToImage(void* cmd, void* src, void* dst, uint32_t d
     }
 }
 
-// TEMPORARY (M1): log-only wrappers for the two calls most likely to be the crash site. The crash
-// dumper's own record never survives -- the OS signal chain kills the process mid-write (measured:
-// the dump ends inside the maps section, before the fault record) -- so we use the technique that
-// located every previous failure: log right before the suspect call and see where the log stops.
+// F54/F68: diagnostic log wrappers around the descriptor-push and shader-module calls. Per-call
+// detail is gated behind MEOW_VK_VERBOSE (Tier B, default OFF); the wrappers themselves are the
+// forwarding mechanism and stay. History: the crash dumper's own record never survived the OS signal
+// chain, so logging right before/after the suspect call was how each failure was located.
 typedef void (*PFN_cmdPush)(void*, uint32_t, void*, uint32_t, uint32_t, const void*);
 // F72 (shim build .49) forward declarations: the implementation lives with the F69 helpers further
 // down (it reuses meow_f69_createFence/getFenceStatus), but the push wrapper above needs the on/off
@@ -986,13 +948,12 @@ static int log_CreateShaderModule(void* dev, const void* ci, const void* alloc, 
     return rc;
 }
 
-// TEMPORARY (M1): the crash is a memset(NULL, ..., 0x8000) whose caller is JIT (or newly mapped)
-// code, so the question is which native call handed out the NULL. This ICD has a documented quirk --
-// the same VkDeviceMemory cannot be mapped twice (the second vkMapMemory returns -5) -- so log the
-// allocation-boundary calls with their results. These pass everything through unchanged and only
-// read the results back; the last line printed names the call that killed it.
+// Tier B diagnostic (default OFF): allocation-boundary wrappers (vkMapMemory / vkAllocateMemory /
+// vkCreateBuffer / vkBindBufferMemory / vkGetBufferMemoryRequirements). They pass everything through
+// unchanged and only read results back; their log lines are gated behind MEOW_VK_VERBOSE, so the
+// default run stays quiet -- set MEOW_VK_VERBOSE=1 to name the last call before a fault.
 // ---------------------------------------------------------------- hang watchdog
-// TEMPORARY (M1 diagnostic; env MEOW_VK_WD=<seconds>, default OFF).
+// Tier B diagnostic: hang watchdog (env MEOW_VK_WD=<seconds>, default OFF).
 // WHY: the Vulkan init path can *hang* (black screen) rather than fault: no hs_err, no MC crash
 // report, no cppcrash of its own -- and eventually the platform kills the process, which looks like
 // a crash from the outside. A hang keeps the JVM healthy, so the cheapest way to learn where it is
@@ -1061,7 +1022,10 @@ static int log_MapMemory(void* dev, void* mem, uint64_t off, uint64_t size, uint
     if (real == NULL) return -3;
     int rc = ((PFN_mapMemory)real)(dev, mem, off, size, flags, pp);
     void* got = (pp != NULL) ? *pp : NULL;
-    MEOWLOGI("meowvulkan: vkMapMemory rc=%{public}d size=%{public}llu ptr=%{public}p", rc, (unsigned long long)size, got);
+    // Tier B: per-call result line -> verbose gate (default OFF).
+    if (meow_vk_verbose())
+        MEOWLOGI("meowvulkan: vkMapMemory rc=%{public}d size=%{public}llu ptr=%{public}p", rc,
+                 (unsigned long long)size, got);
     return rc;
 }
 
@@ -1080,10 +1044,12 @@ static int log_AllocateMemory(void* dev, const void* ai, const void* alloc, void
         pnext_st = *(const uint32_t*)info->pNext;
     }
     int rc = ((PFN_allocMemory)real)(dev, ai, alloc, mem);
-    MEOWLOGI("meowvulkan: vkAllocateMemory rc=%{public}d mem=%{public}p size=%{public}llu type=%{public}u pNext_sType=%{public}u",
-             rc, (mem != NULL) ? *mem : NULL,
-             (unsigned long long)((info != NULL) ? info->allocationSize : 0ULL),
-             (unsigned)((info != NULL) ? info->memoryTypeIndex : 0U), pnext_st);
+    // Tier B: per-call result line -> verbose gate (default OFF).
+    if (meow_vk_verbose())
+        MEOWLOGI("meowvulkan: vkAllocateMemory rc=%{public}d mem=%{public}p size=%{public}llu type=%{public}u pNext_sType=%{public}u",
+                 rc, (mem != NULL) ? *mem : NULL,
+                 (unsigned long long)((info != NULL) ? info->allocationSize : 0ULL),
+                 (unsigned)((info != NULL) ? info->memoryTypeIndex : 0U), pnext_st);
     return rc;
 }
 
@@ -1120,11 +1086,9 @@ static int log_BindBufferMemory(void* dev, void* buf, void* mem, uint64_t off) {
     return rc;
 }
 
-// TEMPORARY (M1): the run dies right after the first VMA block allocation, but "no further logged
-// call" only proves that none of the calls we hook happened -- VMA must call at least
-// vkGetBufferMemoryRequirements / vkBindBufferMemory next. These wrappers close that measurement gap:
-// they only log (entry + result) and forward unchanged, so the last line before death names the API
-// region the crash is in.
+// Tier B diagnostic (default OFF): measurement-gap wrappers for the buffer-memory calls VMA makes
+// next (vkGetBufferMemoryRequirements / vkBindBufferMemory). They only log (entry + result) and
+// forward unchanged; the line is gated behind MEOW_VK_VERBOSE, so the default run stays quiet.
 typedef void (*PFN_gbmr)(void*, void*, void*);
 static void log_GetBufferMemoryRequirements(void* dev, void* buf, void* out) {
     wd_note("vkGetBufferMemoryRequirements");
@@ -1135,7 +1099,8 @@ static void log_GetBufferMemoryRequirements(void* dev, void* buf, void* out) {
     }
     ((PFN_gbmr)real)(dev, buf, out);
     unsigned long long sz = (out != NULL) ? *(unsigned long long*)out : 0ULL;   // VkMemoryRequirements.size
-    MEOWLOGI("meowvulkan: vkGetBufferMemoryRequirements buf=%{public}p need=%{public}llu", buf, sz);
+    if (meow_vk_verbose())
+        MEOWLOGI("meowvulkan: vkGetBufferMemoryRequirements buf=%{public}p need=%{public}llu", buf, sz);
 }
 
 typedef int (*PFN_createImage)(void*, const void*, const void*, void**);
@@ -1174,7 +1139,9 @@ static int log_FlushMappedMemoryRanges(void* dev, uint32_t count, const void* ra
     PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkFlushMappedMemoryRanges") : NULL;
     if (real == NULL) return -3;
     int rc = ((PFN_flushMapped)real)(dev, count, ranges);
-    MEOWLOGI("meowvulkan: vkFlushMappedMemoryRanges rc=%{public}d count=%{public}u", rc, (unsigned)count);
+    // Tier B: per-call result line -> verbose gate (default OFF).
+    if (meow_vk_verbose())
+        MEOWLOGI("meowvulkan: vkFlushMappedMemoryRanges rc=%{public}d count=%{public}u", rc, (unsigned)count);
     return rc;
 }
 
@@ -1188,14 +1155,14 @@ static int log_QueueSubmit(void* queue, uint32_t count, const void* submits, voi
     // F72 (build .49): the v1 path is not the F66 merge path, but if MC ever uses it the pool that
     // recorded the frame must still be covered by this submit's fence. Only count==1 has one fence.
     if (meow_f72_on() && count == 1) meow_f72_bind_submit((VkFence)(uintptr_t)fence, 0, (rc == 0));
-    MEOWLOGI("meowvulkan: vkQueueSubmit rc=%{public}d count=%{public}u", rc, (unsigned)count);
+    // Tier B: per-call result line -> verbose gate (default OFF).
+    if (meow_vk_verbose())
+        MEOWLOGI("meowvulkan: vkQueueSubmit rc=%{public}d count=%{public}u", rc, (unsigned)count);
     return rc;
 }
 
-// TEMPORARY (F5, shim build .8): the submit the Vulkan backend actually uses.
-// MC enables VK_KHR_synchronization2, so the real submit almost certainly goes through vkQueueSubmit2,
-// which was invisible to this shim (only vkQueueSubmit was wrapped). "First submit returns
-// VK_ERROR_DEVICE_LOST" therefore had no record of what was submitted.
+// vkQueueSubmit2: the submit the Vulkan backend actually uses. MC enables VK_KHR_synchronization2, so
+// the real submit goes through vkQueueSubmit2; this wrapper mirrors the vkQueueSubmit bookkeeping for it.
 //
 // SIGNATURES COPIED VERBATIM from ref/lwjgl3/modules/lwjgl/vulkan/src/main/c/vulkan/vulkan_core.h:
 //   :7971  typedef VkResult (VKAPI_PTR *PFN_vkQueueSubmit2)(VkQueue queue, uint32_t submitCount,
@@ -1266,7 +1233,6 @@ typedef VkSemaphoreWaitInfo         VkSemaphoreWaitInfoL;
 #define ST_IMAGE_MEMORY_BARRIER           VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
 #define ST_MEMORY_BARRIER                 VK_STRUCTURE_TYPE_MEMORY_BARRIER
 #define ST_TIMELINE_SEMAPHORE_SUBMIT_INFO VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO
-#define ST_SEMAPHORE_SIGNAL_INFO          VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO
 
 static unsigned long g_sync2v1_submits;
 static unsigned long g_sync2v1_barriers;
@@ -1287,11 +1253,9 @@ static long long g_meow_max_gap_ms;
 // F44 device log showed a submit line ending in "-- forwarding" with no explanation, which is
 // what made it look like the submit branch was missing. The decision logic is UNCHANGED.
 //
-// F47 (shim build .28): the ONE switch is SPLIT so the barrier translation and the submit
-// translation can be A/B'd independently (probe cells 11 / 12). The legacy variable stays the
-// fallback, so a caller that only sets MEOW_VK_SYNC2_TO_V1 keeps the EXACT F44 semantics:
-//   MEOW_VK_SYNC2_TO_V1_BARRIER -> barrier only; unset => MEOW_VK_SYNC2_TO_V1 => hooks default
-//   MEOW_VK_SYNC2_TO_V1_SUBMIT  -> submit  only; unset => MEOW_VK_SYNC2_TO_V1 => hooks default
+// F75 env-cleanup (2026-09-18): the F47 split switches MEOW_VK_SYNC2_TO_V1_BARRIER / _SUBMIT were
+// removed; the barrier and submit translations now share this single decision (legacy
+// MEOW_VK_SYNC2_TO_V1, defaulting to the hooks state).
 static int meow_sync2_to_v1_decide(const char** why) {
     const char* s = getenv("MEOW_VK_SYNC2_TO_V1");
     if (s != NULL && strcmp(s, "0") == 0) {
@@ -1308,78 +1272,9 @@ static int meow_sync2_to_v1_decide(const char** why) {
 }
 static int meow_vk_sync2_to_v1(void) { return meow_sync2_to_v1_decide(NULL); }
 
-// F47: per-type decision. The new switch wins when set; otherwise the legacy switch decides.
-// Both are deliberately NOT cached for the same per-cell reason as above.
-static int meow_sync2_to_v1_barrier_decide(const char** why) {
-    const char* s = getenv("MEOW_VK_SYNC2_TO_V1_BARRIER");
-    if (s != NULL && strcmp(s, "0") == 0) {
-        if (why != NULL) *why = "explicit OFF (MEOW_VK_SYNC2_TO_V1_BARRIER=0)";
-        return 0;
-    }
-    if (s != NULL && s[0] == '1') {
-        if (why != NULL) *why = "explicit ON (MEOW_VK_SYNC2_TO_V1_BARRIER=1)";
-        return 1;
-    }
-    const char* l = getenv("MEOW_VK_SYNC2_TO_V1");
-    if (l != NULL && strcmp(l, "0") == 0) {
-        if (why != NULL) *why = "legacy OFF (MEOW_VK_SYNC2_TO_V1=0, _BARRIER unset)";
-        return 0;
-    }
-    if (l != NULL && l[0] == '1') {
-        if (why != NULL) *why = "legacy ON (MEOW_VK_SYNC2_TO_V1=1, _BARRIER unset)";
-        return 1;
-    }
-    if (why != NULL) *why = g_hooks ? "default ON (hooks on, all env unset)"
-                                    : "default OFF (hooks off, all env unset)";
-    return g_hooks ? 1 : 0;
-}
-static int meow_sync2_to_v1_submit_decide(const char** why) {
-    const char* s = getenv("MEOW_VK_SYNC2_TO_V1_SUBMIT");
-    if (s != NULL && strcmp(s, "0") == 0) {
-        if (why != NULL) *why = "explicit OFF (MEOW_VK_SYNC2_TO_V1_SUBMIT=0)";
-        return 0;
-    }
-    if (s != NULL && s[0] == '1') {
-        if (why != NULL) *why = "explicit ON (MEOW_VK_SYNC2_TO_V1_SUBMIT=1)";
-        return 1;
-    }
-    const char* l = getenv("MEOW_VK_SYNC2_TO_V1");
-    if (l != NULL && strcmp(l, "0") == 0) {
-        if (why != NULL) *why = "legacy OFF (MEOW_VK_SYNC2_TO_V1=0, _SUBMIT unset)";
-        return 0;
-    }
-    if (l != NULL && l[0] == '1') {
-        if (why != NULL) *why = "legacy ON (MEOW_VK_SYNC2_TO_V1=1, _SUBMIT unset)";
-        return 1;
-    }
-    if (why != NULL) *why = g_hooks ? "default ON (hooks on, all env unset)"
-                                    : "default OFF (hooks off, all env unset)";
-    return g_hooks ? 1 : 0;
-}
-
-// F50 (shim build .31): HOST-SIDE timeline signal for the translated submit path.
-// WHY: the on-device .30 evidence is that the split single-entry v1 submits are ACCEPTED (rc=0),
-// but the timeline value the submit was supposed to signal never advances the timeline counter, so
-// vkWaitSemaphores on it returns rc=2 (TIMEOUT). Chaining VkTimelineSemaphoreSubmitInfo onto the v1
-// submit does not make this ICD signal it.
-// WHAT: right after each entry is submitted, the host calls vkSignalSemaphore for every signal
-// semaphore in that entry whose value != 0 (i.e. every timeline signal; binary semaphores carry
-// value 0 and are left to the GPU). COST: this is a HOST-side advance, so it does NOT wait for GPU
-// completion -- MC loses "wait for GPU" semantics (possible tearing) but no longer TIMEOUTs.
-// MEOW_VK_TIMELINE_HOST_SIGNAL=0 disables it as an A/B control.
-static int meow_timeline_host_signal_decide(const char** why) {
-    const char* s = getenv("MEOW_VK_TIMELINE_HOST_SIGNAL");
-    if (s != NULL && strcmp(s, "0") == 0) {
-        if (why != NULL) *why = "explicit OFF (MEOW_VK_TIMELINE_HOST_SIGNAL=0)";
-        return 0;
-    }
-    if (s != NULL && s[0] == '1') {
-        if (why != NULL) *why = "explicit ON (MEOW_VK_TIMELINE_HOST_SIGNAL=1)";
-        return 1;
-    }
-    if (why != NULL) *why = "default OFF (F60: host-side advance is harmful; explicit =1 to force)";
-    return 0;   /* F60 (shim build .40): proven harmful (early pool reset -> present never completes) */
-}
+// F75 env-cleanup (2026-09-18): the F50 host-side timeline signal (MEOW_VK_TIMELINE_HOST_SIGNAL) was
+// removed. F60 had already proven it harmful (early pool reset -> present never completes) and it had
+// defaulted OFF; real GPU-completion is provided by F69 (timeline-as-fence).
 
 // F60 (shim build .40): REAL wait for the translated submit path's completion.
 // WHY: with F50 host-side signalling OFF the ICD's broken timeline makes vkWaitSemaphores TIMEOUT
@@ -1407,17 +1302,14 @@ static int meow_wait_via_queue_idle_decide(const char** why) {
     return 1;
 }
 
-typedef int (*PFN_signalSemaphoreL)(void*, const void*);
-
 /* Official core-1.0 / timeline types: VkMemoryBarrier (vulkan_core.h:3133),
    VkBufferMemoryBarrier (:3079), VkMemoryBarrier2 (:7168), VkSubmitInfo (:3469),
-   VkTimelineSemaphoreSubmitInfo (:6602), VkSemaphoreSignalInfo (:6620). */
+   VkTimelineSemaphoreSubmitInfo (:6602). */
 typedef VkMemoryBarrier                VkMemBarrierL;
 typedef VkBufferMemoryBarrier          VkBufBarrierL;
 typedef VkMemoryBarrier2               VkMemBarrier2L;
 typedef VkSubmitInfo                   VkSubmitInfoL;
 typedef VkTimelineSemaphoreSubmitInfo  VkTimelineSemSubmitInfoL;
-typedef VkSemaphoreSignalInfo          VkSemaphoreSignalInfoL;
 
 typedef struct { uint64_t v2; uint32_t v1; } MeowFlag2To1;
 
@@ -2308,17 +2200,8 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
         MEOWLOGE("meowvulkan: SYNC2->V1: cannot resolve the real vkQueueSubmit");
         return -3;
     }
-    // F50: resolve the real host-side timeline signal once; decision is re-read per call (not cached).
-    PFN_signalSemaphoreL realSignal =
-        (PFN_signalSemaphoreL)(g_gdpa ? g_gdpa(g_dev_seen, "vkSignalSemaphore") : NULL);
-    const char* hsigWhy = NULL;
-    int hostSignal = meow_timeline_host_signal_decide(&hsigWhy);
-    if (hostSignal && realSignal == NULL) {
-        MEOWLOGW("meowvulkan: SYNC2->V1: host timeline signal wanted but vkSignalSemaphore is unresolved");
-        hostSignal = 0;
-    }
-    uint32_t hostSigN = 0;
-    int hostSigRc = 0;
+    // F75 env-cleanup: the F50 host-side timeline signal (and its MEOW_VK_TIMELINE_HOST_SIGNAL gate)
+    // was removed here; real GPU-completion is provided by F69 (timeline-as-fence).
     if (submitCount == 0) {
         // F45: emit the self-proof line for the zero-submit path too. Previously this early
         // return forwarded with NO "SYNC2->V1 translate ..." line, so "the translation did not
@@ -2648,21 +2531,6 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
                     for (uint32_t k = 0; f69OwnFence && k < f69SigN; k++) {
                         meow_f69_add_entry(f69Pairs[k].sem, f69Pairs[k].value, f69FenceUsed);
                     }
-                    // F50: host-side advance stays available as an A/B control (default OFF). After
-                    // F69 stripped the timeline signals only the binary (value 0) ones remain here.
-                    if (hostSignal) {
-                        for (uint32_t k = 0; k < totalSignals; k++) {
-                            if (msVals[k] == 0) continue;
-                            VkSemaphoreSignalInfoL si;
-                            si.sType = ST_SEMAPHORE_SIGNAL_INFO;
-                            si.pNext = NULL;
-                            si.semaphore = msSems[k];
-                            si.value = msVals[k];
-                            int hr = realSignal(g_dev_seen, &si);
-                            hostSigRc = hr;
-                            if (hr == 0) ++hostSigN;
-                        }
-                    }
                 }
                 free(f69Pairs);
             }
@@ -2680,27 +2548,6 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
             if (r != 0) {
                 if (firstErr == 0) { firstErr = r; firstErrAt = i; }
                 continue;   /* F51: still attempt the remaining entries */
-            }
-            // F50: the entry is accepted; advance its timeline signal semaphores from the HOST.
-            // value==0 means a binary semaphore -> leave it to the GPU. This is deliberately a
-            // host-side advance (does NOT wait for GPU completion); see the F50 report.
-            if (hostSignal) {
-                const MeowSubmit2Tr* e = &st[i];
-                for (uint32_t k = 0; k < s[i].signalSemaphoreInfoCount; k++) {
-                    if (e->sigVals[k] == 0) continue;
-                    VkSemaphoreSignalInfoL si;
-                    si.sType = ST_SEMAPHORE_SIGNAL_INFO;
-                    si.pNext = NULL;
-                    si.semaphore = e->sigSems[k];
-                    si.value = e->sigVals[k];
-                    int hr = realSignal(g_dev_seen, &si);
-                    hostSigRc = hr;
-                    if (hr == 0) ++hostSigN;
-                    if (meow_vk_verbose())
-                        MEOWLOGI("meowvulkan: SYNC2->V1 hostSignal sem=0x%{public}llx value=%{public}llu "
-                                 "rc=%{public}d (GPU-side signal not relied upon)",
-                                 (unsigned long long)(uintptr_t)e->sigSems[k], (unsigned long long)e->sigVals[k], hr);
-                }
             }
         }
         }
@@ -2722,26 +2569,21 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
                  "submitsIn=%{public}u submits=%{public}u waits=%{public}u cmdBufs=%{public}u signals=%{public}u "
                  "timelineChains=%{public}u foldedMaskBits=%{public}d rc=%{public}d stoppedAt=%{public}u "
                  "fence=0x%{public}llx rcSeq=%{public}s "
-                 "hostSignal=%{public}d sigN=%{public}u hostSigRc=%{public}d "
                  "f69=%{public}d f69SigN=%{public}u f69WaitN=%{public}u f69OwnFence=%{public}d f69Fence=0x%{public}llx "
                  "diverged=%{public}d divergedReason=%{public}s merged=%{public}d",
                  ++g_sync2v1_submits, submitCount, issued, totalWaits, totalCmds, totalSignals,
                  timelineChains, lostBits, rc, stoppedAt, (unsigned long long)fence, rcseq,
-                 hostSignal, hostSigN, hostSigRc,
                  f69Active, f69SigN, f69WaitN, f69OwnFence, (unsigned long long)f69FenceUsed,
                  diverged, divergedReason, merged);
-        // F47/F48/F49/F50: compact summary of the TRANSLATED PRODUCT (counts + masks only, never a
+        // F47/F48/F49: compact summary of the TRANSLATED PRODUCT (counts + masks only, never a
         // pointer dump). Counts are the per-batch totals across all entry-products; waitDstMask0
         // is the first translated wait stage. arrays=heap documents the storage lifetime.
-        // hostSignal/sigN: whether the host-side timeline signal ran and how many it advanced.
         MEOWLOGI("meowvulkan: translated submit: cbCount=%{public}u waitCount=%{public}u "
                  "sigCount=%{public}u timelineInfo=%{public}d waitDstMask0=0x%{public}x "
-                 "waitPtr=%{public}s arrays=heap hostSignal=%{public}d sigN=%{public}u "
-                 "hostSigReason=%{public}s",
+                 "waitPtr=%{public}s arrays=heap",
                  totalCmds, totalWaits, totalSignals, timelineChains > 0 ? 1 : 0,
                  waitDstMask0,
-                 (totalWaits > 0 && haveMask0) ? "valid" : "null",
-                 hostSignal, hostSigN, hsigWhy ? hsigWhy : "(unset)");
+                 (totalWaits > 0 && haveMask0) ? "valid" : "null");
     } else {
         MEOWLOGE("meowvulkan: SYNC2->V1: translation aborted (counts/alloc); vkQueueSubmit2 NOT forwarded");
     }
@@ -2766,7 +2608,7 @@ static int log_QueueSubmit2(void* queue, uint32_t submitCount, const void* submi
     // F44: when the sync2->v1 translation is on we forward to vkQueueSubmit instead, so the
     // ICD's (broken) vkQueueSubmit2 is never entered. The CALLED log below still runs.
     const char* why = NULL;
-    int doTranslate = meow_sync2_to_v1_submit_decide(&why);
+    int doTranslate = meow_sync2_to_v1_decide(&why);
     PFN_vkVoidFunctionLocal real = NULL;
     if (!doTranslate) {
         real = g_gdpa ? g_gdpa(g_dev_seen, "vkQueueSubmit2") : NULL;
@@ -3218,7 +3060,7 @@ static void log_CmdBeginRendering(void* cmd, const void* ri) {
 // images. This block records (a) running acquire/present counters and (b) the LAST SUCCESSFULLY
 // created swapchain's parameters, and emits ONE extra line when a single acquire takes >= 500 ms
 // so the acquire ordinal can be read straight off the log ("slow acquire #k (acquireCount=A
-// presentCount=P)"). Default ON (only a slow acquire prints); MEOW_VK_ACQ_SLOW_QUIET=1 silences it.
+// presentCount=P)"). Always on; only a slow acquire prints.
 // Counters/scalars live here (before the acquire wrapper); the logging helper is defined further
 // down, after the surface/swapchain caches it also reads, and forward-declared here.
 static unsigned long g_meow_acquire_count;
@@ -3234,17 +3076,6 @@ static int32_t  g_meow_sw_present_mode;
 static int g_meow_sw_valid;
 
 static void meow_vk_log_slow_acquire(void* swapchain, int rc, long long dt_ms);
-
-// Presence-gated OFF switch: MEOW_VK_ACQ_SLOW_QUIET=1 disables the extra slow-acquire line only
-// (the ordinary >=200 ms / verbose line is untouched).
-static int meow_vk_acq_slow_quiet(void) {
-    static int q = -1;
-    if (q < 0) {
-        const char* s = getenv("MEOW_VK_ACQ_SLOW_QUIET");
-        q = (s != NULL && strcmp(s, "1") == 0) ? 1 : 0;
-    }
-    return q;
-}
 
 // vkAcquireNextImageKHR -- header :9169
 // PFN_vkAcquireNextImageKHR(VkDevice, VkSwapchainKHR, uint64_t, VkSemaphore, VkFence, uint32_t*)
@@ -3274,7 +3105,7 @@ static int log_AcquireNextImageKHR(void* dev, void* swapchain, uint64_t timeout,
     // out of presentable images this is where the "images not returned" hypothesis becomes visible:
     // the acquire ordinal (#k) vs. the running acquire/present counts tells whether the stall starts
     // at A~4/P~3 (all images in flight) or from the very first acquire (a different failure).
-    if (dt_ms >= 500 && !meow_vk_acq_slow_quiet())
+    if (dt_ms >= 500)
         meow_vk_log_slow_acquire(swapchain, rc, dt_ms);
     return rc;
 }
@@ -3335,7 +3166,7 @@ static void log_CmdPipelineBarrier2(void* cmd, const void* di) {
     // F44: when the sync2->v1 translation is on we forward to vkCmdPipelineBarrier instead, so
     // the ICD's (broken) vkCmdPipelineBarrier2 is never entered. The CALLED log still runs.
     const char* why = NULL;
-    int doTranslate = meow_sync2_to_v1_barrier_decide(&why);
+    int doTranslate = meow_sync2_to_v1_decide(&why);
     PFN_vkVoidFunctionLocal real = NULL;
     if (!doTranslate) {
         real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdPipelineBarrier2") : NULL;
@@ -3656,25 +3487,6 @@ typedef void (*PFN_cmdBlitImage)(void*, void*, uint32_t, void*, uint32_t, uint32
 // VkImageBlit -- official SDK type (vulkan_core.h:4134). NO extent field exists -- do not add one.
 typedef VkImageBlit VkImageBlitL;
 
-// Diagnostic bisect switch (2026-09-17, shim build .13). Hypothesis under test: this ICD mishandles a
-// blit whose DST region is vertically inverted (dstOffsets[1].y < dstOffsets[0].y). With
-// MEOW_VK_NO_FLIP_BLIT=1 the wrapper rewrites ONLY region 0's dstOffsets into the forward direction
-// (per-axis min/max normalisation) on a LOCAL copy and forwards that -- the caller's pRegions is never
-// touched. The src side, dstImage, dstLayout, filter and regionCount are left exactly as received.
-// Expected, intended side effect: the presented frame is vertically flipped. This is a DIAGNOSTIC, not
-// a fix. Default OFF, same env-read-once shape as meow_vk_skip_vk13_write() further down.
-static int meow_vk_no_flip_blit(void) {
-    static int v = -1;
-    if (v < 0) {
-        const char* s = getenv("MEOW_VK_NO_FLIP_BLIT");
-        v = (s != NULL && s[0] == '1') ? 1 : 0;
-    }
-    return v;
-}
-
-static int32_t meow_i32_min(int32_t a, int32_t b) { return a < b ? a : b; }
-static int32_t meow_i32_max(int32_t a, int32_t b) { return a > b ? a : b; }
-
 static void log_CmdBlitImage(void* cmd, void* srcImage, uint32_t srcLayout, void* dstImage,
                              uint32_t dstLayout, uint32_t regionCount, const void* pRegions,
                              uint32_t filter) {
@@ -3703,42 +3515,7 @@ static void log_CmdBlitImage(void* cmd, void* srcImage, uint32_t srcLayout, void
                      r0->dstOffsets[1].x, r0->dstOffsets[1].y, r0->dstOffsets[1].z);
         }
     }
-    // DIAGNOSTIC (build .13): MEOW_VK_NO_FLIP_BLIT=1 rewrites the FIRST region's dstOffsets into the
-    // forward direction on a local copy, to test whether this ICD's inverted-dst-region blit path is
-    // what loses the device on the second submit. Only region 0 is rewritten; regions 1..n are copied
-    // verbatim. regionCount > 4 is treated as unexpected: rewrite is abandoned and everything forwards
-    // unchanged. The caller's memory is never modified.
-    const void* regionsToSend = pRegions;
-    VkImageBlitL flipCopy[4];
-    if (meow_vk_no_flip_blit() && regionCount > 0 && pRegions != NULL) {
-        if (regionCount > 4) {
-            MEOWLOGI("meowvulkan: DIAG MEOW_VK_NO_FLIP_BLIT: regionCount=%{public}u > 4 -- abandoning "
-                     "rewrite, forwarding all regions unchanged", regionCount);
-        } else {
-            memcpy(flipCopy, pRegions, (size_t)regionCount * sizeof(VkImageBlitL));
-            VkImageBlitL* r0 = &flipCopy[0];
-            int32_t x0 = r0->dstOffsets[0].x, x1 = r0->dstOffsets[1].x;
-            int32_t y0 = r0->dstOffsets[0].y, y1 = r0->dstOffsets[1].y;
-            int32_t z0 = r0->dstOffsets[0].z, z1 = r0->dstOffsets[1].z;
-            MEOWLOGI("meowvulkan: DIAG MEOW_VK_NO_FLIP_BLIT=1 (diagnostic: forward-normalising dst "
-                     "region 0; frame will be vertically flipped) ORIGINAL dst "
-                     "off0=%{public}d,%{public}d,%{public}d off1=%{public}d,%{public}d,%{public}d",
-                     x0, y0, z0, x1, y1, z1);
-            r0->dstOffsets[0].x = meow_i32_min(x0, x1);
-            r0->dstOffsets[1].x = meow_i32_max(x0, x1);
-            r0->dstOffsets[0].y = meow_i32_min(y0, y1);
-            r0->dstOffsets[1].y = meow_i32_max(y0, y1);
-            r0->dstOffsets[0].z = meow_i32_min(z0, z1);
-            r0->dstOffsets[1].z = meow_i32_max(z0, z1);
-            MEOWLOGI("meowvulkan: DIAG MEOW_VK_NO_FLIP_BLIT=1 REWRITTEN dst "
-                     "off0=%{public}d,%{public}d,%{public}d off1=%{public}d,%{public}d,%{public}d "
-                     "-- forwarding rewritten region (src untouched)",
-                     r0->dstOffsets[0].x, r0->dstOffsets[0].y, r0->dstOffsets[0].z,
-                     r0->dstOffsets[1].x, r0->dstOffsets[1].y, r0->dstOffsets[1].z);
-            regionsToSend = flipCopy;
-        }
-    }
-    ((PFN_cmdBlitImage)real)(cmd, srcImage, srcLayout, dstImage, dstLayout, regionCount, regionsToSend,
+    ((PFN_cmdBlitImage)real)(cmd, srcImage, srcLayout, dstImage, dstLayout, regionCount, pRegions,
                              filter);
 }
 
@@ -4861,8 +4638,7 @@ typedef VkSurfaceFormatKHR VkSurfaceFormatKHRL;
 // wrappers below (each still forwards exactly ONCE and only records the result). The
 // vkCreateSwapchainKHR wrapper cross-checks the request against these. `*_valid` is set only by a
 // successful query (rc==0) with a non-NULL output array; when a cache is invalid the cross-check
-// prints `?` and emits NO verdict rather than guessing. One surface per process => newest wins (the
-// same rule the composite-alpha cache at g_meow_supported_composite_alpha already uses).
+// prints `?` and emits NO verdict rather than guessing. One surface per process => newest wins.
 static VkSurfaceCapsKHRL g_meow_caps;
 static int g_meow_caps_valid = 0;
 #define MEOW_SURF_FMT_MAX 16
@@ -4878,82 +4654,13 @@ static int g_meow_present_modes_valid = 0;
 // (imageExtent.width/height) and surface/oldSwapchain are typed handles (VkSurfaceKHR/VkSwapchainKHR).
 typedef VkSwapchainCreateInfoKHR VkSwapchainCIKHRL;
 
-// Diagnostic switch (2026-09-17, shim build .21). MEOW_VK_SWAPCHAIN_USAGE_EXTRA=<n> is parsed with
-// strtoul(s, NULL, 0), so both decimal and 0x-prefixed forms work; an unset/empty/invalid value
-// yields 0 (disabled). When non-zero, that value is bitwise-OR'd into a LOCAL COPY of the caller's
-// VkSwapchainCreateInfoKHR.imageUsage (every other field copied verbatim) and the COPY's pointer is
-// forwarded through the identical 4-argument list. The caller-owned struct is NEVER written to, and
-// extra==0 leaves the forwarding path byte-for-byte unchanged. Hypothesis under test: the OHOS WSI
-// (VK_OHOS_surface -> OHNativeWindow) expects the swapchain images to carry a display/render usage
-// bit -- MC declares only TRANSFER_DST(0x2) while caps.supportedUsageFlags=0x9f -- and the later
-// blit/queue submit dies with VK_ERROR_DEVICE_LOST. This is a DIAGNOSTIC: changing imageUsage can
-// change the picture and the driver's behaviour. See
-// stuffs/research/vulkan/fixes/F23-swapchain-usage-diagnostic.md. Same env-read-once shape as
-// meow_vk_no_flip_blit() near the top of this file.
-static unsigned long meow_vk_swapchain_usage_extra(void) {
-    static unsigned long v;
-    static int done = 0;
-    if (!done) {
-        const char* s = getenv("MEOW_VK_SWAPCHAIN_USAGE_EXTRA");
-        v = (s != NULL && s[0] != '\0') ? strtoul(s, NULL, 0) : 0UL;
-        done = 1;
-    }
-    return v;
-}
+// F75 env-cleanup (2026-09-18): the F23/F26/F27 one-shot swapchain diagnostics
+// (MEOW_VK_SWAPCHAIN_USAGE_EXTRA / MEOW_VK_FIX_COMPOSITE_ALPHA / MEOW_VK_FIX_MIN_IMAGE_COUNT /
+// MEOW_VK_FIX_PRESENT_MODE) and their helpers / image-usage aliases / composite-alpha cache were
+// removed: the Vulkan path is up, and these overlays changed the forwarded VkSwapchainCreateInfoKHR.
 
-// VkImageUsageFlagBits / VkCompositeAlphaFlagBitsKHR -- now official SDK enum constants
-// (vulkan_core.h). The former hand-typed values and their _Static_asserts are gone; the names below
-// are thin aliases so the diagnostic log text stays unchanged.
-#define MEOW_VK_IMAGE_USAGE_TRANSFER_SRC_BIT             VK_IMAGE_USAGE_TRANSFER_SRC_BIT
-#define MEOW_VK_IMAGE_USAGE_TRANSFER_DST_BIT             VK_IMAGE_USAGE_TRANSFER_DST_BIT
-#define MEOW_VK_IMAGE_USAGE_SAMPLED_BIT                  VK_IMAGE_USAGE_SAMPLED_BIT
-#define MEOW_VK_IMAGE_USAGE_STORAGE_BIT                  VK_IMAGE_USAGE_STORAGE_BIT
-#define MEOW_VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-#define MEOW_VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-#define MEOW_VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT     VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT
-#define MEOW_VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT         VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT
-#define MEOW_VK_IMAGE_USAGE_HOST_TRANSFER_BIT            VK_IMAGE_USAGE_HOST_TRANSFER_BIT
-
-#define MEOW_VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR          VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
-#define MEOW_VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR  VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR
-#define MEOW_VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR
-#define MEOW_VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR         VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR
-
-// Diagnostic switch (2026-09-17, shim build .22). MEOW_VK_FIX_COMPOSITE_ALPHA: unset/empty/invalid
-// => 0 (disabled); any non-zero value enables the fix. Same env-read-once shape as
-// meow_vk_swapchain_usage_extra(). Hypothesis under test: MC requests
-// VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR(0x1) while the OHOS surface only advertises
-// VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR(0x8); VUID-VkSwapchainCreateInfoKHR-compositeAlpha-01280 then
-// makes that create invalid and the ICD's silent acceptance (rc=0) is UB that can surface later as
-// VK_ERROR_DEVICE_LOST. This is a DIAGNOSTIC: it can change the picture/WSI behaviour. See
-// stuffs/research/vulkan/fixes/F26-composite-alpha-mismatch.md.
-static unsigned long meow_vk_fix_composite_alpha(void) {
-    static unsigned long v;
-    static int done = 0;
-    if (!done) {
-        const char* s = getenv("MEOW_VK_FIX_COMPOSITE_ALPHA");
-        v = (s != NULL && s[0] != '\0') ? strtoul(s, NULL, 0) : 0UL;
-        done = 1;
-    }
-    return v;
-}
-
-// Last successfully queried VkSurfaceCapabilitiesKHR.supportedCompositeAlpha. Written by
-// log_GetPhysicalDeviceSurfaceCapabilitiesKHR below (rc==VK_SUCCESS(0) and non-NULL pCaps); read by
-// the vkCreateSwapchainKHR wrapper. Validity is a plain flag: there is exactly one surface per
-// process here, so the newest successful query wins. When invalid the composite-alpha fix refuses
-// to guess and forwards the caller's value untouched.
-static uint32_t g_meow_supported_composite_alpha = 0u;
-static int g_meow_supported_composite_alpha_valid = 0;
-
-// ------------------------------------------------------------------ F27 (.22) swapchain knobs
-// Enum values below copied verbatim from the authoritative SDK header
-// $HOME/devecow/deveco_tools/sdk/default/openharmony/native/sysroot/usr/include/vulkan/vulkan_core.h:
-//   :8526 VK_PRESENT_MODE_IMMEDIATE_KHR = 0, :8527 MAILBOX = 1, :8528 FIFO = 2, FIFO_RELAXED = 3
-//   :1626 VK_FORMAT_UNDEFINED = 0, :1982 VK_SHARING_MODE_EXCLUSIVE = 0, :1983 CONCURRENT = 1
-// The task text proposed "0=FIFO"; the header says otherwise (0=IMMEDIATE, 2=FIFO). The switch below
-// therefore gates on the PRESENCE of the env var, not on a non-zero value, so that even 0 can be
-// selected; use MEOW_VK_FIX_PRESENT_MODE=2 for FIFO.
+// ------------------------------------------------------------------ swapchain enum aliases
+// Enum values from the authoritative SDK header; used by the read-only cross-check/logging below.
 #define MEOW_VK_PRESENT_MODE_IMMEDIATE_KHR    VK_PRESENT_MODE_IMMEDIATE_KHR
 #define MEOW_VK_PRESENT_MODE_MAILBOX_KHR      VK_PRESENT_MODE_MAILBOX_KHR
 #define MEOW_VK_PRESENT_MODE_FIFO_KHR         VK_PRESENT_MODE_FIFO_KHR
@@ -4971,44 +4678,6 @@ static const char* meow_present_mode_name(int32_t m) {
         case MEOW_VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "FIFO_RELAXED";
         default: return "?";
     }
-}
-
-// Diagnostic switch (2026-09-17, shim build .22). MEOW_VK_FIX_MIN_IMAGE_COUNT=<n> (parsed base 0):
-// unset/empty/0 => disabled. Non-zero => minImageCount is overwritten on a LOCAL COPY and the SAME
-// 4-argument list is forwarded. When the value is below the cached caps.minImageCount (or above a
-// non-zero caps.maxImageCount) a WARNING is logged but the user's value is STILL forwarded: this is a
-// diagnostic, not a validator. Hypothesis under test: the window buffer queue cannot supply 3 images,
-// so the 3rd-image acquire path blocks and the driver reports VK_ERROR_DEVICE_LOST. Plan: try 2.
-static uint32_t meow_vk_fix_min_image_count(void) {
-    static uint32_t v;
-    static int done = 0;
-    if (!done) {
-        const char* s = getenv("MEOW_VK_FIX_MIN_IMAGE_COUNT");
-        v = (s != NULL && s[0] != '\0') ? (uint32_t)strtoul(s, NULL, 0) : 0u;
-        done = 1;
-    }
-    return v;
-}
-
-// Diagnostic switch (2026-09-17, shim build .22). MEOW_VK_FIX_PRESENT_MODE: the PRESENCE of the
-// variable enables the override (unset or empty string = disabled) and its value is parsed base 0,
-// because VK_PRESENT_MODE_IMMEDIATE_KHR is 0 -- a strictly "non-zero enables" rule could never select
-// a mode whose enum value is 0 (see the header citations above). Hypothesis under test: MAILBOX (1)
-// is unstable in this ICD's WSI; FIFO (2) is the fallback. Overwrites on a LOCAL COPY only.
-static int meow_vk_fix_present_mode(int32_t* out) {
-    static int enabled = -1;
-    static int32_t val = 0;
-    if (enabled < 0) {
-        const char* s = getenv("MEOW_VK_FIX_PRESENT_MODE");
-        if (s == NULL || s[0] == '\0') {
-            enabled = 0;
-        } else {
-            enabled = 1;
-            val = (int32_t)strtol(s, NULL, 0);
-        }
-    }
-    if (out != NULL) *out = val;
-    return enabled;
 }
 
 // F74 (shim build 2026-09-18.54 wrapup). Resolve MEOW_VK_FIX_SURFACE_TRANSFORM once and return its
@@ -5247,94 +4916,6 @@ static int log_vkCreateSwapchainKHR(void* dev, const void* ci, const void* alloc
                  (unsigned)c->preTransform, c->imageExtent.width, c->imageExtent.height,
                  (unsigned)mPre->preTransform, mPre->imageExtent.width, mPre->imageExtent.height);
     }
-    // DIAGNOSTIC (build .21): OR the env value into imageUsage on a LOCAL COPY only; log only when
-    // the bits actually change. Default (unset / 0) forwards the caller's pointer untouched.
-    unsigned long extra = meow_vk_swapchain_usage_extra();
-    if (c != NULL && extra != 0UL) {
-        ciCopy = *c;
-        uint32_t before = ciCopy.imageUsage;
-        ciCopy.imageUsage = before | (uint32_t)extra;
-        if (ciCopy.imageUsage != before) {
-            MEOWLOGI("meowvulkan: DIAG MEOW_VK_SWAPCHAIN_USAGE_EXTRA=0x%{public}llx REWROTE imageUsage "
-                     "0x%{public}x -> 0x%{public}x (diagnostic: this may change the picture/driver "
-                     "behaviour) bits{TRANSFER_SRC(0x1)=%{public}d TRANSFER_DST(0x2)=%{public}d "
-                     "SAMPLED(0x4)=%{public}d STORAGE(0x8)=%{public}d COLOR_ATTACHMENT(0x10)=%{public}d "
-                     "DEPTH_STENCIL_ATTACHMENT(0x20)=%{public}d TRANSIENT_ATTACHMENT(0x40)=%{public}d "
-                     "INPUT_ATTACHMENT(0x80)=%{public}d HOST_TRANSFER(0x400000)=%{public}d}",
-                     (unsigned long long)extra, (unsigned)before, (unsigned)ciCopy.imageUsage,
-                     !!(ciCopy.imageUsage & MEOW_VK_IMAGE_USAGE_TRANSFER_SRC_BIT),
-                     !!(ciCopy.imageUsage & MEOW_VK_IMAGE_USAGE_TRANSFER_DST_BIT),
-                     !!(ciCopy.imageUsage & MEOW_VK_IMAGE_USAGE_SAMPLED_BIT),
-                     !!(ciCopy.imageUsage & MEOW_VK_IMAGE_USAGE_STORAGE_BIT),
-                     !!(ciCopy.imageUsage & MEOW_VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
-                     !!(ciCopy.imageUsage & MEOW_VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT),
-                     !!(ciCopy.imageUsage & MEOW_VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT),
-                     !!(ciCopy.imageUsage & MEOW_VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT),
-                     !!(ciCopy.imageUsage & MEOW_VK_IMAGE_USAGE_HOST_TRANSFER_BIT));
-            fwdCi = &ciCopy;
-        }
-    }
-    // DIAGNOSTIC (build .22): MEOW_VK_FIX_COMPOSITE_ALPHA!=0 rewrites ONLY compositeAlpha to a bit
-    // the surface actually advertised (requested & cachedSupportedCompositeAlpha, falling back to the
-    // lowest advertised bit if that is 0) on a LOCAL COPY; every other field is copied verbatim.
-    // Satisfies VUID-VkSwapchainCreateInfoKHR-compositeAlpha-01280. Never writes the caller's struct;
-    // unset/0 leaves this block skipped entirely. Logged only when the value actually changes.
-    if (c != NULL && meow_vk_fix_composite_alpha() != 0UL && g_meow_supported_composite_alpha_valid) {
-        const uint32_t supported = g_meow_supported_composite_alpha;
-        const int32_t before = c->compositeAlpha;
-        uint32_t fixed = (uint32_t)before & supported;
-        if (fixed == 0u) {
-            fixed = supported & (0u - supported);   // lowest advertised bit: non-zero by construction
-        }
-        if ((int32_t)fixed != before) {
-            VkSwapchainCIKHRL* m;   // mutable LOCAL copy (reuse the imageUsage copy if already made)
-            if (fwdCi == &ciCopy) {
-                m = &ciCopy;
-            } else {
-                ciCopy = *c;
-                fwdCi = &ciCopy;
-                m = &ciCopy;
-            }
-            m->compositeAlpha = (int32_t)fixed;
-            MEOWLOGI("meowvulkan: DIAG MEOW_VK_FIX_COMPOSITE_ALPHA: compositeAlpha 0x%{public}x -> "
-                     "0x%{public}x (supported=0x%{public}x; bits OPAQUE(0x1)/PRE_MULTIPLIED(0x2)/"
-                     "POST_MULTIPLIED(0x4)/INHERIT(0x8)) -- diagnostic: this may change the "
-                     "picture/driver behaviour",
-                     (unsigned)before, (unsigned)fixed, (unsigned)supported);
-        }
-    }
-    // DIAGNOSTIC (build .22): MEOW_VK_FIX_MIN_IMAGE_COUNT=<n> (!=0) overwrites minImageCount on a
-    // LOCAL COPY. Below caps.minImageCount / above caps.maxImageCount is WARNED but still forwarded --
-    // the task explicitly asks for a diagnostic, so the user's value wins. See the F27 report.
-    uint32_t minFix = meow_vk_fix_min_image_count();
-    if (c != NULL && minFix != 0u && minFix != c->minImageCount) {
-        VkSwapchainCIKHRL* m = meow_swapchain_mut(c, &ciCopy, &fwdCi);
-        uint32_t before = m->minImageCount;
-        m->minImageCount = minFix;
-        MEOWLOGI("meowvulkan: DIAG MEOW_VK_FIX_MIN_IMAGE_COUNT: minImageCount %{public}u -> %{public}u",
-                 before, minFix);
-        if (g_meow_caps_valid && minFix < g_meow_caps.minImageCount) {
-            MEOWLOGW("meowvulkan: DIAG MEOW_VK_FIX_MIN_IMAGE_COUNT: %{public}u < caps.minImageCount "
-                     "%{public}u -- forwarding the user value anyway (diagnostic, not a validator)",
-                     minFix, g_meow_caps.minImageCount);
-        }
-        if (g_meow_caps_valid && g_meow_caps.maxImageCount != 0u && minFix > g_meow_caps.maxImageCount) {
-            MEOWLOGW("meowvulkan: DIAG MEOW_VK_FIX_MIN_IMAGE_COUNT: %{public}u > caps.maxImageCount "
-                     "%{public}u -- forwarding the user value anyway (diagnostic, not a validator)",
-                     minFix, g_meow_caps.maxImageCount);
-        }
-    }
-    // DIAGNOSTIC (build .22): MEOW_VK_FIX_PRESENT_MODE (presence-gated, value parsed base 0) overwrites
-    // presentMode on a LOCAL COPY. Named in the log so IMMEDIATE(0)/MAILBOX(1)/FIFO(2) cannot be confused.
-    int32_t pmFix = 0;
-    if (c != NULL && meow_vk_fix_present_mode(&pmFix) && pmFix != c->presentMode) {
-        VkSwapchainCIKHRL* m = meow_swapchain_mut(c, &ciCopy, &fwdCi);
-        int32_t before = m->presentMode;
-        m->presentMode = pmFix;
-        MEOWLOGI("meowvulkan: DIAG MEOW_VK_FIX_PRESENT_MODE: presentMode %{public}d (%{public}s) -> "
-                 "%{public}d (%{public}s) -- diagnostic: this may change the picture/WSI behaviour",
-                 before, meow_present_mode_name(before), pmFix, meow_present_mode_name(pmFix));
-    }
     int rc = ((PFN_createSwapchainKHR)real)(dev, fwdCi, alloc, out);
     MEOWLOGI("meowvulkan: vkCreateSwapchainKHR returned rc=%{public}d swapchain=0x%{public}llx",
              rc, (unsigned long long)(uintptr_t)((out != NULL) ? *out : NULL));
@@ -5409,13 +4990,9 @@ static int log_GetPhysicalDeviceSurfaceCapabilitiesKHR(void* pdev, void* surface
     int rc = real(pdev, surface, caps);
     if (caps != NULL) {
         const VkSurfaceCapsKHRL* c = (const VkSurfaceCapsKHRL*)caps;
-        // Cache the supported composite-alpha set for the swapchain fix (.22). Only a successful
-        // query updates it; a failed query leaves the previous value/flag untouched.
         if (rc == 0) {
             g_meow_caps = *c;                 // F27 (.22): full caps cache for the swapchain cross-check
             g_meow_caps_valid = 1;
-            g_meow_supported_composite_alpha = c->supportedCompositeAlpha;
-            g_meow_supported_composite_alpha_valid = 1;
         }
         MEOWLOGI("meowvulkan: vkGetPhysicalDeviceSurfaceCapabilitiesKHR rc=%{public}d "
                  "minImageCount=%{public}u maxImageCount=%{public}u currentExtent=%{public}ux%{public}u "
@@ -5514,74 +5091,6 @@ PFN_vkVoidFunctionLocal vkGetDeviceProcAddr(VkDevice dev, const char* name);
 // declaration this is a hard compile error -- -Wimplicit-function-declaration, measured).
 VkResult vkCreateInstance(const void* ci, const void* alloc, VkInstance* out);
 
-// TEMPORARY (M1): resolve the faulting caller ourselves. The project's dumper snapshots
-// /proc/self/maps at install time, so its lr lookup reports <UNMAPPED> for anything mapped later (JIT
-// code cache segments, runtime stubs), and LogCompilation showed the lr is not in any nmethod
-// interval either. Read the maps LIVE in the handler and record which mapping pc and lr belong to,
-// then chain to the previous handler so the existing dumper and the platform still do their work.
-static struct sigaction g_prev_segv;
-static int g_own_handler_installed;
-
-static const char* kLrFile = "/data/storage/el2/base/haps/entry/files/meow-vk-lr.txt";
-
-static void maps_line_for(int fd, const char* tag, unsigned long addr) {
-    int f = open("/proc/self/maps", O_RDONLY);
-    if (f < 0) return;
-    static char buf[262144];
-    ssize_t n = read(f, buf, sizeof(buf) - 1);
-    close(f);
-    if (n <= 0) return;
-    buf[n] = 0;
-    char* p = buf;
-    while (p != NULL && *p != 0) {
-        char* nl = strchr(p, '\n');
-        if (nl != NULL) *nl = 0;
-        unsigned long lo = 0, hi = 0;
-        if (sscanf(p, "%lx-%lx", &lo, &hi) == 2 && addr >= lo && addr < hi) {
-            char out[768];
-            int m = snprintf(out, sizeof(out), "[meowvk] %s 0x%lx -> %s\n", tag, addr, p);
-            if (m > 0) write(fd, out, (size_t)m);
-            return;
-        }
-        p = (nl != NULL) ? (nl + 1) : NULL;
-    }
-    char out[128];
-    int m = snprintf(out, sizeof(out), "[meowvk] %s 0x%lx -> <no mapping>\n", tag, addr);
-    if (m > 0) write(fd, out, (size_t)m);
-}
-
-static void on_segv(int sig, siginfo_t* info, void* uctx) {
-    int fd = open(kLrFile, O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (fd >= 0) {
-        chmod(kLrFile, 0644);   // the file may predate this mode (it was created 0600 once)
-        ucontext_t* uc = (ucontext_t*)uctx;
-        unsigned long pc = (unsigned long)uc->uc_mcontext.pc;
-        unsigned long lr = (unsigned long)uc->uc_mcontext.regs[30];   /* x30 = lr (SDK signal.h) */
-        char hdr[256];
-        int m = snprintf(hdr, sizeof(hdr), "[meowvk] sig=%d addr=0x%lx pc=0x%lx lr=0x%lx\n", sig,
-                         (unsigned long)info->si_addr, pc, lr);
-        if (m > 0) write(fd, hdr, (size_t)m);
-        maps_line_for(fd, "pc", pc);
-        maps_line_for(fd, "lr", lr);
-        close(fd);
-    }
-    sigaction(sig, &g_prev_segv, NULL);   // chain, then re-raise: the platform still gets its shot
-    raise(sig);
-}
-
-static void install_own_handler(void) {
-    if (g_own_handler_installed) return;
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_sigaction = on_segv;
-    sa.sa_flags = SA_SIGINFO;
-    sigemptyset(&sa.sa_mask);
-    if (sigaction(SIGSEGV, &sa, &g_prev_segv) == 0) {
-        g_own_handler_installed = 1;
-        MEOWLOGI("meowvulkan: own SIGSEGV handler installed -> %{public}s", kLrFile);
-    }
-}
-
 static void init_once(void) {
     if (g_real) return;
     g_real = dlopen(REAL_LOADER, RTLD_NOW | RTLD_LOCAL);
@@ -5592,31 +5101,32 @@ static void init_once(void) {
     g_gipa = (PFN_vkVoidFunctionLocal(*)(VkInstance, const char*))dlsym(g_real, "vkGetInstanceProcAddr");
     // NOTE: vkGetDeviceProcAddr is resolved LAZILY in vkGetDeviceProcAddr itself, through the real
     // instance -- a NULL-instance lookup does not reliably resolve a device-level command here.
+    // F75 env-cleanup: being LOADED is the parameter -- hooks default ON. MEOW_VK_SHIM=0 (or an empty
+    // value) is the escape hatch back to pure passthrough; unset keeps the hooks on.
     const char* sw = getenv("MEOW_VK_SHIM");
-    g_hooks = (sw && sw[0] && strcmp(sw, "0") != 0);
-    MEOWLOGI("meowvulkan: real loader=%{public}p hooks=%{public}d (MEOW_VK_SHIM=%{public}s; unset or 0 = pure passthrough)",
+    g_hooks = (sw == NULL || (sw[0] != '\0' && strcmp(sw, "0") != 0)) ? 1 : 0;
+    MEOWLOGI("meowvulkan: real loader=%{public}p hooks=%{public}d (MEOW_VK_SHIM=%{public}s; unset = hooks on, 0/empty = pure passthrough)",
              g_real, g_hooks, sw ? sw : "(unset)");
     // Deployment self-certification: this campaign lost a run to "the fix was in the tree but not on
     // the device", so every shim build now names itself. Bump the tag whenever the shim changes.
     // F74 env switch tiers (A/B/C) are documented in the header comment at the top of this file.
-    MEOWLOGI("meowvulkan: shim build 2026-09-18.54 wrapup");
+    MEOWLOGI("meowvulkan: shim build 2026-09-18.55 env-cleanup");
     // Crash backtraces for the Vulkan path are handled by meowbt, which the bridge now installs from
     // meowSetSurfaceId (see egl_gl.c) -- reachable on this path, unlike the GL-only install sites.
     // Enable with the documented envs: MEOW_BT=1 (and optionally MEOW_BT_FILE=<path>).
     //
-    // DO NOT re-enable install_own_handler(): it was tried on 2026-09-17 and it BROKE the JVM. HotSpot
-    // implements implicit null checks by faulting deliberately (SIGSEGV at addr=0x8/0xc inside the code
-    // cache) and converting it into a NullPointerException in its own handler. Sitting in front of that
-    // handler and re-raising turns the signal into SI_TKILL (code=-6) with a pc inside raise(), so the
-    // JVM no longer recognises the fault site, treats it as a fatal VM error and aborts -- the app then
-    // dies at the very first benign null check (measured: "it crashes sooner"). Intercepting SIGSEGV in
-    // a JVM process is the same class of mistake as interposing libc for dlopen'd libraries.
-    // if (g_hooks) install_own_handler();
+    // DO NOT re-introduce a self-installed SIGSEGV handler. One was tried on 2026-09-17 and it BROKE
+    // the JVM: HotSpot implements implicit null checks by faulting deliberately (SIGSEGV at addr=0x8/0xc
+    // inside the code cache) and converting it into a NullPointerException in its own handler. Sitting in
+    // front of that handler and re-raising turns the signal into SI_TKILL (code=-6) with a pc inside
+    // raise(), so the JVM no longer recognises the fault site, treats it as a fatal VM error and aborts --
+    // the app then dies at the very first benign null check (measured: "it crashes sooner"). Intercepting
+    // SIGSEGV in a JVM process is the same class of mistake as interposing libc for dlopen'd libraries.
+    // The former self-installed handler was removed; keep it that way.
 
-    // TEMPORARY (M1 diagnosis): dump the TAIL of our own command line. The hilog "CMD:" line is
-    // truncated before the main class, which is exactly where the interesting part is -- whether
-    // the launcher really handed MC the game arguments we asked for. The tail holds
-    // "<mainClass> <game args...>", so this settles it from inside the JVM process.
+    // One-time startup diagnostic: dump the tail of our own command line. The hilog "CMD:" line is
+    // truncated before the main class, which is exactly where the interesting part is -- the tail holds
+    // "<mainClass> <game args...>", confirming from inside the JVM process which game args MC received.
     {
         FILE* f = fopen("/proc/self/cmdline", "rb");
         if (f != NULL) {
@@ -5709,26 +5219,13 @@ static VkResult hook_EnumerateDeviceExtensionProperties(VkPhysicalDevice pdev, c
     return r;
 }
 
-// Diagnostic bisect switch (2026-09-17). The Vulkan13 feature struct is the ONE place this shim writes
-// into a caller-provided struct, and the crash's fingerprint (a null that drifts between unrelated JIT
-// sites) fits a corrupted struct better than a NULL function table (VMA's NULL inventory already ruled
-// that out). MEOW_VK_NO_VK13_WRITE=1 skips only that write, so the two hypotheses can be separated.
-static int meow_vk_skip_vk13_write(void) {
-    static int v = -1;
-    if (v < 0) {
-        const char* s = getenv("MEOW_VK_NO_VK13_WRITE");
-        v = (s != NULL && s[0] == '1') ? 1 : 0;
-    }
-    return v;
-}
-
 // Diagnostic bisect switch (2026-09-17, shim build .9). "THE ONE LIE" is the unconditional
 // VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT.vertexAttributeInstanceRateDivisor = 1 write
 // below (the official SDK field name; the old local mirror mislabelled it `rateDivisor`). The other two
 // forged feature bits (dynamic_rendering / push_descriptor) are proven real implementations, so
 // this single-variable switch isolates the divisor lie: MEOW_VK_NO_DIVISOR_FEATURE=1 skips ONLY
 // that write and changes nothing else. maxVertexAttribDivisor property reads are untouched.
-// Same shape as meow_vk_skip_vk13_write() above (env read once, default off).
+// Env read once, default off. (F75 removed the sibling MEOW_VK_NO_VK13_WRITE bisect.)
 static int meow_vk_skip_divisor_feature(void) {
     static int v = -1;
     if (v < 0) {
@@ -5773,28 +5270,14 @@ static int meow_vk_strip_unsupported_features(void) {
     return v;
 }
 
-// F37: "keep synchronization2" control. Default (unset / anything but "0") = KEEP, i.e. the strip no
-// longer zeroes either synchronization2 field. MEOW_VK_KEEP_SYNC2=0 restores the F35/F36 stripping of
-// both fields for an A/B experiment. Read once. See the rationale in meow_vk_strip_feature_bits().
-static int meow_vk_keep_sync2(void) {
-    static int v = -1;
-    if (v < 0) {
-        const char* s = getenv("MEOW_VK_KEEP_SYNC2");
-        v = (s != NULL && strcmp(s, "0") == 0) ? 0 : 1;
-    }
-    return v;
-}
-
 static void meow_vk_strip_feature_bits(void* pNext) {
     int stripped = 0;
-    // F37: synchronization2 is KEPT by default. This ICD advertises VK_KHR_synchronization2 (A10 G1)
-    // and MC hard-depends on it, so zeroing the bit was a false positive: it left MC using
-    // vkQueueSubmit2 / VkSubmitInfo2 with sync2 "disabled" -- exactly the use-of-unenabled-feature UB
-    // this campaign chased. The F35 vkCreateDevice rc=-8 is explained by dynamicRendering +
-    // vertex_attribute_divisor alone (their extensions are NOT in the ICD's 69-name list); sync2's
-    // extension IS. MEOW_VK_KEEP_SYNC2=0 restores the F35/F36 behaviour (zero both sync2 fields) as an
-    // A/B control; unset or any other value keeps them.
-    int keepSync2 = meow_vk_keep_sync2();
+    // F37: synchronization2 is KEPT (this ICD advertises VK_KHR_synchronization2 (A10 G1) and MC
+    // hard-depends on it). This ICD-advertised extension was a false positive: zeroing the bit left MC
+    // using vkQueueSubmit2 / VkSubmitInfo2 with sync2 "disabled" -- the use-of-unenabled-feature UB this
+    // campaign chased. The F35 vkCreateDevice rc=-8 is explained by dynamicRendering +
+    // vertex_attribute_divisor alone (their extensions are NOT in the ICD's 69-name list). F75 removed
+    // the MEOW_VK_KEEP_SYNC2 A/B switch; sync2 is now unconditionally kept.
     for (VkBaseOutStructure* p = (VkBaseOutStructure*)pNext; p != NULL; p = p->pNext) {
         switch (p->sType) {
             case ST_VK13_FEATURES: {
@@ -5803,12 +5286,6 @@ static void meow_vk_strip_feature_bits(void* pNext) {
                     MEOWLOGI("meowvulkan: F35 strip: VkPhysicalDeviceVulkan13Features.dynamicRendering "
                              "%{public}u -> 0", f->dynamicRendering);
                     f->dynamicRendering = 0;
-                    stripped++;
-                }
-                if (!keepSync2 && f->synchronization2) {
-                    MEOWLOGI("meowvulkan: F35 strip: VkPhysicalDeviceVulkan13Features.synchronization2 "
-                             "%{public}u -> 0", f->synchronization2);
-                    f->synchronization2 = 0;
                     stripped++;
                 }
                 break;
@@ -5841,24 +5318,11 @@ static void meow_vk_strip_feature_bits(void* pNext) {
                 }
                 break;
             }
-            case ST_SYNC2_FEATURES: {
-                if (!keepSync2) {
-                    VkSync2Features* f = (VkSync2Features*)p;
-                    if (f->synchronization2) {
-                        MEOWLOGI("meowvulkan: F35 strip: "
-                                 "VkPhysicalDeviceSynchronization2Features.synchronization2 "
-                                 "%{public}u -> 0", f->synchronization2);
-                        f->synchronization2 = 0;
-                        stripped++;
-                    }
-                }
-                break;
-            }
             default: break;
         }
     }
     MEOWLOGI("meowvulkan: F35 strip: pNext walk done, %{public}d feature bit(s) zeroed "
-             "(sync2 %{public}s)", stripped, keepSync2 ? "KEPT" : "stripped");
+             "(sync2 KEPT)", stripped);
 }
 
 // ------------------------------------------------------------ hook 2: bits
@@ -5868,10 +5332,6 @@ static void hook_GetPhysicalDeviceFeatures2(VkPhysicalDevice pdev, void* pFeatur
     for (VkBaseOutStructure* p = (VkBaseOutStructure*)pFeatures; p != NULL; p = p->pNext) {
         switch (p->sType) {
             case ST_VK13_FEATURES:
-                if (meow_vk_skip_vk13_write()) {
-                    MEOWLOGI("meowvulkan: DIAG: skipping Vulkan13Features.dynamicRendering write");
-                    break;
-                }
                 ((Vk13Features*)p)->dynamicRendering = 1;
                 MEOWLOGI("meowvulkan: set Vulkan13Features.dynamicRendering=1");
                 break;

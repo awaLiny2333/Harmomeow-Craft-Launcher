@@ -1003,28 +1003,16 @@ static void meow_apply_window_usage(OHNativeWindow *win) {
 }
 
 /*
- * env-gated window buffer FORMAT / USAGE / SOURCE_TYPE diagnostics (all default
- * OFF). These exist to test whether the producer-side window buffer format and
- * its GPU usage bits are the cause of the second-submit VK_ERROR_DEVICE_LOST.
- * Every SET_* is gated on an env var, so an unset environment performs no
- * mutation; only the read-only GET_FORMAT probe below always runs so the window
- * format can be compared with the swapchain imageFormat (logged as 37, i.e.
- * VK_FORMAT_R8G8B8A8_UNORM) in the field.
+ * Read-only window buffer FORMAT probe: called exactly once per window, at the
+ * first OHNativeWindow acquisition (meowSetSurfaceId), right after
+ * meow_apply_window_usage(). It logs the window format so it can be compared
+ * with the swapchain imageFormat (logged as 37, i.e. VK_FORMAT_R8G8B8A8_UNORM)
+ * in the field. It performs NO mutation.
  *
- *   MEOW_WIN_SET_FORMAT  non-zero -> SET_FORMAT to that OH_NativeBuffer_Format
- *                                   (NATIVEBUFFER_PIXEL_FMT_RGBA_8888 == 12,
- *                                    native_buffer/native_buffer.h:107)
- *   MEOW_WIN_USAGE_EXTRA non-zero -> OR that bit mask into the window usage;
- *                                   NATIVEBUFFER_USAGE_HW_RENDER  = 1<<8 = 256
- *                                   NATIVEBUFFER_USAGE_HW_TEXTURE = 1<<9 = 512
- *                                   (native_buffer/native_buffer.h:69-70)
- *   MEOW_WIN_SOURCE_TYPE non-zero -> SET_SOURCE_TYPE to that OHSurfaceSource
- *                                   (OH_SURFACE_SOURCE_GAME == 2,
- *                                    native_window/external_window.h:399)
- *
- * Called exactly once per window, at the first OHNativeWindow acquisition
- * (meowSetSurfaceId), right after meow_apply_window_usage(). Before/after
- * values are re-read and logged so the effect is externally self-proving.
+ * (F75 env-cleanup, 2026-09-18: the former env-gated SET_FORMAT / SET_USAGE /
+ * SET_SOURCE_TYPE diagnostics MEOW_WIN_SET_FORMAT, MEOW_WIN_USAGE_EXTRA and
+ * MEOW_WIN_SOURCE_TYPE were removed -- one-shot window-buffer experiments from
+ * the second-submit VK_ERROR_DEVICE_LOST campaign, unused since Vulkan came up.)
  */
 static void meow_window_format_usage_probe(OHNativeWindow *win) {
     if (win == NULL) {
@@ -1040,63 +1028,6 @@ static void meow_window_format_usage_probe(OHNativeWindow *win) {
         MEOWLOGI("window buffer format: 0x%{public}x (swapchain imageFormat=37)", (unsigned)fmt);
     }
 
-    const char *setFmtEnv = getenv("MEOW_WIN_SET_FORMAT");
-    if (setFmtEnv != NULL && setFmtEnv[0] != '\0') {
-        int32_t wantFmt = (int32_t)strtol(setFmtEnv, NULL, 0);
-        if (wantFmt != 0) {
-            int32_t rcSet = OH_NativeWindow_NativeWindowHandleOpt(win, SET_FORMAT, wantFmt);
-            if (rcSet != 0) {
-                MEOWLOGW("window buffer format: SET_FORMAT(0x%{public}x) failed rc=%{public}d (was 0x%{public}x)",
-                         (unsigned)wantFmt, (int)rcSet, (unsigned)fmt);
-            } else {
-                int32_t afterFmt = -1;
-                int32_t rcAfter = OH_NativeWindow_NativeWindowHandleOpt(win, GET_FORMAT, &afterFmt);
-                MEOWLOGI("window buffer format: 0x%{public}x -> 0x%{public}x (MEOW_WIN_SET_FORMAT)",
-                         (unsigned)fmt, (unsigned)(rcAfter == 0 ? afterFmt : wantFmt));
-            }
-        }
-    }
-
-    const char *extraEnv = getenv("MEOW_WIN_USAGE_EXTRA");
-    if (extraEnv != NULL && extraEnv[0] != '\0') {
-        uint64_t extra = strtoull(extraEnv, NULL, 0);
-        if (extra != 0) {
-            uint64_t before = 0;
-            int32_t rcGet = OH_NativeWindow_NativeWindowHandleOpt(win, GET_USAGE, &before);
-            if (rcGet != 0) {
-                MEOWLOGW("window buffer usage: GET_USAGE failed rc=%{public}d (MEOW_WIN_USAGE_EXTRA)",
-                         (int)rcGet);
-            } else {
-                uint64_t want = before | extra;
-                int32_t rcSet = OH_NativeWindow_NativeWindowHandleOpt(win, SET_USAGE, want);
-                if (rcSet != 0) {
-                    MEOWLOGW("window buffer usage: SET_USAGE failed rc=%{public}d (0x%{public}llx | 0x%{public}llx)",
-                             (int)rcSet, (unsigned long long)before, (unsigned long long)extra);
-                } else {
-                    uint64_t after = 0;
-                    int32_t rcAfter = OH_NativeWindow_NativeWindowHandleOpt(win, GET_USAGE, &after);
-                    MEOWLOGI("window buffer usage: 0x%{public}llx -> 0x%{public}llx (extra 0x%{public}llx, MEOW_WIN_USAGE_EXTRA)",
-                             (unsigned long long)before,
-                             (unsigned long long)(rcAfter == 0 ? after : want),
-                             (unsigned long long)extra);
-                }
-            }
-        }
-    }
-
-    const char *srcEnv = getenv("MEOW_WIN_SOURCE_TYPE");
-    if (srcEnv != NULL && srcEnv[0] != '\0') {
-        int32_t wantSrc = (int32_t)strtol(srcEnv, NULL, 0);
-        if (wantSrc != 0) {
-            int32_t rcSrc = OH_NativeWindow_NativeWindowHandleOpt(win, SET_SOURCE_TYPE, wantSrc);
-            if (rcSrc != 0) {
-                MEOWLOGW("window source type: SET_SOURCE_TYPE(%{public}d) failed rc=%{public}d",
-                         (int)wantSrc, (int)rcSrc);
-            } else {
-                MEOWLOGI("window source type: -> %{public}d (MEOW_WIN_SOURCE_TYPE)", (int)wantSrc);
-            }
-        }
-    }
 }
 
 int meowSetSurfaceId(int64_t sid, int width, int height) {

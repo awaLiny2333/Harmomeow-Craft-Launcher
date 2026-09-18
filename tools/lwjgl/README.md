@@ -9,7 +9,8 @@ MC 1.13–1.21.x), the 3.4.3 natives, the `libffi.a` the 3.4.x core links, and t
 | artifact | shipped as | recipe |
 |---|---|---|
 | `lwjgl-3.4.3.jar` (fat merge + the 3.4.x compat shims) | `entry/.../rawfile/meowcraft_extras.tar.gz` member | `build_lwjgl_jar.sh` (+ `pack_extras.py` to assemble the bundle) |
-| `liblwjgl_343.so` / `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (3.4.3) | `libs/meowlwjgls/libs/arm64-v8a/` | `rebuild_for_meowcraft.sh` → `install_natives.sh` |
+| `liblwjgl_343.so` / `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (3.4.3) | `libs/meowlwjgls/libs/arm64-v8a/` | `rebuild_for_meowcraft.sh` → `install_natives.sh` (core also carries the **F2** alignment clamp, `build_lwjgl_core_aligned_alloc_fix.sh`) |
+| `liblwjgl_vma.so` (VMA; gen-agnostic) | `libs/meowlwjgls/libs/arm64-v8a/` | `build_lwjgl_vma.sh` (`--release` default = pristine + shipped; `--diagnostic` never shipped) |
 | `libffi.a` (3.8.0) | build input only | `build_libffi.sh` |
 
 > `libmeowcraftbridge.so` (our GLFW/input/render bridge) is **separate** — it supplies
@@ -205,6 +206,11 @@ sh tools/lwjgl/build_lwjgl_jar.sh --version 3.4.3 \
     --overlay tools/lwjgl/deltas/overlay --overlay tools/lwjgl/deltas/overlay-3.4.3
     # -> stuffs/research/lwjgl_build-3.4.3/out/lwjgl.jar   (javac; you run it)
 sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3        # build + install -> liblwjgl_343{,_opengl,_stb}.so (+ manifest)
+
+# single-artifact re-builds / diagnostics (see tools/README.md §2 "单件脚本"):
+sh tools/lwjgl/build_lwjgl_vma.sh                    # liblwjgl_vma.so release (== shipped, byte-identical)
+sh tools/lwjgl/build_lwjgl_vma.sh --diagnostic       # [vma] diagnostic build -- NEVER ship
+sh tools/lwjgl/build_lwjgl_core_aligned_alloc_fix.sh # F2 core alignment clamp -> liblwjgl_343.so
 ```
 
 ### Naming & the flat directory (why `libs/arm64-v8a/` must stay flat)
@@ -231,6 +237,11 @@ sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3        # build + install -> liblwj
   `org.lwjgl.util.spvc.Spvc` → `libspirv-cross.so` (LWJGL **direct bindings**). Built by `tools/shaderc/`
   (pinned to the exact upstream revisions LWJGL 3.4.3 used) and installed via
   `install_natives.sh --native libshaderc.so=<file>` / `--native libspirv-cross.so=<file>` (tag `common`).
+- **`liblwjgl_vma.so` is also generation-agnostic** (no generation tag): every MC Vulkan allocation goes
+  through VMA (`org.lwjgl.util.vma`); LibVma has no override key, so a missing native is a hard
+  "Failed to create VMA allocator". Built by `tools/lwjgl/build_lwjgl_vma.sh` (release default = the shipped
+  pristine build; the `--diagnostic` build must never be co-packaged) and installed via
+  `install_natives.sh --native liblwjgl_vma.so=<file>` (tag `common`).
 - **Jar modules added automatically for LWJGL ≥ 3.4.x** (`build_lwjgl_jar.sh`): **`lwjgl-sdl`** (MC ≥ 26.3)
   and **`lwjgl-vma lwjgl-spvc lwjgl-shaderc`** (renderpearl). The `sdl` *native* is our `libSDL3.so`
   above — **not** the Maven `lwjgl-sdl-*-natives` jar.
@@ -279,7 +290,8 @@ cp stuffs/research/meowcraft_extras.tar.gz entry/src/main/resources/rawfile/
 | artifact | sha256 |
 |---|---|
 | `lwjgl-3.4.3.jar` (5 3.4.x compat shims; no `Multi-Release` claim; GL_VERSION-derived version groups; runtime capability-mask interface; NUL-safe self-evidence) | `1b8020540293c95cca475e3b2d15672541130691e6412ad4404ba332e73cdecb` (12,952,886 B, 6185 classes) |
-| `liblwjgl_343.so` / `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (3.4.3) | `16298280…` / `e1f1413b…` / `8eb4a1b8…` |
+| `liblwjgl_343.so` / `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (3.4.3; core = **F2** alignment clamp) | `2a6fcf99…` / `e1f1413b…` / `8eb4a1b8…` (pre-F2 core backup `16298280…`) |
+| `liblwjgl_vma.so` (VMA; release = shipped) | `479a619f…` (506,288 B) |
 | `libffi.a` (3.8.0, aarch64-linux-ohos) | `238cadb7bfa70ca5b4f718cc66878f1f3d26107bc6f6b0e272380c3f3f1fda5b` |
 | `meowcraft_extras.tar.gz` (shipped; single modern generation; EXTRAS_VERSION=20260916-lwjgl-logfix) | `2e87d7dbf314bcf2b78bf06db612056bf9cf48c21c15cd92688fce4686ec0093` (12,310,656 B) |
 

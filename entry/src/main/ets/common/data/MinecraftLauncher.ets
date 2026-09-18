@@ -1,7 +1,7 @@
 import { fileIo } from '@kit.CoreFileKit';
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { RENDERER_LIB, VULKAN_LIB_SHIM, WINDOW_DEFAULT_W, WINDOW_DEFAULT_H,
+import { RENDERER_LIB, VULKAN_LIB_SHIM, VULKAN_LIB_DISABLED, WINDOW_DEFAULT_W, WINDOW_DEFAULT_H,
   SPOOF_OS_NAME, SPOOF_OS_VERSION, SPOOF_CPU_NAME,
   LOCALE_LANGUAGE, LOCALE_COUNTRY, LOCALE_TIMEZONE, RULE_OS_NAME, RULE_OS_ARCH,
   OFFLINE_USERNAME, LAUNCHER_NAME, LAUNCHER_VERSION,
@@ -136,7 +136,7 @@ export interface LaunchOptions {
   /** 渲染后端库名（按 MC 版本选，见 RendererPolicy）；空 = 默认桌面 GL（RENDERER_LIB）。
    *  必须与 GameLauncher 传给 startJvm 的 rendererLib 一致（meowjrebridge 启动前会自检）。 */
   rendererLib?: string;
-  /** 【M1 实验】MC 的 `--graphicsBackend`（如 `vulkan`）。见下方 argv 处的注释。 */
+  /** MC 的 `--graphicsBackend`（如 `vulkan`）。见下方 argv 处的注释。 */
   graphicsBackend?: string;
   /** 额外 JVM 参数（实验/调优）：空格/换行分隔，原样追加（放在固定参数之前，允许被覆盖）。 */
   jvmArgs?: string;
@@ -256,11 +256,15 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     argv.push(`-Dmeow.lwjgl.gen=${lwjglGen}`);
     argv.push('-Dorg.lwjgl.system.allocator=system');
     argv.push('-Dorg.lwjgl.glfw.checkThread0=false');
-    // Vulkan 库名指向自研 shim（libmeowvulkan.so，随包 native）。它修正本机 ICD 的"上报面裁剪"
-    // 并翻译提交与 WSI（见 meowvulkan.c 头注释）。【2026-09-18 起 Vulkan 档已可用】：选 Vulkan 时
-    // 启动器自动注入 `MEOW_VK_SHIM=1`（见 GameLauncher.ets），不再需要用户手填；未选 Vulkan 时不注入
-    // ⇒ shim 纯透传、与系统 loader 行为一致。回退阶梯见方案文 §7.5 / §13。
-    argv.push(`-Dorg.lwjgl.vulkan.libname=${VULKAN_LIB_SHIM}`);
+    // 【F75 env-cleanup】`-Dorg.lwjgl.vulkan.libname` 就是"选哪个 Vulkan 后端"的参数：选 Vulkan
+    // （opts.graphicsBackend 非空）→ 指向自研 shim（libmeowvulkan.so，随包 native；修正本机 ICD 的
+    // "上报面裁剪"并翻译提交与 WSI，见 meowvulkan.c 头注释）；否则 → 指向不存在的占位库
+    // （libmeow-no-vulkan.so），让 LWJGL 的 Vulkan 探测直接失败、跳过 Vulkan 组。
+    // 不再需要任何 env；shim 一经加载即默认挂钩（逃生口 = 用户 env 里写 `MEOW_VK_SHIM=0`）。
+    // 回退阶梯见方案文 §7.5 / §13。
+    const vulkanLibName = (opts.graphicsBackend !== undefined && opts.graphicsBackend.length > 0)
+      ? VULKAN_LIB_SHIM : VULKAN_LIB_DISABLED;
+    argv.push(`-Dorg.lwjgl.vulkan.libname=${vulkanLibName}`);
     argv.push('-DDEBUG=true');
     argv.push(`-Dcpu.name=${SPOOF_CPU_NAME}`);
     argv.push(`-Dnet.minecraft.clientmodname=${CLIENT_MOD_NAME}`);

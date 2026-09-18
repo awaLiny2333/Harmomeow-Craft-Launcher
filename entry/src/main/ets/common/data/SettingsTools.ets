@@ -3,6 +3,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { GlobalSettings, LastLaunch, normalizeGlobalSettings } from './GlobalSettings';
 import { appSettingsFileExists, tryReadAppGlobalSettings,
   writeAppGlobalSettings } from './AppSettings';
+import { VK_PROBE_ENV_KEY, VK_PROBE_FRAMES } from '../constants/Constants';
 
 // 保持原公开 API：LastLaunch 类型原从本文件导出，现归属 GlobalSettings，这里转出。
 export { LastLaunch };
@@ -162,6 +163,33 @@ export class SettingsTools {
     this.update((s: GlobalSettings) => {
       s.renderEnv = v;
     });
+  }
+
+  /**
+   * F76 开发者诊断：从 render-env 文本解析 Vulkan 送显探针触发。
+   *
+   * 出现 `MEOW_VK_PROBE`（或带帧数 `MEOW_VK_PROBE=120`）⇒ 返回要送显的帧数；
+   * 未出现 ⇒ 0（不触发，正常用户零行为变化）。省略值 / `=1` / 非法值 → VK_PROBE_FRAMES。
+   * 文本格式与 render-env 一致：`K=V`，换行或 `;` 分隔。键名/默认帧数见 Constants。
+   */
+  vkProbeFrames(): number {
+    const text = this.renderEnv();
+    const lines: string[] = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const tokens: string[] = lines[i].split(';');
+      for (let j = 0; j < tokens.length; j++) {
+        const t = tokens[j].trim();
+        if (t === VK_PROBE_ENV_KEY) {
+          return VK_PROBE_FRAMES;
+        }
+        const prefix = VK_PROBE_ENV_KEY + '=';
+        if (t.startsWith(prefix)) {
+          const n = parseInt(t.substring(prefix.length), 10);
+          return (Number.isNaN(n) || n <= 1) ? VK_PROBE_FRAMES : n;
+        }
+      }
+    }
+    return 0;
   }
 
   /** 额外 JVM 参数（实验；空格/换行分隔）。空 = 不传。 */

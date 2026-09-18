@@ -2,40 +2,11 @@ import { common } from '@kit.AbilityKit';
 import { SettingsTools } from '../common/data/SettingsTools';
 import { exportSettings } from '../common/data/AppSettings';
 import { pickDirectory, authorizeDirectory } from '../common/access/FileAccess';
-import { JreLibModule } from '../common/state/JvmLauncher';
 import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY,
-  SCROLL_SPEED_DEFAULT_PERCENT, RENDER_SCALE_OPTIONS,
-  VK_PROBE_FRAMES, VK_PROBE_POLL_MS, VK_PROBE_SURFACE_HEIGHT,
-  VK_PROBE_RESULT_HEIGHT } from '../common/constants/Constants';
+  SCROLL_SPEED_DEFAULT_PERCENT, RENDER_SCALE_OPTIONS } from '../common/constants/Constants';
 
 // native 导出（getCpuCount：sysconf 探测本机核数）
 import native from 'libmeowassets.so';
-
-/** 探针提示态（0 无 / 1 接口缺失 / 2 无窗口）。 */
-const PROBE_NOTICE_NONE: number = 0;
-const PROBE_NOTICE_UNAVAILABLE: number = 1;
-const PROBE_NOTICE_NO_WINDOW: number = 2;
-
-/**
- * F29 探针专用 XComponent 控制器：只用于在高级选项区内创建一个临时 SURFACE，
- * 把 surfaceId 交给 native 探针（native 直接 dlopen 系统 libvulkan.so 送显）。
- */
-class VkProbeXComponentController extends XComponentController {
-  private ready: (surfaceId: string, w: number, h: number) => void = () => {
-  };
-
-  setReadyHandler(h: (surfaceId: string, w: number, h: number) => void): void {
-    this.ready = h;
-  }
-
-  onSurfaceCreated(surfaceId: string): void {
-    this.ready(surfaceId, 0, 0);
-  }
-
-  onSurfaceChanged(surfaceId: string, rect: SurfaceRect): void {
-    this.ready(surfaceId, rect.surfaceWidth, rect.surfaceHeight);
-  }
-}
 
 /**
  * 高级选项区块（与 GameDirsView / GameVersionsView / JavaEnvView 平级，由 Index 挂载）。
@@ -65,21 +36,7 @@ export struct AdvancedOptionsView {
   /** native 探测到的本机核数（仅展示参考）。 */
   @Local detectedCpus: number = 0;
 
-  /** F29：临时探针 surface 是否可见（可见才有 surfaceId）。 */
-  @Local probeSurfaceVisible: boolean = false;
-  /** F29：探针是否运行中。 */
-  @Local probeRunning: boolean = false;
-  /** F29：探针报告（空串 = 尚无结果）。 */
-  @Local probeResult: string = '';
-  /** F29：探针提示态（无窗口 / 接口缺失）。 */
-  @Local probeNotice: number = PROBE_NOTICE_NONE;
-
   private settings: SettingsTools | undefined = undefined;
-  /** F29：探针 XComponent 控制器 + 轮询定时器 + meowjre 引用。 */
-  private probeController: VkProbeXComponentController = new VkProbeXComponentController();
-  private probeTimer: number = -1;
-  private probeStarted: boolean = false;
-  private probeLib: JreLibModule | null = null;
 
   private context(): common.UIAbilityContext {
     return this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -92,14 +49,6 @@ export struct AdvancedOptionsView {
     } catch (e) {
       this.detectedCpus = 0;
     }
-    // F29：surface 就绪即启动 native 探针（窗口为 NULL / 无 surfaceId 则提示 no window）。
-    this.probeController.setReadyHandler((sid: string) => {
-      this.onProbeSurface(sid);
-    });
-  }
-
-  aboutToDisappear(): void {
-    this.stopProbePoll();
   }
 
   /** 从应用级全局设置刷新本地编辑态（只读，不写盘）。挂载时读一次即可（设置不随目录变化）。 */
@@ -211,82 +160,6 @@ export struct AdvancedOptionsView {
     this.getUIContext().showAlertDialog({
       message: $r('app.string.settings_export_success', result.outDir),
     });
-  }
-
-  /** F29：点按钮 → 先建临时 surface（可见），surface 就绪后在 onProbeSurface 启动 native。 */
-  private startVkProbe(): void {
-    if (this.probeRunning) {
-      return;
-    }
-    this.probeResult = '';
-    this.probeNotice = PROBE_NOTICE_NONE;
-    this.probeRunning = true;
-    this.probeStarted = false;
-    this.probeSurfaceVisible = true;
-  }
-
-  /** F29：surface 就绪 → 取 surfaceId 启动 native 探针，然后轮询报告。 */
-  private async onProbeSurface(surfaceId: string): Promise<void> {
-    if (!this.probeRunning || this.probeStarted) {
-      return;
-    }
-    this.probeStarted = true;
-    const sid = parseInt(surfaceId, 10);
-    try {
-      const jre = await import('meowjre') as JreLibModule;
-      const startFn = jre.vulkanPresentProbeStart;
-      if (startFn === undefined || jre.vulkanPresentProbeResult === undefined) {
-        this.finishVkProbe(PROBE_NOTICE_UNAVAILABLE);
-        return;
-      }
-      const started: boolean = Number.isNaN(sid) ? false : startFn(sid, VK_PROBE_FRAMES);
-      if (!started) {
-        this.finishVkProbe(PROBE_NOTICE_NO_WINDOW);
-        return;
-      }
-      this.probeLib = jre;
-      this.stopProbePoll();
-      this.probeTimer = setInterval(() => {
-        this.readVkProbe();
-      }, VK_PROBE_POLL_MS);
-    } catch (e) {
-      this.finishVkProbe(PROBE_NOTICE_UNAVAILABLE);
-    }
-  }
-
-  /** F29：轮询 native 报告；非空即收尾上屏。 */
-  private readVkProbe(): void {
-    const jre = this.probeLib;
-    if (jre === null) {
-      return;
-    }
-    const resultFn = jre.vulkanPresentProbeResult;
-    if (resultFn === undefined) {
-      return;
-    }
-    const r: string = resultFn();
-    if (r.length > 0) {
-      this.stopProbePoll();
-      this.probeResult = r;
-      this.probeRunning = false;
-      this.probeSurfaceVisible = false;
-    }
-  }
-
-  /** F29：早退收尾（无窗口 / 接口缺失），结果区给出原因。 */
-  private finishVkProbe(notice: number): void {
-    this.stopProbePoll();
-    this.probeRunning = false;
-    this.probeSurfaceVisible = false;
-    this.probeStarted = false;
-    this.probeNotice = notice;
-  }
-
-  private stopProbePoll(): void {
-    if (this.probeTimer >= 0) {
-      clearInterval(this.probeTimer);
-      this.probeTimer = -1;
-    }
   }
 
   build() {
@@ -478,60 +351,6 @@ export struct AdvancedOptionsView {
       // 最下面的次要入口：导出应用设置（目录 + 账户 + 高级选项；账户含凭据）到用户选择的目录。
       Button($r('app.string.settings_export'))
         .onClick(() => this.confirmExport());
-
-      // F29 诊断：裸 ICD + WSI 可持续送显探针（本区最下方）。点按钮先建临时 XComponent
-      // 表面（用与 MC 相同的 XComponent SURFACE 通道），native 直接 dlopen 系统
-      // libvulkan.so 连续送显 VK_PROBE_FRAMES 帧；不依赖 MC，也不走自研 shim。
-      Column({ space: LAYOUT_SPACE_SMALL }) {
-        Text($r('app.string.advanced_vk_probe'))
-          .fontWeight(FontWeight.Bold);
-        Text($r('app.string.advanced_vk_probe_hint'))
-          .opacity(OPACITY_SECONDARY);
-        Row({ space: LAYOUT_SPACE }) {
-          Button($r('app.string.advanced_vk_probe_run'))
-            .enabled(!this.probeRunning)
-            .onClick(() => {
-              this.startVkProbe();
-            });
-          if (this.probeRunning) {
-            Text($r('app.string.advanced_vk_probe_running'))
-              .opacity(OPACITY_SECONDARY);
-          }
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Center);
-
-        // 临时探针表面：onSurfaceCreated 后启动 native 探针，探针结束即隐藏。
-        if (this.probeSurfaceVisible) {
-          XComponent({ type: XComponentType.SURFACE, controller: this.probeController })
-            .width('100%')
-            .height(VK_PROBE_SURFACE_HEIGHT)
-            .backgroundColor(Color.Black);
-        }
-
-        // 早退提示（不硬跑）：无窗口 / 接口缺失。
-        if (this.probeNotice === PROBE_NOTICE_UNAVAILABLE) {
-          Text($r('app.string.advanced_vk_probe_unavailable'))
-            .opacity(OPACITY_SECONDARY);
-        } else if (this.probeNotice === PROBE_NOTICE_NO_WINDOW) {
-          Text($r('app.string.advanced_vk_probe_no_window'))
-            .opacity(OPACITY_SECONDARY);
-        }
-
-        // 结果区：长按可选中复制（含每帧 rc 摘要 + 交换链参数 + 结论）。
-        if (this.probeResult.length > 0) {
-          Scroll() {
-            Text(this.probeResult)
-              .copyOption(CopyOptions.LocalDevice)
-              .width('100%');
-          }
-          .width('100%')
-          .height(VK_PROBE_RESULT_HEIGHT)
-          .edgeEffect(EdgeEffect.Spring);
-        }
-      }
-      .width('100%')
-      .alignItems(HorizontalAlign.Start);
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start);
