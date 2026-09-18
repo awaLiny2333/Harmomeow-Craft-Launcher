@@ -57,7 +57,7 @@ commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61
   - **用途**：重编 LWJGL core，在生成的 `__aligned_alloc` 里把 `alignment` clamp 到 `>= sizeof(void*)`（修 OHOS musl `posix_memalign` 对小对齐返 EINVAL——VMA 用 `alignof(RegionInfo)==2` 申请 32 MiB 块页表 ⇒ `memset(NULL,…)` SIGSEGV）。
   - **何时需要**：换 LWJGL core 源码/tag 重编、或怀疑该修复丢失时。
   - **与随包产物**：产出即随包 `liblwjgl_343.so`（`2a6fcf99…`）；旧件备份 `stuffs/research/vulkan/fixes/liblwjgl_343.so.pre-f2`（`16298280…`）。
-  - **如何自证**：默认只编不装，跑完在 `stuffs/research/lwjgl_f2_align/out/liblwjgl.so` 打印 sha，并断言导出集与随包**集合一致**；加 `--install` 才落盘 + 更新 `natives.manifest`。
+  - **如何自证**：默认只编不装，跑完除断言导出集与随包**集合一致**外，还会把 `stuffs/research/lwjgl_f2_align/out/liblwjgl.so` 与随包 `libs/meowlwjgls/libs/arm64-v8a/liblwjgl_343.so` 做**逐字节 `cmp`**（输出 `IDENTICAL` 才算通过；链接器把绝对输出路径写进二进制，故必须用默认 `$WORK` 路径）；加 `--install` 才落盘 + 更新 `natives.manifest`。
 - **`lwjgl/build_lwjgl_vma.sh`（VMA 参数化：`--release` 默认 / `--diagnostic`）**
   - **用途**：自编 `liblwjgl_vma.so`（MC 的所有 Vulkan 分配都走 VMA；LibVma 无 override key ⇒ 缺件是硬失败 "Failed to create VMA allocator"）。VMA 只从 Java 拿 Vulkan 函数指针 ⇒ 无 Vulkan `DT_NEEDED`，libc++ 静态链入（`DT_NEEDED` 仅 `libc.so`）。
   - **何时需要**：VMA 模块重编/升级。`--diagnostic` 仅用于排查函数表 NULL / `memset` 野指针，**不随包**。

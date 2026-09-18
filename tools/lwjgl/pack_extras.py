@@ -73,7 +73,7 @@ def main():
 
     buf = io.BytesIO()
     gzf = gzip.GzipFile(fileobj=buf, mode="wb", mtime=0)
-    with tarfile.open(fileobj=gzf, mode="w", format=tarfile.GNU_FORMAT) as tout:
+    with tarfile.open(fileobj=gzf, mode="w", format=tarfile.PAX_FORMAT) as tout:
         # directories first (so extractors that skip implicit parents still work)
         for d in sorted(set([n for n in natives_names])):
             info = tarfile.TarInfo(f"./{d}")

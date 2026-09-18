@@ -31,7 +31,8 @@
 #
 # Assertions: exports unchanged (dynsym set vs the shipped liblwjgl_343.so), DT_NEEDED == libc.so only,
 # .note.ohos present, libffi_ exports >= 40. With --install: backs the old file up first and updates
-# natives.manifest.
+# natives.manifest. Finally the built core is compared byte-for-byte (`cmp`) against the shipped
+# liblwjgl_343.so; the shipped file IS this recipe's output at the canonical $OUT, so they must match.
 set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -208,6 +209,18 @@ if [ "$DO_INSTALL" -eq 1 ]; then
   printf '%s\tliblwjgl_343.so\t%s\n' "$TAG" "$(sha256sum "$DST" | cut -d' ' -f1)" >> "$MANIFEST.tmp"
   mv "$MANIFEST.tmp" "$MANIFEST"
   echo "   manifest updated ($TAG liblwjgl_343.so)"
+fi
+
+# ---- 6. self-verify: byte-for-byte against the shipped core ----------------
+# The shipped liblwjgl_343.so IS this recipe's F2 output installed at the canonical $OUT (the
+# linker records the absolute output path, so only that path reproduces it). Prove it with a
+# real byte comparison, not just an equal sha256.
+if cmp -s "$OUT/liblwjgl.so" "$SHIPPED/liblwjgl_343.so"; then
+  echo "   cmp vs shipped  : IDENTICAL ($(sha256sum "$SHIPPED/liblwjgl_343.so" | cut -d' ' -f1))"
+else
+  echo "   cmp vs shipped  : DIFFERS" >&2
+  echo "error: rebuilt core is not byte-identical to the shipped liblwjgl_343.so" >&2
+  exit 1
 fi
 
 echo "OK -> $OUT/liblwjgl.so"

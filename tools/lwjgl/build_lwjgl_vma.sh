@@ -33,8 +33,13 @@
 #   # diagnostic build must NOT be identical and must contain diagnostic strings:
 #   sh build_lwjgl_vma.sh --diagnostic && strings stuffs/research/vulkan/vma_build_patched/out/liblwjgl_vma.so | grep '\[vma\]'
 #
-# Usage details: ref/ is only read (git archive is NOT even needed here — the pristine VMA module is
-# compiled straight from ref/lwjgl3; the diagnostic copy is made under $WORK so ref/ stays clean).
+# SOURCE PIN: release mode does NOT compile the ref/ working tree. It extracts the pinned git tag
+#   TAG=3.4.3 (LWJGL's release tag = commit 30fac9b95f99cda97312232be25ba55297bf9951) into
+#   $WORK/tag-src via the read-only `git archive` and compiles from there, so ref/lwjgl3 HEAD drift
+#   cannot change the artifact. That tag still reproduces the shipped bytes: the inputs compiled
+#   into this .so are identical at 3.4.3 and HEAD (modules/lwjgl/vma unchanged; core has no header
+#   changes 3.4.3..HEAD — only .c/.java files that are not part of this link). Diagnostic mode reads
+#   ref/ directly and patches a COPY under $WORK, so ref/ is never modified either way.
 set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -74,12 +79,32 @@ done
 OUT="$WORK/out"
 OBJ="$WORK/obj"
 PATCHED="$WORK/src"
-VSCRIPT="$REF/config/linux/version.script"
-CORE="$REF/modules/lwjgl/core"
-VMA="$REF/modules/lwjgl/vma"
+
+# ---- source pin ------------------------------------------------------------
+# release: compile from the PINNED tag extracted under $WORK (ref/ is only read via the
+#          read-only `git archive`), so a moving ref/ HEAD cannot change the artifact.
+# diagnostic: read the ref/ working tree directly; the patch goes to a COPY under $WORK.
+if [ "$MODE" = release ]; then
+  git -C "$REF" rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null || {
+    echo "error: tag $TAG missing in $REF" >&2; exit 2; }
+  SRC="$WORK/tag-src"
+  ARCH="$WORK/lwjgl3-$TAG.tar"
+  rm -rf "$SRC"
+  mkdir -p "$SRC"
+  git -C "$REF" archive --format=tar -o "$ARCH" "$TAG" \
+      config/linux/version.script modules/lwjgl/core modules/lwjgl/vma
+  tar -xf "$ARCH" -C "$SRC"
+  rm -f "$ARCH"
+else
+  SRC="$REF"
+fi
+
+VSCRIPT="$SRC/config/linux/version.script"
+CORE="$SRC/modules/lwjgl/core"
+VMA="$SRC/modules/lwjgl/vma"
 
 # ---- sanity ----------------------------------------------------------------
-[ -d "$CORE" ] && [ -d "$VMA" ] || { echo "error: lwjgl module dirs missing under $REF" >&2; exit 2; }
+[ -d "$CORE" ] && [ -d "$VMA" ] || { echo "error: lwjgl module dirs missing under $SRC" >&2; exit 2; }
 [ -f "$VMA/src/main/c/vk_mem_alloc.h" ] || { echo "error: vk_mem_alloc.h missing under $VMA" >&2; exit 2; }
 [ -f "$JNIINC/jni.h" ] || { echo "error: jni.h not found: $JNIINC" >&2; exit 2; }
 [ -f "$LIBCXX_STATIC" ] || { echo "error: libc++_static.a not found: $LIBCXX_STATIC" >&2; exit 2; }

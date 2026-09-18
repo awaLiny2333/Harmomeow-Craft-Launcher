@@ -293,7 +293,7 @@ cp stuffs/research/meowcraft_extras.tar.gz entry/src/main/resources/rawfile/
 | `liblwjgl_343.so` / `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (3.4.3; core = **F2** alignment clamp) | `2a6fcf99…` / `e1f1413b…` / `8eb4a1b8…` (pre-F2 core backup `16298280…`) |
 | `liblwjgl_vma.so` (VMA; release = shipped) | `479a619f…` (506,288 B) |
 | `libffi.a` (3.8.0, aarch64-linux-ohos) | `238cadb7bfa70ca5b4f718cc66878f1f3d26107bc6f6b0e272380c3f3f1fda5b` |
-| `meowcraft_extras.tar.gz` (shipped; single modern generation; EXTRAS_VERSION=20260916-lwjgl-logfix) | `2e87d7dbf314bcf2b78bf06db612056bf9cf48c21c15cd92688fce4686ec0093` (12,310,656 B) |
+| `meowcraft_extras.tar.gz` (shipped; single modern generation; EXTRAS_VERSION=20260917-vk-backend-cli) | `465cae0f0e5fc1b000c0e5543818d8297d7f86b62ac0a61c98cadfcd03d80f85` (12,310,890 B) |
 
 Reproducibility caveats (verified 2026-09-10):
 - **Native builds are byte-reproducible only when the absolute `--src`/`--out` paths are
