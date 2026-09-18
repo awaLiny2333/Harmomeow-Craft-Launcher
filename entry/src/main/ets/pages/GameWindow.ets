@@ -167,7 +167,8 @@ struct GameWindow {
     try {
       // 1. 加载 meowjre，先注入 surface（必须在 JVM 启动前）。全链路自研：
       //    meowSetSurfaceId 创建 OH_NativeWindow 写 env+0；meowResizeSurface 同 sid
-      //    只标尺寸（render 线程 pump diff apply，重建 EGL surface），sid 变更才重建窗。
+      //    只标尺寸，由 render 线程 pump diff apply（GL 分支重建 EGL surface；Vulkan 分支
+      //    回写 OHNativeWindow geometry），sid 变更才重建窗。
       const jrelib = await import('meowjre') as JreLibModule;
       this.jrelib = jrelib;
       this.input?.setBridge(jrelib);
@@ -175,16 +176,20 @@ struct GameWindow {
       // 控制器内部保证同一 ContentSlot 只绑一次（重复绑会叠加接收器 → 灵敏度爆炸）。
       this.input?.bindOverlay(this.inputOverlay);
       const sid = parseInt(surfaceId, 10);
-      const fw = w > 0 ? w : WINDOW_DEFAULT_W;
-      const fh = h > 0 ? h : WINDOW_DEFAULT_H;
       if (w > 0 && h > 0) {
         hilog.info(LOG_DOMAIN, LOG_TAG, 'resize surface sid=%{public}d %{public}dx%{public}d',
-          sid, fw, fh);
-        jrelib.resizeGameSurface?.(sid, fw, fh);
+          sid, w, h);
+        jrelib.resizeGameSurface?.(sid, w, h);
       } else {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'set surface sid=%{public}d %{public}dx%{public}d',
-          sid, fw, fh);
-        jrelib.setGameSurface?.(sid, fw, fh);
+        // onSurfaceCreated reports 0x0 before the first layout pass. Pass the real (unknown)
+        // 0x0 through instead of a fixed fallback: meowSetSurfaceId already guards
+        // `width > 0 && height > 0`, so the OHNativeWindow is bound here without pinning a
+        // geometry that is unrelated to the display-scale-derived surface size. The real size
+        // arrives via onSurfaceChanged -> resizeGameSurface and is written back by the render
+        // thread pump (never on this UI thread).
+        hilog.info(LOG_DOMAIN, LOG_TAG,
+          'set surface sid=%{public}d (size unknown, geometry deferred)', sid);
+        jrelib.setGameSurface?.(sid, 0, 0);
       }
     } catch (e) {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'surface inject fail: %{public}s', JSON.stringify(e));

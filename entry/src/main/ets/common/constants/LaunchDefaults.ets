@@ -42,11 +42,22 @@ export const RENDERER_LIB_GL4ES: string = 'libgl4es.so';
 export const RENDERER_ENV_GL4ES: string = 'gl4es';
 /** 逐版本"渲染后端"覆盖值：推荐（按 MC 版本自动）/ 桌面 GL / gl4es。 */
 export const RENDERER_AUTO: string = 'auto';
+// 逐版本「渲染后端」下拉的第四档：让 MC 去试 **VulkanBackend**（26.2+ 才有）。
+// 它**不改 GL 侧的任何东西**（lib/env 仍是桌面 GL），只让启动器额外给 MC 传游戏参数
+// `--graphicsBackend vulkan`；MC 的候选列表因此变成 {VulkanBackend, GlBackend} ⇒ Vulkan 失败照样回退 GL。
+// 见方案文 §5.5（后端选择）与 §7.5（开关与回退）。
+export const RENDERER_BACKEND_VULKAN: string = 'vulkan';
 export const VULKAN_LIB: string = 'libvulkan.so';
 // 26.2 新增 NativeLibrariesBootstrap：一旦探测到 Vulkan loader，就会强载 lwjgl-shaderc/spvc/vma
 // （本工程不随包这些模块）。把 LWJGL 的 Vulkan 库名指向一个不存在的名字 → 探测失败 → 跳过 Vulkan 组；
 // 本工程渲染走 GL/GLES（见 RendererPolicy：≥1.17 桌面 GL，≤1.16 gl4es），不依赖 LWJGL 的 Vulkan 绑定。
 export const VULKAN_LIB_DISABLED: string = 'libmeow-no-vulkan.so';
+// 【M1 实验，验证完按需回退】自研 Vulkan loader shim（随包 native，见 meowvulkan.c 头注释）：
+// 转发到真 loader，只在 env MEOW_VK_SHIM 打开时才做四个修正（补扩展名/补 feature 位/createDevice 剔名/KHR→core）。
+// ⇒ **默认纯透传**：未设 env 时 MC 的 Vulkan 探测仍会失败并回退 OpenGL（今天的行为），
+//    所以翻这一个名字本身是安全的；要做实验再把 MEOW_VK_SHIM=1 加到「额外渲染环境变量」。
+// 回退阶梯见 notes/20-design/render/Vulkan后端-绕过可行性-调研与方案.md §7.5。
+export const VULKAN_LIB_SHIM: string = 'libmeowvulkan.so';
 
 // ---- 启动器标识（品牌：Harmomeow Craft Launcher，HarmonyOS + meow）----
 export const LAUNCHER_NAME: string = 'Harmomeow Craft';
@@ -55,7 +66,7 @@ export const CLIENT_MOD_NAME: string = 'Harmomeow Craft';
 
 // ---- staging（启动支持 jar 载体）----
 /** 内容令牌：meowcraft_extras.tar.gz 内容变更（换 jar / 打补丁）时递增，强制重抽缓存。 */
-export const EXTRAS_VERSION: string = '20260916-lwjgl-review';
+export const EXTRAS_VERSION: string = '20260917-vk-backend-cli';
 /** 平铺目录必须保留的公共 jar（其余 .jar 视为残留删除；lwjgl 世代 jar 按版本另行保留）。 */
 export const EXPECTED_EXTRA_JARS: string[] = ['launcher.jar', 'gson-for-launcher.jar'];
 // ---- LWJGL（**现代只随包一代**：3.4.3 服务全部 LWJGL3 版本；legacy ≤1.12.2 仍走 MC 的 LWJGL2）----

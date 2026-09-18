@@ -27,6 +27,7 @@
 
 #include <EGL/egl.h>
 #include <native_window/external_window.h>
+#include <native_buffer/native_buffer.h>
 
 #include "meowlog.h"
 #include "meowcraftbridge_environ.h"
@@ -62,6 +63,10 @@ static int g_hintPair[2];        /* last meowSetWindowHint (hint, value) */
  */
 static int g_appliedWidth;
 static int g_appliedHeight;
+
+/* Defined below; called from the render-thread window paths so a file override
+ * written after surface creation still takes effect once HOME (filesDir) exists. */
+static void meow_apply_window_usage(OHNativeWindow *win);
 
 /* ------------------------------------------------------------------------- */
 /* gl4es (desktop-GL -> GLES fixed-function translator) support              */
@@ -357,6 +362,9 @@ static EGLSurface egl_build_surface(void) {
             OH_NativeWindow_NativeWindowHandleOpt((OHNativeWindow *)win, SET_BUFFER_GEOMETRY,
                                                   meow_environ->width, meow_environ->height);
         }
+        /* Render thread, after JVM launch: HOME (filesDir) is set by now, so a
+         * meow-win-usage.txt written after surface creation still applies. */
+        meow_apply_window_usage((OHNativeWindow *)win);
         EGLSurface surface = eglCreateWindowSurface(
             g_egl.display, g_egl.config, (EGLNativeWindowType)(uintptr_t)win, NULL);
         if (surface != EGL_NO_SURFACE) {
@@ -528,6 +536,25 @@ int meow_egl_apply_resize(int width, int height) {
             return -1; /* not recorded: the swap self-heal retries */
         }
         MEOWLOGI("apply resize %{public}d x %{public}d", width, height);
+    } else {
+        /* Vulkan-only session: no EGL surface exists to rebuild, but the window's producer
+         * buffer geometry must still track the real surface size, otherwise
+         * vkGetPhysicalDeviceSurfaceCapabilitiesKHR keeps reporting the startup fallback
+         * (1280x720) as currentExtent while MC builds its swapchain at its own size.
+         * This runs on the render thread (glfwPollEvents -> meowPumpEvents -> here), so
+         * touching the NativeWindow here respects the UI-thread-must-not rule. */
+        void *win = (meow_environ != NULL) ? meow_environ->window : NULL;
+        if (win != NULL) {
+            OH_NativeWindow_NativeWindowHandleOpt((OHNativeWindow *)win, SET_BUFFER_GEOMETRY, width,
+                                                  height);
+            /* Final geometry now equals the display-scale-derived surface size, so
+             * vkGetPhysicalDeviceSurfaceCapabilitiesKHR.currentExtent tracks it too. */
+            MEOWLOGI("apply resize %{public}d x %{public}d -> window geometry (vulkan path, "
+                     "scale-derived)", width, height);
+        } else {
+            MEOWLOGW("apply resize %{public}d x %{public}d: no window to update geometry",
+                     width, height);
+        }
     }
 
     g_appliedWidth = width;
@@ -624,6 +651,173 @@ void meowSetWindowHint(int hint, int value) {
      */
 }
 
+/*
+ * ---------------------------------------------------------------- Vulkan WSI
+ *
+ * LWJGL's GLFWVulkan resolves these six names STRAIGHT FROM THIS LIBRARY
+ * (apiGetFunctionAddress(GLFW.getLibrary(), "glfwVulkanSupported"), ...), so they must be plain C
+ * exports: the class initialiser runs `apiGetFunctionAddress` for all six at once, and a single
+ * missing symbol makes the whole class fail to load. That is why even the entry points MC does not
+ * call are implemented here.
+ *
+ * A surface is only ever created from the real OHNativeWindow the bridge got from the ArkUI
+ * XComponent surface id (meow_environ->window, set by meowSetSurfaceId). vkCreateSurfaceOHOS does
+ * NOT validate its window argument -- a NULL one SIGSEGVs on this ICD (measured, notes section
+ * 7.3) -- so when there is no window we FAIL instead of passing a handle we cannot vouch for.
+ */
+#define MEOW_VK_ST_SURFACE_CREATE_INFO_OHOS 1000685000   /* vulkan_core.h:1238 */
+#define MEOW_VK_ERROR_INITIALIZATION_FAILED (-3)
+#define MEOW_VK_ERROR_EXTENSION_NOT_PRESENT (-7)
+
+typedef struct {
+    uint32_t sType;
+    const void *pNext;
+    uint32_t flags;
+    void *window;   /* OHNativeWindow* */
+} meow_vk_surface_ci_ohos;
+
+static const char *g_vkRequiredExts[2] = { "VK_KHR_surface", "VK_OHOS_surface" };
+
+static void *meow_vk_loader(void) {
+    static void *s_loader = NULL;
+    if (s_loader == NULL) {
+        s_loader = dlopen("/system/lib64/libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+        if (s_loader == NULL) {
+            MEOWLOGE("meow vk wsi: dlopen real loader failed: %{public}s", dlerror());
+        }
+    }
+    return s_loader;
+}
+
+/* Meowcraft's own Vulkan loader shim (libmeowvulkan.so). LWJGL loads it as its Vulkan library
+ * (-Dorg.lwjgl.vulkan.libname=libmeowvulkan.so) and it is the component that applies the
+ * extension/feature corrections and maps KHR/EXT names to the core names this ICD really exports.
+ * Resolving it by name keeps GLFW's proc-address entry point from silently bypassing those
+ * corrections. It may not be shared yet when this runs, so dlopen it; the shim itself resolves
+ * /system/lib64/libvulkan.so, so this never recurses back into the bridge. If it is absent the
+ * callers below fall back to the raw system loader. */
+static void *meow_vk_shim(void) {
+    static void *s_shim = NULL;
+    static int s_tried = 0;
+    if (!s_tried) {
+        s_tried = 1;
+        s_shim = dlopen("libmeowvulkan.so", RTLD_NOW | RTLD_LOCAL);
+        if (s_shim == NULL) {
+            MEOWLOGW("meow vk wsi: dlopen(libmeowvulkan.so) failed (%{public}s) -> raw system loader",
+                     dlerror());
+        }
+    }
+    return s_shim;
+}
+
+int glfwVulkanSupported(void) {
+    MEOWLOGI("glfwVulkanSupported -> 1");
+    return 1;
+}
+
+const char **glfwGetRequiredInstanceExtensions(uint32_t *count) {
+    if (count != NULL) *count = 2;
+    MEOWLOGI("glfwGetRequiredInstanceExtensions -> {VK_KHR_surface, VK_OHOS_surface}");
+    return g_vkRequiredExts;
+}
+
+int glfwGetPhysicalDevicePresentationSupport(void *instance, void *physicalDevice, uint32_t queueFamily) {
+    /* ALWAYS 1 -- a deliberate simplification, NOT a real query.
+     * WHY NOT A REAL QUERY: GLFW's desktop implementations check
+     * vkGetPhysicalDevice{Win32,Xlib,Wayland,MacOS}PresentationSupportKHR, but OHOS exposes no such
+     * per-platform presentation-support entry point, and the real check
+     * (vkGetPhysicalDeviceSurfaceSupportKHR) needs a VkSurfaceKHR that this API does not receive.
+     * We could create one from meow_environ->window, but this may be called before the
+     * instance/device/window are all valid and vkCreateSurfaceOHOS SIGSEGVs on a bad window
+     * (measured, notes section 7.3), so fabricating a surface here would add crash risk for no gain.
+     * CONSEQUENCE: MC uses the result only to pick a queue family; every graphics-capable family on
+     * this ICD presents, and the authoritative check is done later through
+     * vkGetPhysicalDeviceSurfaceSupportKHR via the shim. Callers must not read this as validation. */
+    (void)instance;
+    (void)physicalDevice;
+    (void)queueFamily;
+    return 1;
+}
+
+long glfwGetInstanceProcAddress(void *instance, const char *procname) {
+    /* Prefer our own shim (see meow_vk_shim). This used to dlopen /system/lib64/libvulkan.so and
+     * call its vkGetInstanceProcAddr directly, bypassing the shim's KHR/EXT -> core name mapping:
+     * callers that resolved through GLFW then saw NULL for names like vkCmdBeginRenderingKHR. */
+    void *(*gipa)(void *, const char *) = NULL;
+    void *shim = meow_vk_shim();
+    if (shim != NULL) {
+        gipa = dlsym(shim, "vkGetInstanceProcAddr");
+    }
+    if (gipa == NULL) {
+        void *loader = meow_vk_loader();
+        if (loader == NULL) return 0;
+        gipa = dlsym(loader, "vkGetInstanceProcAddr");
+    }
+    if (gipa == NULL) return 0;
+    /* GLFW's contract: asking for vkGetInstanceProcAddr itself returns the loader's own entry point,
+     * which the caller then re-uses for every other lookup. Hand back the shim's, so those
+     * re-resolutions stay on the corrected path instead of escaping to the raw loader. */
+    if (procname != NULL && strcmp(procname, "vkGetInstanceProcAddr") == 0) {
+        return (long)gipa;
+    }
+    return (long)gipa(instance, procname);
+}
+
+void glfwInitVulkanLoader(void *loader) {
+    /* Intentionally a no-op. GLFW's real implementation remembers `loader` and uses it for every
+     * subsequent Vulkan lookup; here that would reintroduce the bypass removed above, because an
+     * externally supplied entry point is not necessarily shim-aware. This stub instead always
+     * prefers the shim and only falls back to /system/lib64/libvulkan.so when the shim is absent.
+     * CONSEQUENCE: an app that deliberately passes a custom vkGetInstanceProcAddr gets the shim's
+     * loader instead; for MC/LWJGL that is the intended path anyway (org.lwjgl.vulkan.libname is
+     * already libmeowvulkan.so), so lookups stay consistent. */
+    (void)loader;
+}
+
+int glfwCreateWindowSurface(void *instance, void *window, const void *allocator, void *pSurface) {
+    (void)window;      /* the GLFW handle is not an OHNativeWindow; the bridge owns the real one */
+    (void)allocator;
+    MEOWLOGI("glfwCreateWindowSurface: ENTER (instance=%{public}p envWindow=%{public}p)", instance,
+             (meow_environ != NULL) ? meow_environ->window : NULL);
+    if (instance == NULL || pSurface == NULL) return MEOW_VK_ERROR_INITIALIZATION_FAILED;
+    void *nw = (meow_environ != NULL) ? meow_environ->window : NULL;
+    if (nw == NULL) {
+        MEOWLOGE("glfwCreateWindowSurface: meow_environ->window is NULL (no surface id yet) -> refusing");
+        return MEOW_VK_ERROR_INITIALIZATION_FAILED;
+    }
+    void *loader = meow_vk_loader();
+    if (loader == NULL) return MEOW_VK_ERROR_INITIALIZATION_FAILED;
+    void *(*gipa)(void *, const char *) = dlsym(loader, "vkGetInstanceProcAddr");
+    if (gipa == NULL) return MEOW_VK_ERROR_INITIALIZATION_FAILED;
+    int (*createSurface)(void *, const meow_vk_surface_ci_ohos *, const void *, void **) =
+        gipa(instance, "vkCreateSurfaceOHOS");
+    if (createSurface == NULL) {
+        MEOWLOGE("glfwCreateWindowSurface: vkCreateSurfaceOHOS not resolvable");
+        return MEOW_VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+    /* Vulkan counterpart of egl_build_surface(): pin the producer buffer geometry to the current
+     * display-scale-derived size BEFORE the VkSurface exists, so the first
+     * vkGetPhysicalDeviceSurfaceCapabilitiesKHR already reports the right currentExtent. This
+     * runs on the render thread (MC's Vulkan init), never on the UI thread. */
+    struct meow_environ_s *env = meow_environ;
+    if (env != NULL && env->width > 0 && env->height > 0) {
+        OH_NativeWindow_NativeWindowHandleOpt((OHNativeWindow *)nw, SET_BUFFER_GEOMETRY, env->width,
+                                              env->height);
+        MEOWLOGI("glfwCreateWindowSurface: pinned window geometry %{public}d x %{public}d",
+                 env->width, env->height);
+    }
+    /* Render thread, after JVM launch: HOME (filesDir) is set by now, so retry the
+     * file-driven usage/format resolution before the VkSurface and its buffers exist. */
+    meow_apply_window_usage((OHNativeWindow *)nw);
+    meow_vk_surface_ci_ohos ci = { MEOW_VK_ST_SURFACE_CREATE_INFO_OHOS, NULL, 0, nw };
+    void *surface = NULL;
+    int rc = createSurface(instance, &ci, NULL, &surface);
+    if (pSurface != NULL) *(void **)pSurface = surface;
+    MEOWLOGI("glfwCreateWindowSurface: window=%{public}p rc=%{public}d surface=%{public}p", nw, rc,
+             surface);
+    return rc;
+}
+
 void meowSwapBuffers(void) {
     /* 渲染线程兜底：即便 MakeCurrent 走了别的路径，也保证 QoS 提升一次 + 抓栈已装。 */
     meow_qos_apply_current_thread();
@@ -664,7 +858,256 @@ void meowSwapInterval(int interval) {
 /* surface channel                                                           */
 /* ------------------------------------------------------------------------- */
 
+/*
+ * Resolve the window's final buffer usage:
+ *
+ *   DEFAULT -- clear NATIVEBUFFER_USAGE_CPU_READ only (measured 0x9 =
+ *   CPU_READ|MEM_DMA -> 0x8). NO GPU bit is added. F25 used to OR in
+ *   HW_RENDER|HW_TEXTURE unconditionally (0x9 -> 0x308), which is suspected of
+ *   breaking window-buffer allocation: the shim .22 log shows
+ *   `RequestBuffer failed: 40601000` (= NATIVE_ERROR_NO_BUFFER), absent in the
+ *   F20..F25 window. That unconditional GPU-bit change is reverted here.
+ *
+ *   OVERRIDE -- if <filesDir>/meow-win-usage.txt holds a valid non-zero integer
+ *   (0x prefix accepted), that value becomes the final usage.
+ *
+ * WHY A FILE, NOT AN ENV: the usage is set when the window is first configured
+ * (01:15:04.760 measured), BEFORE the launcher applies its render env
+ * (01:15:04.785). F24's env-gated override was therefore read too late and had
+ * no effect. A file on disk has no such ordering problem.
+ *
+ * PATH SOURCE: the application sandbox files directory is already spelled, on
+ * the native side, as the HOME env var -- meowjrebridge.cpp:258 sets
+ * `HOME = filesDir` before JVM launch. This bridge has no other files-dir
+ * constant, so `$HOME/<name>` is used verbatim rather than inventing a path. If
+ * HOME is unset/empty the file is simply not read and the default applies.
+ *
+ * TIMING: meowSetSurfaceId runs before the JVM starts (GameWindow.injectAndLaunch
+ * injects the surface first, launches the JVM second), so HOME may not exist on
+ * the first call. The render-thread window paths (egl_build_surface for GL,
+ * glfwCreateWindowSurface for Vulkan) call this again once HOME is available;
+ * the state below re-resolves if the files dir was not seen the first time.
+ *
+ * GET -> compute -> SET -> GET-readback are logged with the value's source
+ * (default|file) for external self-proof.
+ */
+static int g_winUsageDone = 0;
+static int g_winUsageDirSeen = 0;
+static void *g_winUsageWindow = NULL;
+
+static const char *meow_win_file_dir(void) {
+    const char *dir = getenv("HOME");
+    return (dir != NULL && dir[0] != '\0') ? dir : NULL;
+}
+
+/* Read one integer (0x prefix accepted) from <filesDir>/<name>. Returns 1 only
+ * for a syntactically valid, non-zero value; missing/empty/junk -> 0. Read-only:
+ * the file is never created here. */
+static int meow_read_int_file(const char *name, unsigned long long *out) {
+    const char *dir = meow_win_file_dir();
+    if (dir == NULL) {
+        return 0;
+    }
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {
+        return 0;
+    }
+    char buf[64];
+    char *got = fgets(buf, sizeof(buf), f);
+    fclose(f);
+    if (got == NULL) {
+        return 0;
+    }
+    char *end = NULL;
+    unsigned long long v = strtoull(buf, &end, 0);
+    if (end == buf || v == 0) {
+        return 0;
+    }
+    *out = v;
+    return 1;
+}
+
+static void meow_apply_window_usage(OHNativeWindow *win) {
+    if (win == NULL) {
+        MEOWLOGW("window buffer usage: window is NULL, usage bits skipped");
+        return;
+    }
+    const char *dir = meow_win_file_dir();
+    if (g_winUsageDone && g_winUsageWindow == win && (g_winUsageDirSeen || dir == NULL)) {
+        return; /* already resolved for this window */
+    }
+
+    uint64_t before = 0;
+    int32_t rcGet = OH_NativeWindow_NativeWindowHandleOpt(win, GET_USAGE, &before);
+    if (rcGet != 0) {
+        MEOWLOGW("window buffer usage: GET_USAGE failed rc=%{public}d", (int)rcGet);
+        return;
+    }
+
+    unsigned long long fileVal = 0;
+    uint64_t after;
+    const char *source;
+    if (meow_read_int_file("meow-win-usage.txt", &fileVal)) {
+        after = (uint64_t)fileVal;
+        source = "file";
+    } else {
+        after = before & ~(uint64_t)NATIVEBUFFER_USAGE_CPU_READ;
+        source = "default";
+    }
+
+    int32_t rcSet = OH_NativeWindow_NativeWindowHandleOpt(win, SET_USAGE, after);
+    if (rcSet != 0) {
+        MEOWLOGW("window buffer usage: SET_USAGE failed rc=%{public}d (0x%{public}llx -> 0x%{public}llx, source: %{public}s)",
+                 (int)rcSet, (unsigned long long)before, (unsigned long long)after, source);
+        return;
+    }
+
+    uint64_t readback = 0;
+    int32_t rcAfter = OH_NativeWindow_NativeWindowHandleOpt(win, GET_USAGE, &readback);
+    if (rcAfter != 0) {
+        MEOWLOGW("window buffer usage: readback GET_USAGE failed rc=%{public}d", (int)rcAfter);
+    }
+    MEOWLOGI("window buffer usage: 0x%{public}llx -> 0x%{public}llx (source: %{public}s)",
+             (unsigned long long)before,
+             (unsigned long long)(rcAfter == 0 ? readback : after), source);
+
+    /* Optional file-driven pixel format: <filesDir>/meow-win-format.txt. */
+    unsigned long long fileFmt = 0;
+    if (meow_read_int_file("meow-win-format.txt", &fileFmt)) {
+        int32_t rcFmt = OH_NativeWindow_NativeWindowHandleOpt(win, SET_FORMAT, (int32_t)fileFmt);
+        if (rcFmt != 0) {
+            MEOWLOGW("window buffer format: SET_FORMAT(0x%{public}x) failed rc=%{public}d (source: file)",
+                     (unsigned)fileFmt, (int)rcFmt);
+        } else {
+            int32_t fmtAfter = -1;
+            int32_t rcFmtAfter = OH_NativeWindow_NativeWindowHandleOpt(win, GET_FORMAT, &fmtAfter);
+            MEOWLOGI("window buffer format: -> 0x%{public}x (source: file)",
+                     (unsigned)(rcFmtAfter == 0 ? fmtAfter : (int32_t)fileFmt));
+        }
+    }
+
+    /* Read-only buffer queue depth (previously never queried -- A7). */
+    int32_t qsize = -1;
+    int32_t rcQ = OH_NativeWindow_NativeWindowHandleOpt(win, GET_BUFFERQUEUE_SIZE, &qsize);
+    if (rcQ != 0) {
+        MEOWLOGW("window buffer queue size: GET_BUFFERQUEUE_SIZE failed rc=%{public}d", (int)rcQ);
+    } else {
+        MEOWLOGI("window buffer queue size: %{public}d", (int)qsize);
+    }
+
+    g_winUsageDone = 1;
+    g_winUsageWindow = win;
+    g_winUsageDirSeen = (dir != NULL) ? 1 : 0;
+}
+
+/*
+ * env-gated window buffer FORMAT / USAGE / SOURCE_TYPE diagnostics (all default
+ * OFF). These exist to test whether the producer-side window buffer format and
+ * its GPU usage bits are the cause of the second-submit VK_ERROR_DEVICE_LOST.
+ * Every SET_* is gated on an env var, so an unset environment performs no
+ * mutation; only the read-only GET_FORMAT probe below always runs so the window
+ * format can be compared with the swapchain imageFormat (logged as 37, i.e.
+ * VK_FORMAT_R8G8B8A8_UNORM) in the field.
+ *
+ *   MEOW_WIN_SET_FORMAT  non-zero -> SET_FORMAT to that OH_NativeBuffer_Format
+ *                                   (NATIVEBUFFER_PIXEL_FMT_RGBA_8888 == 12,
+ *                                    native_buffer/native_buffer.h:107)
+ *   MEOW_WIN_USAGE_EXTRA non-zero -> OR that bit mask into the window usage;
+ *                                   NATIVEBUFFER_USAGE_HW_RENDER  = 1<<8 = 256
+ *                                   NATIVEBUFFER_USAGE_HW_TEXTURE = 1<<9 = 512
+ *                                   (native_buffer/native_buffer.h:69-70)
+ *   MEOW_WIN_SOURCE_TYPE non-zero -> SET_SOURCE_TYPE to that OHSurfaceSource
+ *                                   (OH_SURFACE_SOURCE_GAME == 2,
+ *                                    native_window/external_window.h:399)
+ *
+ * Called exactly once per window, at the first OHNativeWindow acquisition
+ * (meowSetSurfaceId), right after meow_apply_window_usage(). Before/after
+ * values are re-read and logged so the effect is externally self-proving.
+ */
+static void meow_window_format_usage_probe(OHNativeWindow *win) {
+    if (win == NULL) {
+        MEOWLOGW("window buffer format: window is NULL, probe skipped");
+        return;
+    }
+
+    int32_t fmt = -1;
+    int32_t rcFmt = OH_NativeWindow_NativeWindowHandleOpt(win, GET_FORMAT, &fmt);
+    if (rcFmt != 0) {
+        MEOWLOGW("window buffer format: GET_FORMAT failed rc=%{public}d", (int)rcFmt);
+    } else {
+        MEOWLOGI("window buffer format: 0x%{public}x (swapchain imageFormat=37)", (unsigned)fmt);
+    }
+
+    const char *setFmtEnv = getenv("MEOW_WIN_SET_FORMAT");
+    if (setFmtEnv != NULL && setFmtEnv[0] != '\0') {
+        int32_t wantFmt = (int32_t)strtol(setFmtEnv, NULL, 0);
+        if (wantFmt != 0) {
+            int32_t rcSet = OH_NativeWindow_NativeWindowHandleOpt(win, SET_FORMAT, wantFmt);
+            if (rcSet != 0) {
+                MEOWLOGW("window buffer format: SET_FORMAT(0x%{public}x) failed rc=%{public}d (was 0x%{public}x)",
+                         (unsigned)wantFmt, (int)rcSet, (unsigned)fmt);
+            } else {
+                int32_t afterFmt = -1;
+                int32_t rcAfter = OH_NativeWindow_NativeWindowHandleOpt(win, GET_FORMAT, &afterFmt);
+                MEOWLOGI("window buffer format: 0x%{public}x -> 0x%{public}x (MEOW_WIN_SET_FORMAT)",
+                         (unsigned)fmt, (unsigned)(rcAfter == 0 ? afterFmt : wantFmt));
+            }
+        }
+    }
+
+    const char *extraEnv = getenv("MEOW_WIN_USAGE_EXTRA");
+    if (extraEnv != NULL && extraEnv[0] != '\0') {
+        uint64_t extra = strtoull(extraEnv, NULL, 0);
+        if (extra != 0) {
+            uint64_t before = 0;
+            int32_t rcGet = OH_NativeWindow_NativeWindowHandleOpt(win, GET_USAGE, &before);
+            if (rcGet != 0) {
+                MEOWLOGW("window buffer usage: GET_USAGE failed rc=%{public}d (MEOW_WIN_USAGE_EXTRA)",
+                         (int)rcGet);
+            } else {
+                uint64_t want = before | extra;
+                int32_t rcSet = OH_NativeWindow_NativeWindowHandleOpt(win, SET_USAGE, want);
+                if (rcSet != 0) {
+                    MEOWLOGW("window buffer usage: SET_USAGE failed rc=%{public}d (0x%{public}llx | 0x%{public}llx)",
+                             (int)rcSet, (unsigned long long)before, (unsigned long long)extra);
+                } else {
+                    uint64_t after = 0;
+                    int32_t rcAfter = OH_NativeWindow_NativeWindowHandleOpt(win, GET_USAGE, &after);
+                    MEOWLOGI("window buffer usage: 0x%{public}llx -> 0x%{public}llx (extra 0x%{public}llx, MEOW_WIN_USAGE_EXTRA)",
+                             (unsigned long long)before,
+                             (unsigned long long)(rcAfter == 0 ? after : want),
+                             (unsigned long long)extra);
+                }
+            }
+        }
+    }
+
+    const char *srcEnv = getenv("MEOW_WIN_SOURCE_TYPE");
+    if (srcEnv != NULL && srcEnv[0] != '\0') {
+        int32_t wantSrc = (int32_t)strtol(srcEnv, NULL, 0);
+        if (wantSrc != 0) {
+            int32_t rcSrc = OH_NativeWindow_NativeWindowHandleOpt(win, SET_SOURCE_TYPE, wantSrc);
+            if (rcSrc != 0) {
+                MEOWLOGW("window source type: SET_SOURCE_TYPE(%{public}d) failed rc=%{public}d",
+                         (int)wantSrc, (int)rcSrc);
+            } else {
+                MEOWLOGI("window source type: -> %{public}d (MEOW_WIN_SOURCE_TYPE)", (int)wantSrc);
+            }
+        }
+    }
+}
+
 int meowSetSurfaceId(int64_t sid, int width, int height) {
+    /*
+     * Vulkan milestone M1: the project's crash dumper (meowbt) is otherwise installed only from the
+     * GL paths (meowMakeCurrent / meowSwapBuffers), which a Vulkan backend never walks -- so a Vulkan
+     * SIGSEGV produced no backtrace at all. This entry point does run in the game process (UI thread,
+     * before the JVM starts), so install it here as well. It stays inert unless MEOW_BT is set;
+     * MEOW_BT_FILE=<path> makes it write a dump instead of only stderr (both are documented envs).
+     */
+    meow_bt_install_once();
     struct meow_environ_s *env = meow_environ;
     if (env == NULL) {
         MEOWLOGE("meowSetSurfaceId: state not ready");
@@ -698,12 +1141,24 @@ int meowSetSurfaceId(int64_t sid, int width, int height) {
     env->window = (void *)win;
     env->surfaceId = sid;
     OH_NativeWindow_NativeWindowHandleOpt(win, SET_SOURCE_TYPE, OH_SURFACE_SOURCE_GAME);
+    /* First window handle acquired (OnSurfaceCreated path): resolve the window buffer
+     * usage -- default clears CPU_READ only; a <filesDir>/meow-win-usage.txt override
+     * wins if readable. Never env-gated (render env applies ~25 ms later, see F25); the
+     * render-thread window paths retry once HOME is set. */
+    meow_apply_window_usage(win);
+    /* Read-only GET_FORMAT probe plus env-gated FORMAT/USAGE/SOURCE_TYPE diagnostics. */
+    meow_window_format_usage_probe(win);
     if (width > 0 && height > 0) {
         env->savedWidth = width;
         env->savedHeight = height;
         env->width = width;
         env->height = height;
         OH_NativeWindow_NativeWindowHandleOpt(win, SET_BUFFER_GEOMETRY, width, height);
+    } else {
+        /* No size yet (onSurfaceCreated reports 0x0): deliberately do NOT pin a fallback
+         * geometry. The render thread pump will apply the real, display-scale-derived
+         * surface size as soon as meowResizeSurface records it. */
+        MEOWLOGI("meowSetSurfaceId: size unknown (0x0) -> geometry deferred to resize");
     }
 
     /* Force the next render-thread apply to rebuild the surface. */

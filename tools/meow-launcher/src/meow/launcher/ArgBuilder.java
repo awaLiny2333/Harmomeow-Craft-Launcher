@@ -18,8 +18,13 @@ public final class ArgBuilder {
     private ArgBuilder() {
     }
 
-    /** Assemble the game arguments for {@code version} in the order the client expects. */
-    public static String[] build(Account account, VersionJson version) {
+    /**
+     * Assemble the game arguments for {@code version} in the order the client expects.
+     * {@code extraGameArgs} are appended verbatim at the end (the launcher's own arguments after
+     * the account/version pair, e.g. {@code --graphicsBackend vulkan}); MC's parser is
+     * order-independent for named options, so appending is safe.
+     */
+    public static String[] build(Account account, VersionJson version, String[] extraGameArgs) {
         boolean demo = account.username != null && account.username.startsWith(DEMO_PREFIX);
         String playerName = demo ? account.username.substring(DEMO_PREFIX.length()) : account.username;
         String versionName = (version.inheritsFrom != null && !version.inheritsFrom.isEmpty())
@@ -58,6 +63,13 @@ public final class ArgBuilder {
                 continue;
             }
             args.add(expand(token, macros));
+        }
+        if (extraGameArgs != null) {
+            for (String extra : extraGameArgs) {
+                if (extra != null && !extra.isEmpty()) {
+                    args.add(extra);
+                }
+            }
         }
         return args.toArray(new String[0]);
     }

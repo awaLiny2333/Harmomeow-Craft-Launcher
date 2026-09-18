@@ -1,7 +1,7 @@
 import { fileIo } from '@kit.CoreFileKit';
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { RENDERER_LIB, VULKAN_LIB_DISABLED, WINDOW_DEFAULT_W, WINDOW_DEFAULT_H,
+import { RENDERER_LIB, VULKAN_LIB_SHIM, WINDOW_DEFAULT_W, WINDOW_DEFAULT_H,
   SPOOF_OS_NAME, SPOOF_OS_VERSION, SPOOF_CPU_NAME,
   LOCALE_LANGUAGE, LOCALE_COUNTRY, LOCALE_TIMEZONE, RULE_OS_NAME, RULE_OS_ARCH,
   OFFLINE_USERNAME, LAUNCHER_NAME, LAUNCHER_VERSION,
@@ -136,6 +136,8 @@ export interface LaunchOptions {
   /** 渲染后端库名（按 MC 版本选，见 RendererPolicy）；空 = 默认桌面 GL（RENDERER_LIB）。
    *  必须与 GameLauncher 传给 startJvm 的 rendererLib 一致（meowjrebridge 启动前会自检）。 */
   rendererLib?: string;
+  /** 【M1 实验】MC 的 `--graphicsBackend`（如 `vulkan`）。见下方 argv 处的注释。 */
+  graphicsBackend?: string;
   /** 额外 JVM 参数（实验/调优）：空格/换行分隔，原样追加（放在固定参数之前，允许被覆盖）。 */
   jvmArgs?: string;
 }
@@ -254,7 +256,11 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     argv.push(`-Dmeow.lwjgl.gen=${lwjglGen}`);
     argv.push('-Dorg.lwjgl.system.allocator=system');
     argv.push('-Dorg.lwjgl.glfw.checkThread0=false');
-    argv.push(`-Dorg.lwjgl.vulkan.libname=${VULKAN_LIB_DISABLED}`);
+    // 【M1 实验】Vulkan 库名指向自研 shim（libmeowvulkan.so，随包 native）。它可以修正本机 ICD 的
+    // "上报面裁剪"（补 KHR 扩展名 / 补 post-1.2 feature 位 / createDevice 剔名 / KHR→core 名字映射），
+    // 但**默认纯透传**（env MEOW_VK_SHIM 未设 = 与真 loader 行为一致）⇒ MC 的 Vulkan 探测照样失败、
+    // 照样回退 OpenGL（= 今天的行为）。要做实验再设 MEOW_VK_SHIM=1。回退阶梯见方案文 §7.5。
+    argv.push(`-Dorg.lwjgl.vulkan.libname=${VULKAN_LIB_SHIM}`);
     argv.push('-DDEBUG=true');
     argv.push(`-Dcpu.name=${SPOOF_CPU_NAME}`);
     argv.push(`-Dnet.minecraft.clientmodname=${CLIENT_MOD_NAME}`);
@@ -389,6 +395,13 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
         argv.push(v);
       }
     }
+  }
+  // MC 的 `--graphicsBackend` 是**游戏参数**，必须在主类之后（之前误放进 JVM 的 -D 区，JVM 会当作自己的
+  // 选项而拒绝启动）。两条路径都在这里追加：原版/Fabric 由我们的 launcher 把 `args[2..]` 原样转给 MC，
+  // NeoForge 直接由本函数补齐 game 参数。MC 默认 GL 优先（见方案文 §5.5），只有它才会去试 Vulkan；
+  // 候选列表是 {VulkanBackend, GlBackend}，Vulkan 失败仍回退 GL（安全垫）。回退阶梯见 §7.5。
+  if (opts.graphicsBackend !== undefined && opts.graphicsBackend.length > 0) {
+    argv.push('--graphicsBackend', opts.graphicsBackend);
   }
   return argv;
 }

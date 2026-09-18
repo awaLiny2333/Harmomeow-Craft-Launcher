@@ -11,7 +11,7 @@ import { readInstanceSettings, ensureInstanceLogsDir } from './InstanceSettings'
 import { MEOW_HOME_DIR, MC_RUN_DIR_PREFIX, NATIVES_DIR, jreHomeDir,
   hspLibsDir, versionDir } from '../constants/Paths';
 import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H, RENDERER_ENV } from '../constants/LaunchDefaults';
-import { rendererForVersion, guardNeedsSync } from './RendererPolicy';
+import { rendererForVersion, guardNeedsSync, supportsVulkanBackend } from './RendererPolicy';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'GameLauncher';
@@ -109,6 +109,12 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   // 注意：versionId 现在是实例名（目录名，玩家可任取），不能拿它判版本。
   const mcVersion = readVersionId(jsonPath);
   const renderer = rendererForVersion(mcVersion, instance.rendererBackend);
+  // 【临时诊断，查完即删】把 Vulkan 开关这条链上的四个值一次暴露出来：盘上的后端值、选择函数给出的
+  // graphicsBackend、以及版本把关的结果。任何一环不对，CMD_TAIL 里就不会出现 --graphicsBackend。
+  hilog.info(LOG_DOMAIN, LOG_TAG,
+    'vkdiag mcVersion=%{public}s backendFromDisk=%{public}s choiceGb=%{public}s gate=%{public}s',
+    mcVersion, instance.rendererBackend, renderer.graphicsBackend,
+    supportsVulkanBackend(mcVersion) ? 'true' : 'false');
   const argv = buildLaunchArgv({
     gameRoot: gameRoot,
     gameDir: gameDir,
@@ -132,6 +138,9 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     playerName: launchAccount.name,
     cpuChip: cpuChip,
     rendererLib: renderer.lib,
+    // 选了 Vulkan 档时才让 MC 去试（26.2+ 才认这个游戏参数；失败仍回退 GL）。见 RendererPolicy。
+    graphicsBackend: (renderer.graphicsBackend.length > 0 && supportsVulkanBackend(mcVersion))
+      ? renderer.graphicsBackend : undefined,
     jvmArgs: settings.jvmArgs,
     logsDir: logsDir,
   });

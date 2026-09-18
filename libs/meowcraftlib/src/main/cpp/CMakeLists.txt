@@ -7,6 +7,7 @@ project(meowcraftlib)
 add_library(meowjrebridge SHARED
     meowjrebridge/meowjrebridge.cpp
     meowcraftbridge/meowqos.c
+    meowcraftbridge/meowvkprobe.c
 )
 
 target_link_libraries(meowjrebridge PUBLIC
@@ -14,6 +15,7 @@ target_link_libraries(meowjrebridge PUBLIC
     libace_napi.z.so
     libace_ndk.z.so
     libnative_window_manager.so
+    libnative_window.so
 )
 
 # meowcraftbridge：Meowcraft 自研的鸿蒙 GLFW/GL 桥（净室实现，
@@ -39,4 +41,16 @@ add_library(meowglguard SHARED
     meowcraftbridge/meowglguard.c)
 
 target_link_libraries(meowglguard PUBLIC
+    libhilog_ndk.z.so)
+
+# Vulkan loader shim：作为 LWJGL 的 Vulkan 库（-Dorg.lwjgl.vulkan.libname=libmeowvulkan.so）。
+# 转发到真 loader（/system/lib64/libvulkan.so），只在 MEOW_VK_SHIM 打开时做四个修正
+# （补扩展名 / 补 feature 位 / createDevice 剔名 / KHR→core 名字映射）。见 meowvulkan.c 头注释。
+add_library(meowvulkan SHARED
+    meowcraftbridge/meowvulkan.c)
+
+target_include_directories(meowvulkan PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/meowcraftbridge)
+
+target_link_libraries(meowvulkan PUBLIC
     libhilog_ndk.z.so)

@@ -1,5 +1,5 @@
 import { RENDERER_LIB, RENDERER_ENV, RENDERER_LIB_GL4ES,
-  RENDERER_ENV_GL4ES } from '../constants/LaunchDefaults';
+  RENDERER_ENV_GL4ES, RENDERER_BACKEND_VULKAN } from '../constants/LaunchDefaults';
 
 /**
  * 渲染后端选择（按 MC 版本），单一事实源。
@@ -22,12 +22,32 @@ export class RendererChoice {
   env: string;
   /** `MEOWCRAFT_GL_PROFILE`：仅桌面 GL 路径使用（core / compat）。 */
   glProfile: string;
+  /** 非空则给 MC 追加游戏参数 `--graphicsBackend <值>`（如 `vulkan`）；GL 侧设置不受影响。 */
+  graphicsBackend: string;
 
-  constructor(lib: string, env: string, glProfile: string) {
+  constructor(lib: string, env: string, glProfile: string, graphicsBackend: string) {
     this.lib = lib;
     this.env = env;
     this.glProfile = glProfile;
+    this.graphicsBackend = graphicsBackend;
   }
+}
+
+/**
+ * 该 MC 版本是否带 **VulkanBackend**（26.2 引入；26.3 改为 VulkanFeatureSets）。
+ * 只在传给 MC 的游戏参数 `--graphicsBackend` 上把关：MC 默认 **GL 优先**，不显式要求就永远不会去试 Vulkan
+ * （见 notes/20-design/render/Vulkan后端-绕过可行性-调研与方案.md §5.5）；而更老的版本不认这个参数，
+ * 传了会让 MC 的参数解析失败，所以必须按版本放行。传了也有安全垫：VULKAN 模式的候选是
+ * {VulkanBackend, GlBackend}，初始化失败会回退 GL。
+ */
+export function supportsVulkanBackend(mcVersion: string): boolean {
+  const m: RegExpMatchArray | null = mcVersion.match(/^(\d+)\.(\d+)/);
+  if (m === null) {
+    return false;
+  }
+  const major = parseInt(m[1]);
+  const minor = parseInt(m[2]);
+  return major > 26 || (major === 26 && minor >= 2);
 }
 
 /** MC 版本（json 内部 id）是否 legacy（<1.17，用固定管线 GL，需 compatibility profile）。 */
@@ -72,14 +92,20 @@ export function rendererForVersion(mcVersion: string, backend: string): Renderer
   // 「后端」覆盖只切换 lib/env，不改变 profile 语义（否则 1.16.5 选 OpenGLv4 会被 core 拒而崩）。
   const legacy = isLegacyVersion(mcVersion);
   const glProfile = legacy ? 'compat' : 'core';
+  if (backend === RENDERER_BACKEND_VULKAN) {
+    // GL 侧与 auto 完全一致（Vulkan 失败就回退到它），只是额外要求 MC 先试 Vulkan。
+    return legacy
+      ? new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, RENDERER_BACKEND_VULKAN)
+      : new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, RENDERER_BACKEND_VULKAN);
+  }
   if (backend === RENDERER_ENV_GL4ES) {
-    return new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile);
+    return new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '');
   }
   if (backend === RENDERER_ENV) {
-    return new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile);
+    return new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, '');
   }
   // auto（推荐）：≤1.16 走 gl4es，≥1.17 走系统桌面 GL。
   return legacy
-    ? new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile)
-    : new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile);
+    ? new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '')
+    : new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, '');
 }

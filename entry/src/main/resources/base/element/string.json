@@ -253,6 +253,10 @@
       "value": "GL4ES（旧版本兼容）"
     },
     {
+      "name": "renderer_vulkan",
+      "value": "Vulkan（26.2+，实验）"
+    },
+    {
       "name": "java_env_title",
       "value": "Java 环境"
     },
@@ -647,6 +651,30 @@
     {
       "name": "loader_stable",
       "value": "稳定版"
+    },
+    {
+      "name": "advanced_vk_probe",
+      "value": "Vulkan 可持续送显诊断"
+    },
+    {
+      "name": "advanced_vk_probe_hint",
+      "value": "点按钮后在本区建临时表面，绕过 MC 与自研桥，直接调用系统 libvulkan.so 连续送显 120 帧；结果在下方显示，可长按复制。"
+    },
+    {
+      "name": "advanced_vk_probe_run",
+      "value": "运行 Vulkan 送显探针"
+    },
+    {
+      "name": "advanced_vk_probe_running",
+      "value": "探针运行中…"
+    },
+    {
+      "name": "advanced_vk_probe_no_window",
+      "value": "无法获取窗口（no window）"
+    },
+    {
+      "name": "advanced_vk_probe_unavailable",
+      "value": "当前 meowjre 版本未提供探针接口"
     }
   ]
 }

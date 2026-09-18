@@ -22,9 +22,12 @@
 #define _GNU_SOURCE
 
 #include "meowbt.h"
+#include "meowlog.h"
 
+#include <errno.h>
 #include <link.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -654,7 +657,29 @@ void meow_bt_install_once(void) {
     if (en == NULL || en[0] == '\0' || (en[0] == '0' && en[1] == '\0')) {
         return;
     }
-    g_installed = 1;
+
+    /* Self-protection (measured 2026-09-17). If this runs BEFORE HotSpot installs its own SIGSEGV
+     * handler, the "previous" action we would chain to is SIG_DFL -- chaining then becomes a no-op
+     * and the JVM's handler never runs. Measured consequence on the Vulkan path (whose install point
+     * sits before launchJvm): HotSpot's *benign* faults (safepoint poll page, implicit null checks)
+     * escalated to fatal, and NO hs_err was ever written -- i.e. the diagnostic broke crash semantics,
+     * which the project's rules forbid. So: query first, refuse when HotSpot is not up yet, keep
+     * g_installed clear, and let a later call (meowMakeCurrent / meowSwapBuffers / meowSetSurfaceId)
+     * retry once the JVM has installed its handler. */
+    struct sigaction cur;
+    memset(&cur, 0, sizeof(cur));
+    if (sigaction(SIGSEGV, NULL, &cur) != 0) {
+        MEOWLOGW("meowbt: cannot query the SIGSEGV action (errno=%{public}d); not installing", errno);
+        return;
+    }
+    int cur_is_real = ((cur.sa_flags & SA_SIGINFO) != 0 && cur.sa_sigaction != NULL) ||
+                      ((cur.sa_flags & SA_SIGINFO) == 0 && cur.sa_handler != SIG_DFL &&
+                       cur.sa_handler != SIG_IGN);
+    if (!cur_is_real) {
+        MEOWLOGW("meowbt: refusing to install: current SIGSEGV action is SIG_DFL/SIG_IGN "
+                 "(HotSpot has not installed yet) -- installing now would bypass the JVM's handler");
+        return;
+    }
 
     meow_bt_low_init();
     load_map();
@@ -672,4 +697,17 @@ void meow_bt_install_once(void) {
     g_prev_valid[0] = (sigaction(SIGSEGV, &sa, &g_prev[0]) == 0);
     g_prev_valid[1] = (sigaction(SIGBUS, &sa, &g_prev[1]) == 0);
     g_prev_valid[2] = (sigaction(SIGABRT, &sa, &g_prev[2]) == 0);
+    g_installed = 1;   /* only now: a failed/refused attempt must stay retryable */
+
+    /* hilog copy of the banner: the stderr path goes through the launcher's forwarding pipe, which
+     * loses buffered data when the process dies -- hilog does not. Also name the handler we chained
+     * to (and the mapping it lives in): that answers "is HotSpot's handler actually on the chain?"
+     * without having to guess from an address in hilog. */
+    MEOWLOGI("meowbt: installed pid=%{public}d (chained-to SIGSEGV handler=%{public}p, valid=%{public}d,"
+             " MEOW_BT_FILE=%{public}s)", (int)getpid(),
+             (void *)(uintptr_t)(g_prev_valid[0] ? (void *)g_prev[0].sa_sigaction : NULL),
+             g_prev_valid[0], (getenv("MEOW_BT_FILE") != NULL) ? "set" : "(unset)");
+    if (g_prev_valid[0] && g_prev[0].sa_sigaction != NULL) {
+        print_mapping_of("prev_segv_handler", (unsigned long)(uintptr_t)g_prev[0].sa_sigaction);
+    }
 }

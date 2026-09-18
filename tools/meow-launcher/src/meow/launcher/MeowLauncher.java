@@ -92,7 +92,9 @@ public final class MeowLauncher {
         System.out.println("Launching Minecraft " + version.id);
         Log4jConfig.apply(version);
 
-        String[] gameArgs = ArgBuilder.build(account, version);
+        String[] gameArgs = (args.length > 2)
+                ? ArgBuilder.build(account, version, java.util.Arrays.copyOfRange(args, 2, args.length))
+                : ArgBuilder.build(account, version, new String[0]);
         String classpath = LibraryResolver.build(version);
         System.out.println("Args init finished. Now starting game");
 

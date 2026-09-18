@@ -57,3 +57,9 @@ export const DOWNLOAD_CARD_MAX_W: number = 420;
 // 游戏启动兜底（ms）：正常在首次 onSurfaceChanged 拿到真实客户区尺寸后再启动；
 // 若该回调迟迟不来，等这么久后按默认尺寸启动，避免"永不启动"。
 export const LAUNCH_FALLBACK_MS: number = 1500;
+
+// F29 Vulkan 可持续送显探针：默认送显帧数、结果轮询间隔（ms）、临时 surface 高度（vp）。
+export const VK_PROBE_FRAMES: number = 120;
+export const VK_PROBE_POLL_MS: number = 200;
+export const VK_PROBE_SURFACE_HEIGHT: number = 120;
+export const VK_PROBE_RESULT_HEIGHT: number = 240;

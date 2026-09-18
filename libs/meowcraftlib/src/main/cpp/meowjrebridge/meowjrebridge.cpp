@@ -53,7 +53,19 @@ typedef unsigned int jsize;
 #define JNI_TRUE 1
 #endif
 
+// F29 Vulkan sustained-present probe (implemented in meowcraftbridge/meowvkprobe.c,
+// compiled into this same target so entry can reach it through the HSP NAPI).
+// Both run the bare system ICD (/system/lib64/libvulkan.so); the wrapper only
+// starts a worker thread and copies the result string back to ArkTS.
+extern "C" int meowVkProbeStart(int64_t surfaceId, int frames);
+extern "C" int meowVkProbeResultCopy(char* out, int cap);
+
 namespace {
+
+/* Defined further down; the launch path installs the crash dumper through it. Declared here because
+ * both live in this anonymous namespace (a declaration at global scope would name a different,
+ * never-defined function and fail at link time). */
+void* MeowCraftBridgeLib();
 
 /* Dir of this .so (meowjre libs dir) — where the JRE .so live too. */
 std::string SelfDir() {
@@ -334,6 +346,29 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
                      "env set: MEOWCRAFT_RENDERER=%{public}s so=%{public}s NGG=%{public}s",
                      rendererEnv.c_str(), rendererSo.c_str(), (cacheDir + "/").c_str());
+
+        // Crash backtraces on the Vulkan path: meowbt is installed only from the bridge's GL paths
+        // (meowMakeCurrent / meowSwapBuffers), which a Vulkan backend never walks -- so a Vulkan
+        // SIGSEGV produced no backtrace. Install it here instead: this runs AFTER the render env above
+        // (meowbt reads MEOW_BT / MEOW_BT_FILE once, at install time, because getenv is not
+        // async-signal-safe) and inside the game process, which is where the crash happens.
+        {
+            void* bridge = MeowCraftBridgeLib();
+            if (bridge != nullptr) {
+                auto* btInstall = reinterpret_cast<void (*)(void)>(dlsym(bridge, "meow_bt_install_once"));
+                if (btInstall != nullptr) {
+                    btInstall();
+                    const char* bt = getenv("MEOW_BT");
+                    OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
+                                 "meowbt install attempted (MEOW_BT=%{public}s, file=%{public}s)",
+                                 bt != nullptr ? bt : "(unset)",
+                                 getenv("MEOW_BT_FILE") != nullptr ? getenv("MEOW_BT_FILE") : "(unset)");
+                } else {
+                    OH_LOG_Print(LOG_APP, LOG_WARN, LOG_DOMAIN, LOG_TAG,
+                                 "meowbt: meow_bt_install_once not found in the bridge");
+                }
+            }
+        }
 
         // 线程调度（实验，env 驱动，均可降级）：在 JVM 起线程之前，对**启动线程**做
         // 绑核（MEOW_AFFINITY，如 "8-19"；JVM 线程/渲染线程继承该 mask）与 QoS
@@ -1154,6 +1189,39 @@ napi_value TakeFullscreenRequest(napi_env env, napi_callback_info info) {
     return obj;
 }
 
+// F29: start the bare-ICD Vulkan sustained-present probe on a worker thread.
+// Returns false when a probe is already running (the caller polls the result).
+napi_value VulkanPresentProbeStart(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) {
+        return MkBool(env, false);
+    }
+    int64_t sid = 0;
+    int32_t frames = 120;
+    napi_get_value_int64(env, args[0], &sid);
+    if (argc >= 2) {
+        napi_get_value_int32(env, args[1], &frames);
+    }
+    int rc = meowVkProbeStart(sid, frames);
+    return MkBool(env, rc == 0);
+}
+
+// F29: copy the current probe report. Empty while the probe is still running;
+// the caller stops polling once a non-empty string arrives.
+napi_value VulkanPresentProbeResult(napi_env env, napi_callback_info info) {
+    (void)info;
+    char buf[16384];
+    int n = meowVkProbeResultCopy(buf, (int)sizeof(buf));
+    if (n < 0) {
+        n = 0;
+    }
+    napi_value s = nullptr;
+    napi_create_string_utf8(env, buf, (size_t)n, &s);
+    return s;
+}
+
 napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {        {"launchJvm", nullptr, LaunchJvm, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setGameSurface", nullptr, SetGameSurface, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -1178,6 +1246,10 @@ napi_value Init(napi_env env, napi_value exports) {
         {"meowGetInputRate", nullptr, MeowGetInputRate, nullptr, nullptr, nullptr, napi_default,
          nullptr},
         {"takeFullscreenRequest", nullptr, TakeFullscreenRequest, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
+        {"vulkanPresentProbeStart", nullptr, VulkanPresentProbeStart, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
+        {"vulkanPresentProbeResult", nullptr, VulkanPresentProbeResult, nullptr, nullptr, nullptr,
          napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);

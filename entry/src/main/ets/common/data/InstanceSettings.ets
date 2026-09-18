@@ -1,7 +1,8 @@
 import { fileIo } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES } from '../constants/LaunchDefaults';
+import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES,
+  RENDERER_BACKEND_VULKAN } from '../constants/LaunchDefaults';
 import { versionDir } from '../constants/Paths';
 
 const LOG_DOMAIN = 0x0001;
@@ -134,7 +135,8 @@ export function readInstanceSettings(gameRoot: string, id: string): InstanceSett
     const isolated = overrides.includes(KEY_RUNNING_DIRECTORY);
     // 后端：只认已知的显式覆盖值，其余（含缺失）→ auto（推荐）。
     let backend = RENDERER_AUTO;
-    if (raw.hmmcraftRendererBackend === RENDERER_ENV || raw.hmmcraftRendererBackend === RENDERER_ENV_GL4ES) {
+    if (raw.hmmcraftRendererBackend === RENDERER_ENV || raw.hmmcraftRendererBackend === RENDERER_ENV_GL4ES ||
+        raw.hmmcraftRendererBackend === RENDERER_BACKEND_VULKAN) {
       backend = raw.hmmcraftRendererBackend;
     }
     // glthread：默认开，只有显式 false 才关。
@@ -150,7 +152,8 @@ export function readInstanceSettings(gameRoot: string, id: string): InstanceSett
 
 /** 写入前把渲染后端夹到合法集合（非法值按 auto 处理）。 */
 function normalizeRendererBackend(backend: string): string {
-  if (backend === RENDERER_ENV || backend === RENDERER_ENV_GL4ES) {
+  if (backend === RENDERER_ENV || backend === RENDERER_ENV_GL4ES ||
+      backend === RENDERER_BACKEND_VULKAN) {
     return backend;
   }
   return RENDERER_AUTO;

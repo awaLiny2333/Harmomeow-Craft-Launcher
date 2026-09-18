@@ -50,6 +50,10 @@ export interface JreLibModule {
   meowGetInputRate?: () => number;
   /** 取走一次全屏切换请求（MC glfwSetWindowMonitor 触发）；无则 request=0。 */
   takeFullscreenRequest?: () => FullscreenRequest;
+  /** F29 诊断：裸 ICD + WSI 可持续送显探针（后台线程启动；true = 已启动）。 */
+  vulkanPresentProbeStart?: (surfaceId: number, frames: number) => boolean;
+  /** F29 诊断：取探针报告（空串 = 仍在运行）。 */
+  vulkanPresentProbeResult?: () => string;
 }
 
 /** 进程内 JVM 只能起一次（单例，二次启动会冲突/失败）。 */

@@ -30,3 +30,6 @@ export const meowGrabReset = bridge.meowGrabReset;
 export const meowGetInputRate = bridge.meowGetInputRate;
 // 全屏：MC 的 glfwSetWindowMonitor → native 存请求，ArkTS 轮询取走并驱动真实窗口。
 export const takeFullscreenRequest = bridge.takeFullscreenRequest;
+// F29 诊断：裸 ICD + WSI 可持续送显探针（后台线程跑，结果轮询取回）。
+export const vulkanPresentProbeStart = bridge.vulkanPresentProbeStart;
+export const vulkanPresentProbeResult = bridge.vulkanPresentProbeResult;

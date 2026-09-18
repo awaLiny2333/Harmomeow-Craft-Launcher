@@ -154,3 +154,18 @@ export interface FullscreenRequest {
 
 /** 取走一次全屏切换请求；无请求时 request=0。 */
 export const takeFullscreenRequest: () => FullscreenRequest;
+
+/**
+ * F29 诊断：裸 ICD + WSI 可持续送显探针（不经 libmeowvulkan.so shim）。
+ * 以 ArkUI surfaceId 建 OHNativeWindow / VkSurface / VkDevice / swapchain，
+ * 连续 acquire -> submit -> present frames 帧，结果经 vulkanPresentProbeResult 轮询取回。
+ * @param surfaceId ArkUI XComponent surface id。
+ * @param frames 送显帧数（建议 120）。
+ * @returns true 表示已在后台线程启动；false 表示已有探针在跑或启动失败。
+ */
+export const vulkanPresentProbeStart: (surfaceId: number, frames: number) => boolean;
+
+/**
+ * F29：取探针报告（空串 = 仍在运行）。非空后即可停止轮询并上屏。
+ */
+export const vulkanPresentProbeResult: () => string;

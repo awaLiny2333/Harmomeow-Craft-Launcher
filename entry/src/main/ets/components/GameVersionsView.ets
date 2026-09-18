@@ -9,7 +9,8 @@ import {
 import {
   SOURCE_MIRROR, SOURCE_OFFICIAL, TYPE_OTHER, TYPE_RELEASE, TYPE_SNAPSHOT
 } from '../common/constants/DownloadContract';
-import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES } from '../common/constants/LaunchDefaults';
+import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES,
+  RENDERER_BACKEND_VULKAN } from '../common/constants/LaunchDefaults';
 import { rendererForVersion } from '../common/data/RendererPolicy';
 import { LOADER_FABRIC, LOADER_LEGACY_FABRIC, LOADER_NEO_FORGE, VERSION_FORM_VANILLA } from '../common/data/VersionResolver';
 import { SettingsTools } from '../common/data/SettingsTools';
@@ -339,12 +340,13 @@ export struct GameVersionsView {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'deleted version %{public}s', v.id);
   }
 
-  /** 渲染后端 Select 选项：推荐 / OpenGLv4 / GL4ES（兼容）。 */
+  /** 渲染后端 Select 选项：推荐 / OpenGLv4 / GL4ES（兼容）/ Vulkan（26.2+，实验）。 */
   private rendererOptions(): SelectOption[] {
     return [
       { value: $r('app.string.renderer_auto') },
       { value: $r('app.string.renderer_openglv4') },
       { value: $r('app.string.renderer_gl4es') },
+      { value: $r('app.string.renderer_vulkan') },
     ];
   }
 
@@ -367,6 +369,9 @@ export struct GameVersionsView {
     if (b === RENDERER_ENV_GL4ES) {
       return 2;
     }
+    if (b === RENDERER_BACKEND_VULKAN) {
+      return 3;
+    }
     return 0;
   }
 
@@ -378,6 +383,9 @@ export struct GameVersionsView {
     if (i === 2) {
       return $r('app.string.renderer_gl4es');
     }
+    if (i === 3) {
+      return $r('app.string.renderer_vulkan');
+    }
     return $r('app.string.renderer_auto');
   }
 
@@ -387,7 +395,8 @@ export struct GameVersionsView {
    */
   private setRenderer(versionId: string, index: number): void {
     const backend = index === 1 ? RENDERER_ENV
-      : (index === 2 ? RENDERER_ENV_GL4ES : RENDERER_AUTO);
+      : (index === 2 ? RENDERER_ENV_GL4ES
+        : (index === 3 ? RENDERER_BACKEND_VULKAN : RENDERER_AUTO));
     const root = this.editingRoot;
     if (root.length === 0) {
       return;
