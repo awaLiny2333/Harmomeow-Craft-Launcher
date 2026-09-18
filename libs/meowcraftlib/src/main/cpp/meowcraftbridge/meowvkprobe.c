@@ -252,6 +252,24 @@
  * avoided and this task explicitly does not require). The upload is the command under
  * suspicion -- the in-tree record says vkCmdCopyBufferToImage SIGSEGVs on this ICD.
  *
+ * F63 adds a frame submit/present PATTERN (MEOW_VK_PROBE_PATTERN=mc|own, default
+ * mc) that replicates MC 26.2's per-frame shape so the "acquire stalls ~1 s then
+ * rc=-4" symptom can be reproduced without MC. The mc pattern runs one
+ * vkQueueSubmit2 carrying TWO VkSubmitInfo2 entries (entry[0] = render CB, no
+ * waits/signals; entry[1] waits the acquire binary semaphore, runs the blit CB
+ * and signals the present binary + the timeline semaphore to an increasing
+ * value), submits with fence=NULL, then presents, then waits the timeline for
+ * the PREVIOUS submitted value (the probe's lax equivalent of MC's v-2 wait;
+ * the value just submitted is v=f+1, the wait target is v-1=f). Two
+ * command-buffer pairs alternate (f&1) so two submits stay in flight while each
+ * pair is reused only after its own frame completed. The default one-press
+ * matrix gains PATTERN cells 14 (mc) and 15 (own control), all-on, 60 frames,
+ * each built/torn down independently, and each prints per-frame telemetry:
+ * acquire dtMs, imageIndex, submit/present/timelineWait rc and the cumulative
+ * acquire/present counts (to spot images that are never returned).
+ * MEOW_VK_PROBE_PATTERN=own keeps the pre-F63 behaviour; cells 1..13 are pinned
+ * to own and remain byte-identical.
+ *
  * SELF-CONTAINED: no SDK vulkan header is included. Every struct / sType /
  * enum below mirrors the authoritative vulkan_core.h layout for LP64, with
  * _Static_assert guards (same approach as egl_gl.c / meowvulkan.c).
@@ -277,6 +295,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <native_window/external_window.h>
 
@@ -376,6 +395,10 @@
 /* F31: finite bound on the CPU timeline wait so the probe ALWAYS records an rc
  * (an unbounded wait on a wedged timeline would leave the probe thread stuck). */
 #define MEOW_VK_PROBE_TL_WAIT_NS 5000000000ull
+
+/* F63 (MEOW_VK_PROBE_PATTERN): the MC submit/present pattern records one sample
+ * per frame; this bounds the per-cell sample arrays. The pattern cells run N=60. */
+#define MEOW_VK_PROBE_PAT_FRAMES 64
 
 /* F32: fallback on-device location of our shim. HSP native libs install under
  * <bundleCodeDir>/<hsp>/libs/<abi>; meowcraftlib is a HAR whose natives ship
@@ -1342,6 +1365,12 @@ static void sb_add(MeowSb* sb, const char* fmt, ...) {
     }
 }
 
+/* F63: wall-clock delta in whole milliseconds between two CLOCK_MONOTONIC stamps. */
+static int64_t meow_dt_ms(const struct timespec* a, const struct timespec* b) {
+    return (int64_t)(b->tv_sec - a->tv_sec) * 1000 +
+           (int64_t)(b->tv_nsec - a->tv_nsec) / 1000000;
+}
+
 static const char* rc_name(int rc) {
     switch (rc) {
         case VK_OK:
@@ -1566,10 +1595,47 @@ typedef struct {
      * the submit, so the malformed translation product can be localised by type. */
     int sync2ToV1Barrier;
     int sync2ToV1Submit;
+    /* F63 (MEOW_VK_PROBE_PATTERN): the MC submit/present pattern. patRec = the
+     * driver asked this cell to record per-frame telemetry; patMcEnv = the
+     * requested pattern (1 mc / 0 own); patActive = the mc pattern really ran
+     * (it needs a split queue2 + timeline frame). The arrays hold one sample per
+     * frame (bounded by MEOW_VK_PROBE_PAT_FRAMES); patAcqTotal/patPresTotal are
+     * the cumulative acquire/present call counts (to spot images never returned). */
+    int patRec;
+    int patMcEnv;
+    int patActive;
+    int patCount;
+    int patAcqTotal;
+    int patPresTotal;
+    int64_t patAcqDtMs[MEOW_VK_PROBE_PAT_FRAMES];
+    int32_t patImg[MEOW_VK_PROBE_PAT_FRAMES];
+    int32_t patSub[MEOW_VK_PROBE_PAT_FRAMES];
+    int32_t patPres[MEOW_VK_PROBE_PAT_FRAMES];
+    int32_t patTl[MEOW_VK_PROBE_PAT_FRAMES];
+    /* F65 (MEOW_VK_PROBE_MC_BLIT): 1 = in this cell the mc shape wrote the acquired
+     * swapchain image with the in-place clear instead of the offscreen->swapchain
+     * vkCmdBlitImage. The blit is PROBE scaffolding (MC renders straight into the
+     * swapchain image), so flipping only this one command isolates whether the blit
+     * is what the ICD rejects in the second submit entry. */
+    int mcNoBlit;
+    /* F65b (MEOW_VK_PROBE_NOSPLIT): 1 = this cell kept the mc shape AND submit=queue2
+     * but did NOT split the frame into two submit entries -- one entry carries the
+     * acquire wait, every mc command buffer and every signal. That is the shape a
+     * "merge the entries" translation would produce, so it pre-validates the fix
+     * without touching the shim. */
+    int noSplit;
+    /* F67 (MEOW_VK_PROBE_TAIL): 0 = full tail CB, 1 = no timestamp, 2 = no blit/clear write.
+     * Selects which part of the split tail's second command buffer is kept, so the cell
+     * line names the exact variant that ran. */
+    int tailMode;
     char detail[192];        /* last diagnostic line of the cell (setup reasons) */
 } MeowVkProbeCell;
 
 static MeowVkProbeCell g_cell;
+/* F63: set by the driver around the pattern cells (and for a single-cell run) so
+ * probe_run_one records the per-frame MC-pattern telemetry; 0 elsewhere keeps the
+ * existing cells byte-identical. Only the probe worker thread touches it. */
+static int g_patternRecord = 0;
 
 /* F39: a submit-layer conclusion is only valid for a cell that set up AND
  * actually issued at least one submit; everything else carries no submit info
@@ -1752,6 +1818,48 @@ static void probe_run_one(int64_t surfaceId, int frames) {
         useBlit = 1; /* the mc frame always renders offscreen and blits it out */
     }
 
+    /* F65 mc-shape swapchain-write variant. MEOW_VK_PROBE_MC_BLIT=0 keeps the mc
+     * frame COMPLETELY unchanged (offscreen image, mc command family, 2-entry
+     * split, every barrier) and only replaces the single offscreen->swapchain
+     * vkCmdBlitImage with the in-place vkCmdClearColorImage of the acquired
+     * swapchain image (the pre-F33 write path, already used by the
+     * MEOW_VK_PROBE_PIPELINE=clear branch below). One variable, no shape change.
+     * Default (unset / any other value) = blit, i.e. every pre-F65 cell is
+     * byte-identical. Read once per cell, like every other axis here. */
+    int mcNoBlit = 0;
+    {
+        const char* mb = getenv("MEOW_VK_PROBE_MC_BLIT");
+        if (mb != NULL && strcmp(mb, "0") == 0) {
+            mcNoBlit = 1;
+        }
+    }
+
+    /* F65b entry-count variant. MEOW_VK_PROBE_NOSPLIT=1 keeps useMc and
+     * useQueue2Submit exactly as they are and only turns OFF the two-entry split
+     * (splitCb below), so ONE vkQueueSubmit2 entry carries the acquire wait, all mc
+     * command buffers and all signals -- the shape a merged translation produces.
+     * Default (unset / any other value) = split, i.e. every pre-F65b cell is
+     * byte-identical. Read once per cell, like every other axis here. */
+    int probeNoSplit = 0;
+    {
+        const char* ns = getenv("MEOW_VK_PROBE_NOSPLIT");
+        if (ns != NULL && strcmp(ns, "0") != 0 && ns[0] != '\0') {
+            probeNoSplit = 1;
+        }
+    }
+
+    /* F67 tail-content bisect. The split path's SECOND command buffer (the split tail)
+     * holds, in order: the acquired-image UNDEFINED->TRANSFER_DST barrier, the offscreen
+     * ->swapchain write (blit or clear), the TRANSFER_DST->PRESENT_SRC barrier and a
+     * vkCmdWriteTimestamp2. Pre-merge on-device data says this CB alone is rejected
+     * (rcSeq=0,-1: the render CB passes, this one fails) while the SAME commands inside
+     * ONE CB pass. MEOW_VK_PROBE_TAIL selects which part to keep so one run can name the
+     * poison: "nots" = drop the timestamp, "nobar" = drop the blit/clear write,
+     * anything else = full tail (every pre-F67 cell, byte-identical). */
+    const char* tailMode = getenv("MEOW_VK_PROBE_TAIL");
+    const int tailNoTs = (tailMode != NULL && strcmp(tailMode, "nots") == 0);
+    const int tailNoWrite = (tailMode != NULL && strcmp(tailMode, "nobar") == 0);
+
     /* F37 submit-API variant. DEFAULT is the sync2 path (vkQueueSubmit2 +
      * VkSubmitInfo2, MC's); MEOW_VK_PROBE_SUBMIT=v1 restores the v1
      * vkQueueSubmit/VkSubmitInfo path. */
@@ -1838,6 +1946,22 @@ static void probe_run_one(int64_t surfaceId, int frames) {
         }
     }
 
+    /* F63 frame submit/present PATTERN. DEFAULT is "mc": reproduce MC 26.2's shape
+     * (one vkQueueSubmit2 carrying two VkSubmitInfo2 entries, no fence, present
+     * before the timeline wait, and the timeline wait targets the PREVIOUS
+     * submitted value -- MC's lax v-2 equivalent). MEOW_VK_PROBE_PATTERN=own
+     * keeps the probe's pre-F63 behaviour (the control). patternRecord is the
+     * driver's record switch; setting it for this cell enables the per-frame
+     * telemetry (acquire dtMs / imageIndex / submit / present / timelineWait). */
+    int patternEnvMc = 1;
+    {
+        const char* p = getenv("MEOW_VK_PROBE_PATTERN");
+        if (p != NULL && strcmp(p, "own") == 0) {
+            patternEnvMc = 0;
+        }
+    }
+    int patternRecord = (g_patternRecord != 0);
+
     /* All handles / entry points start NULL so `goto done` teardown is safe. */
     void* loader = NULL;
     PFN_gipa gipa = NULL;
@@ -1851,6 +1975,13 @@ static void probe_run_one(int64_t surfaceId, int frames) {
     void* cmdBuf = NULL;
     /* F37: second command buffer (blit stage) when submit=queue2 + shape=mc. */
     void* blitBuf = NULL;
+    /* F63 mc pattern: two command-buffer pairs (f&1) so the lax timeline wait
+     * ("previous submitted value") can keep 2 submits in flight while a pair is
+     * reused only after its own frame has completed (MC uses two pools likewise). */
+    void* cmdBufA = NULL;
+    void* blitBufA = NULL;
+    void* cmdBufB = NULL;
+    void* blitBufB = NULL;
     void* semAcquire = NULL;
     void* semRender = NULL;
     void* semTimeline = NULL;
@@ -2380,7 +2511,17 @@ static void probe_run_one(int64_t surfaceId, int frames) {
     g_cell.ranDiv = ranDiv;
     g_cell.ranTex = ranTex;
     g_cell.frameMc = frameMc;
+    g_cell.mcNoBlit = mcNoBlit;   /* F65: swapchain write = in-place clear, not blit */
+    g_cell.noSplit = probeNoSplit;   /* F65b: one entry carried the whole frame */
+    g_cell.tailMode = tailNoTs ? 1 : (tailNoWrite ? 2 : 0);   /* F67: 0 full / 1 no-ts / 2 no-write */
     g_cell.mcDegraded = (useMc && !frameMc);
+    /* F63: the mc pattern only has meaning on a split queue2 + timeline frame
+     * (two command buffers, one vkQueueSubmit2 with two VkSubmitInfo2 entries).
+     * Any other combination degrades to the legacy "own" path and says so. */
+    int patternActive = patternRecord && patternEnvMc && frameMc && useQueue2Submit && useTimeline;
+    g_cell.patRec = patternRecord;
+    g_cell.patMcEnv = patternEnvMc;
+    g_cell.patActive = patternActive;
 
     /* 6. device: request {swapchain} + only the mc extensions we will actually
      * use (advertised AND feature-enabled). MEOW_VK_EXT_SYNCHRONIZATION2 is kept
@@ -2681,10 +2822,18 @@ static void probe_run_one(int64_t surfaceId, int frames) {
     sb_add(&sb, "swapchain: fmt=%d cs=%d mode=%d extent=%ux%u images=%u usage=0x%x\n",
            (int)chosenFormat, (int)chosenColorSpace, (int)chosenMode, (unsigned)extentW,
            (unsigned)extentH, (unsigned)imageCount, (unsigned)usage);
-    sb_add(&sb, "frames=%d pipeline=%s sync=%s submit=%s lib=%s shape=%s\n", frames,
+    sb_add(&sb, "frames=%d pipeline=%s sync=%s submit=%s lib=%s shape=%s pattern=%s\n", frames,
            useBlit ? "blitImage" : "clearColorImage", useTimeline ? "timeline" : "binary",
            useQueue2Submit ? "queue2" : "v1", useShim ? "shim" : "raw",
-           frameMc ? (ranTex ? "mc+tex" : "mc") : (useMc ? "mc-degraded-plain" : "plain"));
+           frameMc ? (ranTex ? "mc+tex" : "mc") : (useMc ? "mc-degraded-plain" : "plain"),
+           patternRecord ? (patternEnvMc ? "mc" : "own") : "own(off)");
+    if (patternRecord) {
+        sb_add(&sb,
+               "pattern=mc|pattern=own requested=%s active=%d (one vkQueueSubmit2 with 2"
+               " VkSubmitInfo2 entries, fence=NULL, present-before-timeline-wait, timeline"
+               " wait=previous submitted value)\n",
+               patternEnvMc ? "mc" : "own", patternActive);
+    }
     sb_add(&sb,
            "device caps: swapchain=%d dr=%d sync2=%d pushdesc=%d divisor=%d"
            " features2=%s frame=%s\n",
@@ -3147,9 +3296,23 @@ static void probe_run_one(int64_t surfaceId, int frames) {
     cbai.commandPool = (uint64_t)(uintptr_t)cmdPool;
     cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     /* F37: submit=queue2 + shape=mc needs a second command buffer for the blit
-     * stage (stage B); every other combination uses a single command buffer. */
-    int splitCb = (useQueue2Submit && frameMc);
-    if (splitCb) {
+     * stage (stage B); every other combination uses a single command buffer.
+     * F63 mc pattern: allocate two render+blit pairs and alternate them (f&1). */
+    /* F65b: MEOW_VK_PROBE_NOSPLIT=1 turns the TWO-ENTRY mc shape into ONE entry that
+     * carries everything (acquire wait + every mc command buffer + every signal).
+     * Nothing else about the frame changes. */
+    int splitCb = (useQueue2Submit && frameMc && !probeNoSplit);
+    if (patternActive) {
+        void* cbs[4] = { NULL, NULL, NULL, NULL };
+        cbai.commandBufferCount = 4;
+        rc = allocateCommandBuffers(device, &cbai, cbs);
+        cmdBufA = cbs[0];
+        blitBufA = cbs[1];
+        cmdBufB = cbs[2];
+        blitBufB = cbs[3];
+        cmdBuf = cmdBufA;
+        blitBuf = blitBufA;
+    } else if (splitCb) {
         void* cbs[2] = { NULL, NULL };
         cbai.commandBufferCount = 2;
         rc = allocateCommandBuffers(device, &cbai, cbs);
@@ -3159,7 +3322,8 @@ static void probe_run_one(int64_t surfaceId, int frames) {
         cbai.commandBufferCount = 1;
         rc = allocateCommandBuffers(device, &cbai, &cmdBuf);
     }
-    if (rc != VK_OK || cmdBuf == NULL || (splitCb && blitBuf == NULL)) {
+    if (rc != VK_OK || cmdBuf == NULL || (splitCb && blitBuf == NULL) ||
+        (patternActive && (cmdBufB == NULL || blitBufB == NULL))) {
         sb_add(&sb, "vkAllocateCommandBuffers rc=%d\n", rc);
         free(images);
         goto done;
@@ -3239,27 +3403,58 @@ static void probe_run_one(int64_t surfaceId, int frames) {
         int rcFence = VK_OK;
         int rcTl = useTimeline ? VK_OK : -1; /* -1 = timeline wait not performed */
 
-        /* fence was created signaled; wait the previous submit before reuse */
-        if (waitForFences(device, 1, &fence, VK_TRUE, 0xFFFFFFFFFFFFFFFFull) != VK_OK) {
-            rcFence = -999;
-            rcSub = -999;
-            acqRc[f] = rcSub;
-            subRc[f] = rcSub;
-            preRc[f] = rcSub;
-            fenceRc[f] = rcFence;
-            tlRc[f] = rcTl;
-            doneFrames = f;
-            failFrame = f;
-            failSub = rcSub;
-            break;
+        /* F63: alternate the two command-buffer pairs so the lax timeline wait can
+         * keep two submits in flight (pair f&1 was last used by frame f-2). */
+        if (patternActive) {
+            cmdBuf = (f & 1) ? cmdBufB : cmdBufA;
+            blitBuf = (f & 1) ? blitBufB : blitBufA;
         }
-        fenceRc[f] = rcFence;
+        if (patternRecord && f < MEOW_VK_PROBE_PAT_FRAMES) {
+            g_cell.patAcqDtMs[f] = -1;
+            g_cell.patImg[f] = -1;
+            g_cell.patSub[f] = -1000;
+            g_cell.patPres[f] = -1000;
+            g_cell.patTl[f] = -1000;
+        }
         tlRc[f] = rcTl;
-        resetFences(device, 1, &fence);
+        if (!patternActive) {
+            /* fence was created signaled; wait the previous submit before reuse */
+            if (waitForFences(device, 1, &fence, VK_TRUE, 0xFFFFFFFFFFFFFFFFull) != VK_OK) {
+                rcFence = -999;
+                rcSub = -999;
+                acqRc[f] = rcSub;
+                subRc[f] = rcSub;
+                preRc[f] = rcSub;
+                fenceRc[f] = rcFence;
+                tlRc[f] = rcTl;
+                doneFrames = f;
+                failFrame = f;
+                failSub = rcSub;
+                break;
+            }
+            fenceRc[f] = rcFence;
+            resetFences(device, 1, &fence);
+        } else {
+            /* MC submits with fence=NULL; the timeline wait is the completion gate. */
+            fenceRc[f] = -1;
+        }
 
         uint32_t imageIndex = 0;
+        struct timespec acqT0;
+        struct timespec acqT1;
+        if (patternRecord) {
+            clock_gettime(CLOCK_MONOTONIC, &acqT0);
+        }
         rcAcq = acquireNextImage(device, swapchain, 0xFFFFFFFFFFFFFFFFull, semAcquire, NULL,
                                  &imageIndex);
+        if (patternRecord) {
+            clock_gettime(CLOCK_MONOTONIC, &acqT1);
+            ++g_cell.patAcqTotal;
+            if (f < MEOW_VK_PROBE_PAT_FRAMES) {
+                g_cell.patImg[f] = (int32_t)imageIndex;
+                g_cell.patAcqDtMs[f] = meow_dt_ms(&acqT0, &acqT1);
+            }
+        }
         acqRc[f] = rcAcq;
         if (rcAcq != VK_OK && rcAcq != VK_SUBOPTIMAL_KHR) {
             doneFrames = f;
@@ -3512,22 +3707,33 @@ static void probe_run_one(int64_t surfaceId, int frames) {
                 cmdPipelineBarrier2(tail, &dep);
             }
 
-            MeowVkImageBlit blit;
-            memset(&blit, 0, sizeof(blit));
-            blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            blit.srcSubresource.mipLevel = 0;
-            blit.srcSubresource.baseArrayLayer = 0;
-            blit.srcSubresource.layerCount = 1;
-            blit.srcOffsets[1].x = (int32_t)extentW;
-            blit.srcOffsets[1].y = (int32_t)extentH;
-            blit.srcOffsets[1].z = 1;
-            blit.dstSubresource = blit.srcSubresource;
-            blit.dstOffsets[1].x = (int32_t)extentW;
-            blit.dstOffsets[1].y = (int32_t)extentH;
-            blit.dstOffsets[1].z = 1;
-            cmdBlitImage(tail, offImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                         images[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
-                         VK_FILTER_NEAREST);
+            if (!tailNoWrite) {
+            if (mcNoBlit) {
+                /* F65: identical barriers and identical entry topology -- only the
+                 * swapchain write changes: in-place clear instead of the offscreen
+                 * blit. Valid because the barrier just above put the acquired image
+                 * in TRANSFER_DST_OPTIMAL, which is exactly what a clear needs. */
+                cmdClearColorImage(tail, images[imageIndex],
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &range);
+            } else {
+                MeowVkImageBlit blit;
+                memset(&blit, 0, sizeof(blit));
+                blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                blit.srcSubresource.mipLevel = 0;
+                blit.srcSubresource.baseArrayLayer = 0;
+                blit.srcSubresource.layerCount = 1;
+                blit.srcOffsets[1].x = (int32_t)extentW;
+                blit.srcOffsets[1].y = (int32_t)extentH;
+                blit.srcOffsets[1].z = 1;
+                blit.dstSubresource = blit.srcSubresource;
+                blit.dstOffsets[1].x = (int32_t)extentW;
+                blit.dstOffsets[1].y = (int32_t)extentH;
+                blit.dstOffsets[1].z = 1;
+                cmdBlitImage(tail, offImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             images[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                             VK_FILTER_NEAREST);
+            }
+            }
 
             /* swapchain: TRANSFER_DST_OPTIMAL -> PRESENT_SRC_KHR */
             b2.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
@@ -3539,7 +3745,7 @@ static void probe_run_one(int64_t surfaceId, int frames) {
             b2.image = (uint64_t)(uintptr_t)images[imageIndex];
             cmdPipelineBarrier2(tail, &dep);
 
-            if (ranTs) {
+            if (ranTs && !tailNoTs) {
                 cmdWriteTimestamp2(tail, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, queryPool, 3);
             }
         } else {
@@ -3648,6 +3854,10 @@ static void probe_run_one(int64_t surfaceId, int frames) {
         const uint64_t waitSem = (uint64_t)(uintptr_t)semAcquire;
         const uint64_t tlSem = (uint64_t)(uintptr_t)semTimeline;
         const uint64_t tlValue = (uint64_t)f + 1; /* v1, v2, ... (64-bit) */
+        /* F63 mc pattern: wait the value the PREVIOUS frame submitted (= f; frame
+         * f-1 signalled f). It is the probe's lax equivalent of MC's v-2 wait and
+         * keeps 2 submits in flight; own waits the value just submitted (f+1). */
+        const uint64_t tlWaitValue = patternActive ? (f > 0 ? (uint64_t)f : 0ull) : tlValue;
         if (useQueue2Submit) {
             /* F37: sync2 submit (MC's). Structs/sTypes mirror vulkan_core.h
              * :7581-:7607; field order/padding asserted at file scope. */
@@ -3696,7 +3906,7 @@ static void probe_run_one(int64_t surfaceId, int frames) {
                 si2[1].pCommandBufferInfos = &cbInfos[1];
                 si2[1].signalSemaphoreInfoCount = sigCount;
                 si2[1].pSignalSemaphoreInfos = sigInfos;
-                rcSub = queueSubmit2(queue, 2, si2, fence);
+                rcSub = queueSubmit2(queue, 2, si2, patternActive ? NULL : fence);
             } else {
                 si2[0].sType = VK_ST_SUBMIT_INFO_2;
                 si2[0].waitSemaphoreInfoCount = 1;
@@ -3705,7 +3915,7 @@ static void probe_run_one(int64_t surfaceId, int frames) {
                 si2[0].pCommandBufferInfos = &cbInfos[0];
                 si2[0].signalSemaphoreInfoCount = sigCount;
                 si2[0].pSignalSemaphoreInfos = sigInfos;
-                rcSub = queueSubmit2(queue, 1, si2, fence);
+                rcSub = queueSubmit2(queue, 1, si2, patternActive ? NULL : fence);
             }
         } else {
             const uint64_t waitValues[1] = { 0 };     /* binary wait value is ignored */
@@ -3734,11 +3944,14 @@ static void probe_run_one(int64_t surfaceId, int frames) {
                 si.signalSemaphoreCount = 1;
                 si.pSignalSemaphores = &sigSem;
             }
-            rcSub = queueSubmit(queue, 1, &si, fence);
+            rcSub = queueSubmit(queue, 1, &si, patternActive ? NULL : fence);
         }
         /* F39: a submit call has now really been issued (both branches above end
          * in exactly one). Record the first real non-OK rc so the summary can
          * tell a submit failure apart from a pre-submit / setup failure. */
+        if (patternRecord && f < MEOW_VK_PROBE_PAT_FRAMES) {
+            g_cell.patSub[f] = rcSub;
+        }
         ++submitsAttempted;
         if (rcSub != VK_OK) {
             submitFailRc = rcSub;
@@ -3751,16 +3964,21 @@ static void probe_run_one(int64_t surfaceId, int frames) {
             break;
         }
 
-        if (useTimeline) {
+        /* F63: the mc pattern presents BEFORE the timeline wait (the task's MC
+         * sequence); own keeps the legacy wait-then-present order. */
+        if (useTimeline && !patternActive) {
             MeowVkSemaphoreWaitInfo swi;
             memset(&swi, 0, sizeof(swi));
             swi.sType = VK_ST_SEMAPHORE_WAIT_INFO;
             swi.flags = 0;
             swi.semaphoreCount = 1;
             swi.pSemaphores = &tlSem;
-            swi.pValues = &tlValue;
+            swi.pValues = &tlWaitValue;
             rcTl = waitSemaphores(device, &swi, MEOW_VK_PROBE_TL_WAIT_NS);
             tlRc[f] = rcTl;
+            if (patternRecord && f < MEOW_VK_PROBE_PAT_FRAMES) {
+                g_cell.patTl[f] = rcTl;
+            }
             if (rcTl != VK_OK) {
                 doneFrames = f;
                 failFrame = f;
@@ -3780,17 +3998,57 @@ static void probe_run_one(int64_t surfaceId, int frames) {
         pi.pImageIndices = &imageIndex;
         rcPre = queuePresent(queue, &pi);
         preRc[f] = rcPre;
+        if (patternRecord) {
+            ++g_cell.patPresTotal;
+            if (f < MEOW_VK_PROBE_PAT_FRAMES) {
+                g_cell.patPres[f] = rcPre;
+            }
+        }
         doneFrames = f + 1;
         if (rcPre != VK_OK && rcPre != VK_SUBOPTIMAL_KHR) {
             failFrame = f;
             failPre = rcPre;
             break;
         }
+
+        if (useTimeline && patternActive) {
+            MeowVkSemaphoreWaitInfo swi;
+            memset(&swi, 0, sizeof(swi));
+            swi.sType = VK_ST_SEMAPHORE_WAIT_INFO;
+            swi.flags = 0;
+            swi.semaphoreCount = 1;
+            swi.pSemaphores = &tlSem;
+            swi.pValues = &tlWaitValue;
+            rcTl = waitSemaphores(device, &swi, MEOW_VK_PROBE_TL_WAIT_NS);
+            tlRc[f] = rcTl;
+            if (f < MEOW_VK_PROBE_PAT_FRAMES) {
+                g_cell.patTl[f] = rcTl;
+            }
+            if (rcTl != VK_OK) {
+                doneFrames = f;
+                failFrame = f;
+                failTl = rcTl;
+                break;
+            }
+        }
     }
 
     /* F38: fold this cell's outcome into g_cell for the matrix summary.
      * F39: also record whether a submit was actually issued (see cell_reached_submit). */
     g_cell.framesDone = doneFrames;
+    if (patternRecord) {
+        int recCount = doneFrames;
+        if (failFrame >= 0 && recCount <= failFrame) {
+            recCount = failFrame + 1;
+        }
+        if (recCount > frames) {
+            recCount = frames;
+        }
+        if (recCount > MEOW_VK_PROBE_PAT_FRAMES) {
+            recCount = MEOW_VK_PROBE_PAT_FRAMES;
+        }
+        g_cell.patCount = recCount;
+    }
     g_cell.submitTested = (submitsAttempted > 0);
     g_cell.submitFailRc = submitFailRc;
     if (doneFrames > 0) {
@@ -4005,7 +4263,8 @@ static void* probe_main(void* arg) {
     int envLib = getenv("MEOW_VK_PROBE_LIB") != NULL;
     int envSubmit = getenv("MEOW_VK_PROBE_SUBMIT") != NULL;
     int envDevfeat = getenv("MEOW_VK_PROBE_DEVFEAT") != NULL;
-    int matrixMode = (!envLib && !envSubmit && !envDevfeat);
+    int envPattern = getenv("MEOW_VK_PROBE_PATTERN") != NULL;
+    int matrixMode = (!envLib && !envSubmit && !envDevfeat && !envPattern);
     if (matrixMode && frames > 30) {
         frames = 30; /* the matrix only needs to see whether frames 0-2 fail */
     }
@@ -4021,16 +4280,19 @@ static void* probe_main(void* arg) {
         const char* pipeline = getenv("MEOW_VK_PROBE_PIPELINE");
         const char* sync = getenv("MEOW_VK_PROBE_SYNC");
         const char* devfeat = getenv("MEOW_VK_PROBE_DEVFEAT");
+        const char* pattern = getenv("MEOW_VK_PROBE_PATTERN");
         const char* sync2v1 = getenv("MEOW_VK_SYNC2_TO_V1");
         const char* sync2v1b = getenv("MEOW_VK_SYNC2_TO_V1_BARRIER");
         const char* sync2v1s = getenv("MEOW_VK_SYNC2_TO_V1_SUBMIT");
         sb_add(&sb,
-               "MeowVkProbe report F47 (mode=%s) frames=%d shape=%s pipeline=%s sync=%s"
-               " devfeat_env=%s sync2v1_env=%s sync2v1B_env=%s sync2v1S_env=%s\n",
-               matrixMode ? "one-item-plus-confirm-matrix" : "single", frames,
+               "MeowVkProbe report F63+F65+F65b+F67 (mode=%s) frames=%d shape=%s pipeline=%s sync=%s"
+               " pattern_env=%s devfeat_env=%s sync2v1_env=%s sync2v1B_env=%s"
+               " sync2v1S_env=%s\n",
+               matrixMode ? "one-item-plus-pattern-matrix" : "single", frames,
                shape != NULL ? shape : "mc(default)",
                pipeline != NULL ? pipeline : "blitImage(default)",
                sync != NULL ? sync : "timeline(default)",
+               pattern != NULL ? pattern : "mc(default)",
                devfeat != NULL ? devfeat : "(default)",
                sync2v1 != NULL ? sync2v1 : "(default)",
                sync2v1b != NULL ? sync2v1b : "(default)",
@@ -4044,10 +4306,24 @@ static void* probe_main(void* arg) {
                " cell8 all-on+queue2+sync2v1+timeline, cell9 all-on+queue2+sync2v1+binary,"
                " cell10 all-on+v1+timeline, cell11 all-on+v1+barrier-translated-only,"
                " cell12 all-on+queue2+submit-translated-only, cell13 only TEX"
-               " (F52 textured item: vkCmdCopyBufferToImage + COMBINED_IMAGE_SAMPLER push)\n");
+               " (F52 textured item: vkCmdCopyBufferToImage + COMBINED_IMAGE_SAMPLER push),"
+               " then F63 PATTERN cells 14=mc / 15=own (all-on, 60 frames, per-frame"
+               " telemetry), then F65 cell16 = cell8 with ONLY the swapchain write"
+               " flipped (MC_BLIT=0: in-place clear instead of the offscreen"
+               " vkCmdBlitImage; same 2-entry shape, same barriers, 60 frames)"
+               " -- a single-variable test of whether the blit command is what the"
+               " ICD rejects in the second submit entry; result: it is NOT (cell 16"
+               " failed exactly like cell 8), so F65b cell17 = cell16 with"
+               " MEOW_VK_PROBE_NOSPLIT=1: same mc shape and still submit=queue2, but"
+               " ONE submit entry carries the acquire wait + every mc command buffer +"
+               " every signal (the shape a merged translation produces); result: OK(60)"
+               " and the same 2-entry frames still fail, so F67 bisects the split tail's"
+               " SECOND command buffer: cell18 = cell8 with TAIL=nots (no timestamp),"
+               " cell19 = cell8 with TAIL=nobar (no blit/clear write; barriers+timestamp"
+               " only) -- one run names the exact command the ICD rejects\n");
     }
 
-    MeowVkProbeCell cells[13];
+    MeowVkProbeCell cells[19];
     int cellCount = 0;
     if (matrixMode) {
         /* F44's F43 ONE-ITEM-ONLY matrix (cells 1..6, unchanged in shape) plus SIX
@@ -4078,26 +4354,42 @@ static void* probe_main(void* arg) {
          * probe_run_one() -- which is before the shim is dlopen()ed and before the first call
          * into it, i.e. before the shim reads any env in its first-call init -- so the
          * ordering the (uncached) switch semantics require is satisfied. */
-        static const char* const f47Cell[13][11] = {
-            /* dr    push  upload ts    div   submit    sync2v1  sync      B     S     tex */
-            {  "1",  "1",  "1",    "1",  "1",  "queue2", "0",  "timeline", "0", "0", "1" }, /* 1*/
-            {  "1",  "0",  "0",    "0",  "0",  "queue2", "0",  "timeline", "0", "0", "0" }, /* 2*/
-            {  "0",  "1",  "0",    "0",  "0",  "queue2", "0",  "timeline", "0", "0", "0" }, /* 3*/
-            {  "0",  "0",  "1",    "0",  "0",  "queue2", "0",  "timeline", "0", "0", "0" }, /* 4*/
-            {  "0",  "0",  "0",    "0",  "1",  "queue2", "0",  "timeline", "0", "0", "0" }, /* 5*/
-            {  "0",  "0",  "0",    "1",  "0",  "queue2", "0",  "timeline", "0", "0", "0" }, /* 6*/
-            {  "1",  "1",  "1",    "1",  "1",  "v1",     "0",  "timeline", "0", "0", "1" }, /* 7*/
-            {  "1",  "1",  "1",    "1",  "1",  "queue2", "1",  "timeline", "1", "1", "1" }, /* 8*/
-            {  "1",  "1",  "1",    "1",  "1",  "queue2", "1",  "binary",   "1", "1", "1" }, /* 9*/
-            {  "1",  "1",  "1",    "1",  "1",  "v1",     "0",  "timeline", "0", "0", "1" }, /*10*/
-            {  "1",  "1",  "1",    "1",  "1",  "v1",     "0",  "timeline", "1", "0", "1" }, /*11*/
-            {  "1",  "1",  "1",    "1",  "1",  "queue2", "0",  "timeline", "0", "1", "1" }, /*12*/
-            {  "0",  "0",  "0",    "0",  "0",  "queue2", "0",  "timeline", "0", "0", "1" }, /*13*/
+        /* F63: cells 1..13 keep their exact shape and are pinned to pattern=own
+         * (g_patternRecord=0 => no telemetry, no behaviour change); cells 14/15
+         * are the new PATTERN A/B (all-on mc shape), 60 frames each, with
+         * g_patternRecord=1 so probe_run_one records the per-frame samples. */
+        /* F65: the array gained a 13th column = the swapchain write (1 = the
+         * offscreen->swapchain blit, i.e. every pre-F65 behaviour; 0 = the in-place
+         * clear). Cells 1..15 therefore keep "1" and are byte-identical to F63.
+         * Cell 16 is cell 8 with ONLY that column flipped: same all-on mc shape,
+         * same queue2 submit, same BOTH translations on, same timeline sync, same
+         * 60 frames + telemetry -- so the blit command is the single variable. */
+        static const char* const f47Cell[19][15] = {
+            /* dr    push  upload ts    div   submit    sync2v1  sync      B     S     tex   pattern  blit  nosplit tail */
+            {  "1",  "1",  "1",    "1",  "1",  "queue2", "0",  "timeline", "0", "0", "1", "own", "1", "0", "full" }, /* 1*/
+            {  "1",  "0",  "0",    "0",  "0",  "queue2", "0",  "timeline", "0", "0", "0", "own", "1", "0", "full" }, /* 2*/
+            {  "0",  "1",  "0",    "0",  "0",  "queue2", "0",  "timeline", "0", "0", "0", "own", "1", "0", "full" }, /* 3*/
+            {  "0",  "0",  "1",    "0",  "0",  "queue2", "0",  "timeline", "0", "0", "0", "own", "1", "0", "full" }, /* 4*/
+            {  "0",  "0",  "0",    "0",  "1",  "queue2", "0",  "timeline", "0", "0", "0", "own", "1", "0", "full" }, /* 5*/
+            {  "0",  "0",  "0",    "1",  "0",  "queue2", "0",  "timeline", "0", "0", "0", "own", "1", "0", "full" }, /* 6*/
+            {  "1",  "1",  "1",    "1",  "1",  "v1",     "0",  "timeline", "0", "0", "1", "own", "1", "0", "full" }, /* 7*/
+            {  "1",  "1",  "1",    "1",  "1",  "queue2", "1",  "timeline", "1", "1", "1", "own", "1", "0", "full" }, /* 8*/
+            {  "1",  "1",  "1",    "1",  "1",  "queue2", "1",  "binary",   "1", "1", "1", "own", "1", "0", "full" }, /* 9*/
+            {  "1",  "1",  "1",    "1",  "1",  "v1",     "0",  "timeline", "0", "0", "1", "own", "1", "0", "full" }, /*10*/
+            {  "1",  "1",  "1",    "1",  "1",  "v1",     "0",  "timeline", "1", "0", "1", "own", "1", "0", "full" }, /*11*/
+            {  "1",  "1",  "1",    "1",  "1",  "queue2", "0",  "timeline", "0", "1", "1", "own", "1", "0", "full" }, /*12*/
+            {  "0",  "0",  "0",    "0",  "0",  "queue2", "0",  "timeline", "0", "0", "1", "own", "1", "0", "full" }, /*13*/
+            {  "1",  "1",  "1",    "1",  "1",  "queue2", "0",  "timeline", "0", "0", "1", "mc" , "1", "0", "full" }, /*14*/
+            {  "1",  "1",  "1",    "1",  "1",  "queue2", "0",  "timeline", "0", "0", "1", "own", "1", "0", "full" }, /*15*/
+            {  "1",  "1",  "1",    "1",  "1",  "queue2", "1",  "timeline", "1", "1", "1", "own", "0", "0", "full" }, /*16*/
+            {  "1",  "1",  "1",    "1",  "1",  "queue2", "1",  "timeline", "1", "1", "1", "own", "0", "1", "full" }, /*17*/
+            {  "1",  "1",  "1",    "1",  "1",  "queue2", "1",  "timeline", "1", "1", "1", "own", "1", "0", "nots" }, /*18*/
+            {  "1",  "1",  "1",    "1",  "1",  "queue2", "1",  "timeline", "1", "1", "1", "own", "1", "0", "nobar" }, /*19*/
         };
         setenv("MEOW_VK_PROBE_LIB", "shim", 1);
         setenv("MEOW_VK_PROBE_SHAPE", "mc", 1);
         setenv("MEOW_VK_PROBE_DEVFEAT", "fake", 1);
-        for (int ci = 0; ci < 13; ++ci) {
+        for (int ci = 0; ci < 19; ++ci) {
             setenv("MEOW_VK_PROBE_MC_DR", f47Cell[ci][0], 1);
             setenv("MEOW_VK_PROBE_MC_PUSH", f47Cell[ci][1], 1);
             setenv("MEOW_VK_PROBE_MC_UPLOAD", f47Cell[ci][2], 1);
@@ -4109,13 +4401,22 @@ static void* probe_main(void* arg) {
             setenv("MEOW_VK_SYNC2_TO_V1_BARRIER", f47Cell[ci][8], 1);
             setenv("MEOW_VK_SYNC2_TO_V1_SUBMIT", f47Cell[ci][9], 1);
             setenv("MEOW_VK_PROBE_TEXTURED", f47Cell[ci][10], 1);
-            probe_run_one(surfaceId, frames);
+            setenv("MEOW_VK_PROBE_PATTERN", f47Cell[ci][11], 1);
+            setenv("MEOW_VK_PROBE_MC_BLIT", f47Cell[ci][12], 1);   /* F65 */
+            setenv("MEOW_VK_PROBE_NOSPLIT", f47Cell[ci][13], 1);   /* F65b */
+            setenv("MEOW_VK_PROBE_TAIL", f47Cell[ci][14], 1);      /* F67 */
+            /* F63: only the two new pattern cells run N=60 and record telemetry. */
+            g_patternRecord = (ci >= 13) ? 1 : 0;
+            int cellFrames = (ci >= 13) ? 60 : frames;
+            probe_run_one(surfaceId, cellFrames);
             cells[cellCount++] = g_cell;
         }
+        g_patternRecord = 0;
         unsetenv("MEOW_VK_PROBE_LIB");
         unsetenv("MEOW_VK_PROBE_SUBMIT");
         unsetenv("MEOW_VK_PROBE_SHAPE");
         unsetenv("MEOW_VK_PROBE_DEVFEAT");
+        unsetenv("MEOW_VK_PROBE_PATTERN");
         unsetenv("MEOW_VK_PROBE_MC_DR");
         unsetenv("MEOW_VK_PROBE_MC_PUSH");
         unsetenv("MEOW_VK_PROBE_MC_UPLOAD");
@@ -4126,8 +4427,15 @@ static void* probe_main(void* arg) {
         unsetenv("MEOW_VK_SYNC2_TO_V1_BARRIER");
         unsetenv("MEOW_VK_SYNC2_TO_V1_SUBMIT");
         unsetenv("MEOW_VK_PROBE_TEXTURED");
+        unsetenv("MEOW_VK_PROBE_MC_BLIT");   /* F65 */
+        unsetenv("MEOW_VK_PROBE_NOSPLIT");   /* F65b */
+        unsetenv("MEOW_VK_PROBE_TAIL");      /* F67 */
     } else {
+        /* F63: a single-cell run records the pattern telemetry too (the env
+         * semantics are unchanged: any of LIB/SUBMIT/DEVFEAT/PATTERN = one cell). */
+        g_patternRecord = 1;
         probe_run_one(surfaceId, frames);
+        g_patternRecord = 0;
         cells[cellCount++] = g_cell;
     }
 
@@ -4140,13 +4448,15 @@ static void* probe_main(void* arg) {
                "cell %d: devfeat=%-10s caps[dr=%d sync2=%d push=%d div=%d]"
                " enabled[dr=%d sync2=%d push=%d div=%d]"
                " ran[dr=%d push=%d up=%d ts=%d div=%d tex=%d]"
-               " mc[dr=%d push=%d up=%d ts=%d div=%d tex=%d] lib=%-4s submit=%s sync=%s",
+               " mc[dr=%d push=%d up=%d ts=%d div=%d tex=%d] lib=%-4s submit=%s sync=%s"
+               " pattern=%s",
                i + 1, meow_devfeat_name(c->devFeatMode), c->viewDr, c->viewSync2,
                c->viewPushDesc, c->viewDiv, c->capDr, c->capSync2, c->capPushDesc,
                c->capDivisor, c->ranDr, c->ranPush, c->ranUpload, c->ranTs, c->ranDiv,
                c->ranTex, c->mcDr, c->mcPush, c->mcUpload, c->mcTs, c->mcDiv, c->mcTex,
                c->libShim ? "shim" : "raw", c->submitQueue2 ? "queue2" : "v1",
-               c->syncTimeline ? "timeline" : "binary");
+               c->syncTimeline ? "timeline" : "binary",
+               c->patRec ? (c->patMcEnv ? "mc" : "own") : "off");
         /* F44: name the shim's sync2->v1 translation state for this cell (-1 = env unset). */
         if (c->sync2ToV1 < 0) {
             sb_add(&ls, " sync2v1=default");
@@ -4155,6 +4465,17 @@ static void* probe_main(void* arg) {
         }
         /* F47: name the per-type translation switches (-1 = env unset => legacy/default). */
         sb_add(&ls, " sync2v1B=%d sync2v1S=%d", c->sync2ToV1Barrier, c->sync2ToV1Submit);
+        /* F65: which swapchain write this cell used (1 = in-place clear, no blit). */
+        sb_add(&ls, " mcblit=%d", c->mcNoBlit ? 0 : 1);
+        /* F65b: how many submit entries the frame used (1 = merged shape). */
+        sb_add(&ls, " entries=%d", c->noSplit ? 1 : 2);
+        /* F67: which part of the split tail's second CB was kept (0 full, 1 no-ts, 2 no-write). */
+        sb_add(&ls, " tail=%s", c->tailMode == 1 ? "nots" : (c->tailMode == 2 ? "nobar" : "full"));
+        /* F63: cumulative acquire/present call counts + whether the mc pattern ran. */
+        if (c->patRec) {
+            sb_add(&ls, " A=%d P=%d patternActive=%d", c->patAcqTotal, c->patPresTotal,
+                   c->patActive);
+        }
         sb_add(&ls, " dev=");
         if (c->devRc == MEOW_VK_PROBE_DEV_UNSET) {
             sb_add(&ls, "-");
@@ -4520,6 +4841,24 @@ static void* probe_main(void* arg) {
         }
         sb_add(&sb, "VERDICT keys: -1=%s (vulkan_core.h:147)\n",
                rc_name(VK_ERROR_OUT_OF_HOST_MEMORY));
+    }
+
+    /* F63: one compact line per frame for the pattern cells, printed AFTER the
+     * verdict so a report-size overrun can never hide the SUMMARY. Each line is
+     * acquire dtMs / imageIndex / submit / present / timelineWait rc; A/P totals
+     * (on the cell line) show whether swapchain images are ever not returned. */
+    for (int i = 0; i < cellCount; ++i) {
+        const MeowVkProbeCell* c = &cells[i];
+        if (c->patRec && c->patCount > 0) {
+            sb_add(&sb, "pattern=%s frames=%d A=%d P=%d patternActive=%d\n",
+                   c->patMcEnv ? "mc" : "own", c->patCount, c->patAcqTotal, c->patPresTotal,
+                   c->patActive);
+            for (int k = 0; k < c->patCount; ++k) {
+                sb_add(&sb, "  pat=%s f%d dt=%lld img=%d s=%d p=%d tl=%d\n",
+                       c->patMcEnv ? "mc" : "own", k, (long long)c->patAcqDtMs[k],
+                       c->patImg[k], c->patSub[k], c->patPres[k], c->patTl[k]);
+            }
+        }
     }
 
     pthread_mutex_lock(&g_lock);

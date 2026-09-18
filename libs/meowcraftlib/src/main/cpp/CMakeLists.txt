@@ -49,8 +49,11 @@ target_link_libraries(meowglguard PUBLIC
 add_library(meowvulkan SHARED
     meowcraftbridge/meowvulkan.c)
 
+# meowvulkan.c includes the official OHOS SDK Vulkan headers (<vulkan/vulkan.h>) with
+# VK_NO_PROTOTYPES. It still never links libvulkan.so (the real loader is dlopen()'d at runtime).
 target_include_directories(meowvulkan PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/meowcraftbridge)
+    ${CMAKE_CURRENT_SOURCE_DIR}/meowcraftbridge
+    ${CMAKE_SYSROOT}/usr/include)
 
 target_link_libraries(meowvulkan PUBLIC
     libhilog_ndk.z.so)

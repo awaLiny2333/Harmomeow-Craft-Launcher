@@ -46,50 +46,35 @@
 #include "meowlog.h"
 #include "meowbt.h"
 
+// Official Vulkan types/enums, straight from the OHOS SDK header
+// (<sdk>/default/openharmony/native/sysroot/usr/include/vulkan/vulkan.h). VK_NO_PROTOTYPES is
+// required: this shim never links libvulkan.so -- it dlopen()s the real loader and forwards through
+// function pointers -- and without it the header's vk* prototypes would clash with our own exports.
+// VK_USE_PLATFORM_OHOS is deliberately NOT defined: this file uses no OHOS platform types.
+#define VK_NO_PROTOTYPES
+#include <vulkan/vulkan.h>
+
 #define REAL_LOADER "/system/lib64/libvulkan.so"
 
-typedef void* VkInstance;
-typedef void* VkPhysicalDevice;
-typedef void* VkDevice;
-typedef uint32_t VkBool32;
-typedef int32_t VkResult;
+// VkInstance/VkPhysicalDevice/VkDevice/VkBool32/VkResult/VkExtensionProperties now come from the
+// official header. The old local VkBase {sType,pNext} mirror is replaced by the SDK's
+// VkBaseInStructure/VkBaseOutStructure (vulkan_core.h:3069/3074) in the pNext walks below.
+typedef VkDeviceCreateInfo VkDeviceCI;   // fields use the official spellings (see hook_CreateDevice)
 
-#define VK_SUCCESS 0
-#define VK_INCOMPLETE 5
+// Official feature structs, so field order/size can never drift from LWJGL's binding again:
+// VkPhysicalDeviceVulkan13Features (vulkan_core.h:7039), VkPhysicalDeviceDynamicRenderingFeatures
+// (:7469), VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT (:8107) and
+// VkPhysicalDeviceSynchronization2Features (:7246). Field accesses use the SDK names.
+typedef VkPhysicalDeviceVulkan13Features Vk13Features;
+typedef VkPhysicalDeviceDynamicRenderingFeatures VkDynRenderFeatures;
+typedef VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT VkDivisorFeaturesExt;
+typedef VkPhysicalDeviceSynchronization2Features VkSync2Features;
 
-typedef struct { char extensionName[256]; uint32_t specVersion; } VkExtensionProperties;
-typedef struct { uint32_t sType; const void* pNext; } VkBase;
-typedef struct { uint32_t sType; const void* pNext; uint32_t flags; uint32_t qCount; const void* pQueueCI;
-                 uint32_t layerCount; const void* ppLayers; uint32_t extCount; const void* ppExts;
-                 const void* pFeatures; } VkDeviceCI;
-
-// VkPhysicalDeviceVulkan13Features -- field order MUST match the SDK header
-// (vulkan_core.h:7039) and LWJGL's own binding: after `shaderZeroInitializeWorkgroupMemory` comes
-// `dynamicRendering` (+64), then `shaderIntegerDotProduct` (+68), and `maintenance4` is LAST (+72).
-// The previous order here kept `maintenance4` third-from-last, so the hook's `->dynamicRendering = 1`
-// landed on the `shaderIntegerDotProduct` slot (+68) and never set Vulkan13.dynamicRendering at all --
-// claiming an unsupported feature is exactly the kind of lie that makes a driver misbehave later.
-// Keep this list in SDK order; re-check it against vulkan_core.h whenever it is touched.
-typedef struct { uint32_t sType; void* pNext;
-                 VkBool32 robustImageAccess, inlineUniformBlock,
-                          descriptorBindingInlineUniformBlockUpdateAfterBind,
-                          pipelineCreationCacheControl, privateData, shaderDemoteToHelperInvocation,
-                          shaderTerminateInvocation, subgroupSizeControl, computeFullSubgroups,
-                          synchronization2, textureCompressionASTC_HDR,
-                          shaderZeroInitializeWorkgroupMemory, dynamicRendering,
-                          shaderIntegerDotProduct, maintenance4; } Vk13Features;
-typedef struct { uint32_t sType; void* pNext; VkBool32 dynamicRendering; } VkDynRenderFeatures;
-typedef struct { uint32_t sType; void* pNext; VkBool32 rateDivisor, rateZeroDivisor; } VkDivisorFeaturesExt;
-// F35 (.23): the STANDALONE synchronization2 feature struct (not the Vulkan13 aggregate). The mc probe
-// put THIS one in its chain (F33), so the strip below must recognise it too, not only Vulkan13.sync2.
-// vulkan_core.h:7609 {sType,pNext,VkBool32 synchronization2}, sType 1000314007 (h:384).
-typedef struct { uint32_t sType; void* pNext; VkBool32 synchronization2; } VkSync2Features;
-
-// sType values (SDK-verified; the wrong-constant trap is notes section 4.10.1)
-#define ST_VK13_FEATURES 53
-#define ST_DYNREND_FEATURES 1000044003
-#define ST_DIVISOR_FEATURES_EXT 1000190002
-#define ST_SYNC2_FEATURES 1000314007
+// sType values: official enum constants from vulkan_core.h (no hand-typed numbers).
+#define ST_VK13_FEATURES        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES
+#define ST_DYNREND_FEATURES     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES
+#define ST_DIVISOR_FEATURES_EXT VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT
+#define ST_SYNC2_FEATURES       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES
 
 // The names MC needs that the ICD implements but does not advertise. Measured addition (2026-09-17):
 // VK_KHR_get_physical_device_properties2. On this 1.2-core device LWJGL does not resolve the KHR
@@ -156,25 +141,26 @@ static int meow_vk_verbose(void);
 // call unchanged, so the shim degrades to today's behaviour instead of guessing.
 // =====================================================================================
 
-#define MEOW_F53_ST_IMAGE_CREATE_INFO 14u
-#define MEOW_F53_ST_BUFFER_CREATE_INFO 12u
-#define MEOW_F53_ST_MEMORY_ALLOCATE_INFO 5u
-#define MEOW_F53_ST_IMAGE_MEMORY_BARRIER 45u
-#define MEOW_F53_ST_MEMORY_BARRIER 46u
-#define MEOW_F53_TILING_OPTIMAL 0u
-#define MEOW_F53_TILING_LINEAR 1u
-#define MEOW_F53_SHARING_EXCLUSIVE 0u
-#define MEOW_F53_LAYOUT_UNDEFINED 0u
-#define MEOW_F53_LAYOUT_GENERAL 1u
-#define MEOW_F53_IMAGE_USAGE_TRANSFER_SRC 0x1u
-#define MEOW_F53_IMAGE_USAGE_TRANSFER_DST 0x2u
-#define MEOW_F53_BUFFER_USAGE_TRANSFER_DST 0x2u
-#define MEOW_F53_ASPECT_COLOR 0x1u
-#define MEOW_F53_STAGE_TOP_OF_PIPE 0x1u
-#define MEOW_F53_STAGE_TRANSFER 0x1000u
-#define MEOW_F53_ACCESS_TRANSFER_READ 0x800u
-#define MEOW_F53_ACCESS_TRANSFER_WRITE 0x1000u
-#define MEOW_F53_QF_IGNORED 0xFFFFFFFFu
+/* All Vulkan constants below expand to the official SDK enums (vulkan_core.h) -- none is hand-typed. */
+#define MEOW_F53_ST_IMAGE_CREATE_INFO      VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
+#define MEOW_F53_ST_BUFFER_CREATE_INFO     VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
+#define MEOW_F53_ST_MEMORY_ALLOCATE_INFO   VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+#define MEOW_F53_ST_IMAGE_MEMORY_BARRIER   VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
+#define MEOW_F53_ST_MEMORY_BARRIER         VK_STRUCTURE_TYPE_MEMORY_BARRIER
+#define MEOW_F53_TILING_OPTIMAL            VK_IMAGE_TILING_OPTIMAL
+#define MEOW_F53_TILING_LINEAR             VK_IMAGE_TILING_LINEAR
+#define MEOW_F53_SHARING_EXCLUSIVE         VK_SHARING_MODE_EXCLUSIVE
+#define MEOW_F53_LAYOUT_UNDEFINED          VK_IMAGE_LAYOUT_UNDEFINED
+#define MEOW_F53_LAYOUT_GENERAL            VK_IMAGE_LAYOUT_GENERAL
+#define MEOW_F53_IMAGE_USAGE_TRANSFER_SRC  VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+#define MEOW_F53_IMAGE_USAGE_TRANSFER_DST  VK_IMAGE_USAGE_TRANSFER_DST_BIT
+#define MEOW_F53_BUFFER_USAGE_TRANSFER_DST VK_BUFFER_USAGE_TRANSFER_DST_BIT
+#define MEOW_F53_ASPECT_COLOR              VK_IMAGE_ASPECT_COLOR_BIT
+#define MEOW_F53_STAGE_TOP_OF_PIPE         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+#define MEOW_F53_STAGE_TRANSFER            VK_PIPELINE_STAGE_TRANSFER_BIT
+#define MEOW_F53_ACCESS_TRANSFER_READ      VK_ACCESS_TRANSFER_READ_BIT
+#define MEOW_F53_ACCESS_TRANSFER_WRITE     VK_ACCESS_TRANSFER_WRITE_BIT
+#define MEOW_F53_QF_IGNORED                VK_QUEUE_FAMILY_IGNORED
 #define MEOW_F53_MAX_BUFFER_COPIES 131072u
 #define MEOW_F53_IMG_CACHE_MAX 512
 // F57 (shim build .37): O(1) slot lookup. A fixed 1024-bucket separate-chaining table (load factor
@@ -183,69 +169,22 @@ static int meow_vk_verbose(void);
 // unchanged: at most the same 512 live images tracked by exact pointer, same hit/miss decisions.
 #define MEOW_F53_IMG_HASH_SIZE 1024
 
-typedef struct { uint32_t sType; const void* pNext; uint32_t flags, imageType, format;
-                 uint32_t width, height, depth;
-                 uint32_t mipLevels, arrayLayers, samples, tiling, usage, sharingMode,
-                          queueFamilyIndexCount; const uint32_t* pQueueFamilyIndices;
-                 uint32_t initialLayout; } MeowF53ImageCreateInfoL;
-_Static_assert(sizeof(MeowF53ImageCreateInfoL) == 88, "VkImageCreateInfo must be 88 bytes on LP64");
-_Static_assert(offsetof(MeowF53ImageCreateInfoL, format) == 24, "VkImageCreateInfo.format offset");
-_Static_assert(offsetof(MeowF53ImageCreateInfoL, width) == 28, "VkImageCreateInfo.extent.width offset");
-_Static_assert(offsetof(MeowF53ImageCreateInfoL, mipLevels) == 40, "VkImageCreateInfo.mipLevels offset");
-_Static_assert(offsetof(MeowF53ImageCreateInfoL, samples) == 48, "VkImageCreateInfo.samples offset");
-_Static_assert(offsetof(MeowF53ImageCreateInfoL, tiling) == 52, "VkImageCreateInfo.tiling offset");
-_Static_assert(offsetof(MeowF53ImageCreateInfoL, usage) == 56, "VkImageCreateInfo.usage offset");
-_Static_assert(offsetof(MeowF53ImageCreateInfoL, initialLayout) == 80, "VkImageCreateInfo.initialLayout offset");
-
-typedef struct { uint32_t sType; const void* pNext; uint32_t flags; uint64_t size; uint32_t usage,
-                 sharingMode, queueFamilyIndexCount; const uint32_t* pQueueFamilyIndices;
-                 } MeowF53BufferCreateInfoL;
-_Static_assert(sizeof(MeowF53BufferCreateInfoL) == 56, "VkBufferCreateInfo must be 56 bytes on LP64");
-_Static_assert(offsetof(MeowF53BufferCreateInfoL, size) == 24, "VkBufferCreateInfo.size offset");
-_Static_assert(offsetof(MeowF53BufferCreateInfoL, usage) == 32, "VkBufferCreateInfo.usage offset");
-
-typedef struct { uint32_t sType; const void* pNext; uint64_t allocationSize; uint32_t memoryTypeIndex;
-                 } MeowF53MemoryAllocateInfoL;
-_Static_assert(sizeof(MeowF53MemoryAllocateInfoL) == 32, "VkMemoryAllocateInfo must be 32 bytes on LP64");
-
-typedef struct { uint64_t size, alignment; uint32_t memoryTypeBits; } MeowF53MemoryRequirementsL;
-_Static_assert(sizeof(MeowF53MemoryRequirementsL) == 24, "VkMemoryRequirements must be 24 bytes on LP64");
-
-typedef struct { uint32_t aspectMask, mipLevel, arrayLayer; } MeowF53ImageSubresourceL;
-_Static_assert(sizeof(MeowF53ImageSubresourceL) == 12, "VkImageSubresource must be 12 bytes on LP64");
-
-typedef struct { uint64_t offset, size, rowPitch, arrayPitch, depthPitch; } MeowF53SubresourceLayoutL;
-_Static_assert(sizeof(MeowF53SubresourceLayoutL) == 40, "VkSubresourceLayout must be 40 bytes on LP64");
-
-typedef struct { uint64_t srcOffset, dstOffset, size; } MeowF53BufferCopyL;
-_Static_assert(sizeof(MeowF53BufferCopyL) == 24, "VkBufferCopy must be 24 bytes on LP64");
-
-typedef struct { uint32_t aspectMask, mipLevel, baseArrayLayer, layerCount; } MeowF53SubresourceLayersL;
-_Static_assert(sizeof(MeowF53SubresourceLayersL) == 16, "VkImageSubresourceLayers must be 16 bytes on LP64");
-
-typedef struct { uint64_t bufferOffset; uint32_t bufferRowLength, bufferImageHeight;
-                 uint32_t aspectMask, mipLevel, baseArrayLayer, layerCount;
-                 int32_t offX, offY, offZ; uint32_t extW, extH, extD; } MeowF53BufferImageCopyL;
-_Static_assert(sizeof(MeowF53BufferImageCopyL) == 56, "VkBufferImageCopy must be 56 bytes on LP64");
-_Static_assert(offsetof(MeowF53BufferImageCopyL, aspectMask) == 16, "VkBufferImageCopy.imageSubresource offset");
-_Static_assert(offsetof(MeowF53BufferImageCopyL, offX) == 32, "VkBufferImageCopy.imageOffset offset");
-_Static_assert(offsetof(MeowF53BufferImageCopyL, extW) == 44, "VkBufferImageCopy.imageExtent offset");
-
-typedef struct { MeowF53SubresourceLayersL src; int32_t srcOffX, srcOffY, srcOffZ;
-                 MeowF53SubresourceLayersL dst; int32_t dstOffX, dstOffY, dstOffZ;
-                 uint32_t extW, extH, extD; } MeowF53ImageCopyL;
-_Static_assert(sizeof(MeowF53ImageCopyL) == 68, "VkImageCopy must be 68 bytes on LP64");
-_Static_assert(offsetof(MeowF53ImageCopyL, dst) == 28, "VkImageCopy.dstSubresource offset");
-
-typedef struct { uint32_t sType; const void* pNext; uint32_t srcAccessMask, dstAccessMask;
-                 int32_t oldLayout, newLayout; uint32_t srcQueueFamilyIndex, dstQueueFamilyIndex;
-                 void* image; uint32_t aspectMask, baseMipLevel, levelCount, baseArrayLayer,
-                 layerCount; } MeowF53ImageBarrierL;
-_Static_assert(sizeof(MeowF53ImageBarrierL) == 72, "VkImageMemoryBarrier must be 72 bytes on LP64");
-
-typedef struct { uint32_t sType; const void* pNext; uint32_t srcAccessMask, dstAccessMask;
-                 } MeowF53MemoryBarrierL;
-_Static_assert(sizeof(MeowF53MemoryBarrierL) == 24, "VkMemoryBarrier must be 24 bytes on LP64");
+/* F53 mirrors are now aliases to the official SDK types (vulkan_core.h): no handwritten layout
+   remains, so any header field/offset change propagates automatically. Field accesses below use the
+   official spellings (extent.width/height/depth, imageSubresource, imageOffset, imageExtent,
+   srcSubresource/dstSubresource, subresourceRange). */
+typedef VkImageCreateInfo          MeowF53ImageCreateInfoL;
+typedef VkBufferCreateInfo         MeowF53BufferCreateInfoL;
+typedef VkMemoryAllocateInfo       MeowF53MemoryAllocateInfoL;
+typedef VkMemoryRequirements       MeowF53MemoryRequirementsL;
+typedef VkImageSubresource         MeowF53ImageSubresourceL;
+typedef VkSubresourceLayout        MeowF53SubresourceLayoutL;
+typedef VkBufferCopy               MeowF53BufferCopyL;
+typedef VkImageSubresourceLayers   MeowF53SubresourceLayersL;
+typedef VkBufferImageCopy          MeowF53BufferImageCopyL;
+typedef VkImageCopy                MeowF53ImageCopyL;
+typedef VkImageMemoryBarrier       MeowF53ImageBarrierL;
+typedef VkMemoryBarrier            MeowF53MemoryBarrierL;
 
 typedef int (*MeowF53PFN_createImage)(void*, const void*, const void*, void**);
 typedef void (*MeowF53PFN_destroyImage)(void*, void*, const void*);
@@ -452,9 +391,9 @@ static void meow_f53_stage_created(void* img, const void* ci) {
     s->arrayLayers = c->arrayLayers ? c->arrayLayers : 1u;
     s->usage = c->usage;
     s->tiling = c->tiling;
-    s->width = c->width;
-    s->height = c->height;
-    s->depth = c->depth ? c->depth : 1u;
+    s->width = c->extent.width;
+    s->height = c->extent.height;
+    s->depth = c->extent.depth ? c->extent.depth : 1u;
     pthread_mutex_unlock(&g_meow_f53_img_lock);
 }
 
@@ -561,9 +500,9 @@ static int meow_f53_ensure_intermediate(MeowF53ImgEntry* e) {
     ci.sType = MEOW_F53_ST_IMAGE_CREATE_INFO;
     ci.imageType = e->imageType;
     ci.format = e->format;
-    ci.width = e->width;
-    ci.height = e->height;
-    ci.depth = e->depth;
+    ci.extent.width = e->width;
+    ci.extent.height = e->height;
+    ci.extent.depth = e->depth;
     ci.mipLevels = e->mipLevels;
     ci.arrayLayers = e->arrayLayers;
     ci.samples = e->samples;
@@ -717,10 +656,11 @@ static int meow_f53_redirect_copy(void* cmd, void* src, void* dst, uint32_t dstL
     const MeowF53BufferImageCopyL* r = (const MeowF53BufferImageCopyL*)pRegions;
     uint64_t total = 0;
     for (uint32_t i = 0; i < regionCount; i++) {
-        if ((r[i].aspectMask & MEOW_F53_ASPECT_COLOR) == 0u) return 0;
-        if (r[i].layerCount == 0u || r[i].extW == 0u || r[i].extH == 0u) return 0;
-        uint64_t d = r[i].extD ? r[i].extD : 1u;
-        total += (uint64_t)r[i].layerCount * d * r[i].extH;
+        if ((r[i].imageSubresource.aspectMask & MEOW_F53_ASPECT_COLOR) == 0u) return 0;
+        if (r[i].imageSubresource.layerCount == 0u || r[i].imageExtent.width == 0u ||
+            r[i].imageExtent.height == 0u) return 0;
+        uint64_t d = r[i].imageExtent.depth ? r[i].imageExtent.depth : 1u;
+        total += (uint64_t)r[i].imageSubresource.layerCount * d * r[i].imageExtent.height;
         if (total > MEOW_F53_MAX_BUFFER_COPIES) {
             if (++g_meow_f53_fallbacks <= 16ul)
                 MEOWLOGI("meowvulkan: F53 forward dst=%{public}p (row count %{public}llu > cap)",
@@ -754,18 +694,18 @@ static int meow_f53_redirect_copy(void* cmd, void* src, void* dst, uint32_t dstL
     uint64_t n = 0;
     for (uint32_t i = 0; i < regionCount; i++) {
         const MeowF53BufferImageCopyL* q = &r[i];
-        uint32_t extW = q->extW;
-        uint32_t extH = q->extH;
-        uint32_t extD = q->extD ? q->extD : 1u;
+        uint32_t extW = q->imageExtent.width;
+        uint32_t extH = q->imageExtent.height;
+        uint32_t extD = q->imageExtent.depth ? q->imageExtent.depth : 1u;
         uint64_t srcRowStride = (uint64_t)(q->bufferRowLength ? q->bufferRowLength : extW) * bpp;
         uint64_t srcPlaneStride = (uint64_t)(q->bufferImageHeight ? q->bufferImageHeight : extH) * srcRowStride;
-        for (uint32_t L = 0; L < q->layerCount; L++) {
+        for (uint32_t L = 0; L < q->imageSubresource.layerCount; L++) {
             MeowF53ImageSubresourceL sub;
             MeowF53SubresourceLayoutL lay;
             memset(&lay, 0, sizeof(lay));
-            sub.aspectMask = q->aspectMask;
-            sub.mipLevel = q->mipLevel;
-            sub.arrayLayer = q->baseArrayLayer + L;
+            sub.aspectMask = q->imageSubresource.aspectMask;
+            sub.mipLevel = q->imageSubresource.mipLevel;
+            sub.arrayLayer = q->imageSubresource.baseArrayLayer + L;
             realGetLayout(g_dev_seen, e->linImage, &sub, &lay);
             for (uint32_t z = 0; z < extD; z++) {
                 uint64_t planeIndex = (uint64_t)L * extD + z;
@@ -773,9 +713,9 @@ static int meow_f53_redirect_copy(void* cmd, void* src, void* dst, uint32_t dstL
                 for (uint32_t y = 0; y < extH; y++) {
                     bcs[n].srcOffset = q->bufferOffset + srcPlane + (uint64_t)y * srcRowStride;
                     bcs[n].dstOffset = lay.offset
-                        + ((uint64_t)(q->offY + (int32_t)y)) * lay.rowPitch
-                        + (uint64_t)q->offX * bpp
-                        + (uint64_t)(q->offZ + (int32_t)z) * lay.depthPitch;
+                        + ((uint64_t)(q->imageOffset.y + (int32_t)y)) * lay.rowPitch
+                        + (uint64_t)q->imageOffset.x * bpp
+                        + (uint64_t)(q->imageOffset.z + (int32_t)z) * lay.depthPitch;
                     bcs[n].size = (uint64_t)extW * bpp;
                     n++;
                 }
@@ -783,20 +723,20 @@ static int meow_f53_redirect_copy(void* cmd, void* src, void* dst, uint32_t dstL
         }
         MeowF53ImageCopyL* ic = &ics[i];
         memset(ic, 0, sizeof(*ic));
-        ic->src.aspectMask = q->aspectMask;
-        ic->src.mipLevel = q->mipLevel;
-        ic->src.baseArrayLayer = q->baseArrayLayer;
-        ic->src.layerCount = q->layerCount;
-        ic->dst.aspectMask = q->aspectMask;
-        ic->dst.mipLevel = q->mipLevel;
-        ic->dst.baseArrayLayer = q->baseArrayLayer;
-        ic->dst.layerCount = q->layerCount;
-        ic->dstOffX = q->offX;
-        ic->dstOffY = q->offY;
-        ic->dstOffZ = q->offZ;
-        ic->extW = extW;
-        ic->extH = extH;
-        ic->extD = extD;
+        ic->srcSubresource.aspectMask = q->imageSubresource.aspectMask;
+        ic->srcSubresource.mipLevel = q->imageSubresource.mipLevel;
+        ic->srcSubresource.baseArrayLayer = q->imageSubresource.baseArrayLayer;
+        ic->srcSubresource.layerCount = q->imageSubresource.layerCount;
+        ic->dstSubresource.aspectMask = q->imageSubresource.aspectMask;
+        ic->dstSubresource.mipLevel = q->imageSubresource.mipLevel;
+        ic->dstSubresource.baseArrayLayer = q->imageSubresource.baseArrayLayer;
+        ic->dstSubresource.layerCount = q->imageSubresource.layerCount;
+        ic->dstOffset.x = q->imageOffset.x;
+        ic->dstOffset.y = q->imageOffset.y;
+        ic->dstOffset.z = q->imageOffset.z;
+        ic->extent.width = extW;
+        ic->extent.height = extH;
+        ic->extent.depth = extD;
     }
     if (!e->interGeneral) {
         MeowF53ImageBarrierL ib;
@@ -804,16 +744,16 @@ static int meow_f53_redirect_copy(void* cmd, void* src, void* dst, uint32_t dstL
         ib.sType = MEOW_F53_ST_IMAGE_MEMORY_BARRIER;
         ib.srcAccessMask = 0u;
         ib.dstAccessMask = MEOW_F53_ACCESS_TRANSFER_READ | MEOW_F53_ACCESS_TRANSFER_WRITE;
-        ib.oldLayout = (int32_t)MEOW_F53_LAYOUT_UNDEFINED;
-        ib.newLayout = (int32_t)MEOW_F53_LAYOUT_GENERAL;
+        ib.oldLayout = MEOW_F53_LAYOUT_UNDEFINED;
+        ib.newLayout = MEOW_F53_LAYOUT_GENERAL;
         ib.srcQueueFamilyIndex = MEOW_F53_QF_IGNORED;
         ib.dstQueueFamilyIndex = MEOW_F53_QF_IGNORED;
         ib.image = e->linImage;
-        ib.aspectMask = MEOW_F53_ASPECT_COLOR;
-        ib.baseMipLevel = 0u;
-        ib.levelCount = e->interMip;
-        ib.baseArrayLayer = 0u;
-        ib.layerCount = e->interLayers;
+        ib.subresourceRange.aspectMask = MEOW_F53_ASPECT_COLOR;
+        ib.subresourceRange.baseMipLevel = 0u;
+        ib.subresourceRange.levelCount = e->interMip;
+        ib.subresourceRange.baseArrayLayer = 0u;
+        ib.subresourceRange.layerCount = e->interLayers;
         realBarrier(cmd, MEOW_F53_STAGE_TOP_OF_PIPE, MEOW_F53_STAGE_TRANSFER, 0u,
                     0u, NULL, 0u, NULL, 1u, &ib);
         e->interGeneral = 1;
@@ -873,11 +813,9 @@ static int meow_f53_redirect_copy(void* cmd, void* src, void* dst, uint32_t dstL
 // RULE for every wrapper in this file: declare exactly the real parameters, in order, and forward that
 // same list. Never invent a parameter, not even for logging.
 typedef void (*PFN_cmdCopyBufferToImage)(void*, void*, void*, uint32_t, uint32_t, const void*);
-// VkBufferImageCopy, LP64: bufferOffset@0(8) bufferRowLength@8(4) bufferImageHeight@12(4)
-// imageSubresource@16{aspectMask,mipLevel,baseArrayLayer,layerCount} imageOffset@32(12) imageExtent@44(12)
-typedef struct { uint64_t bufferOffset; uint32_t bufferRowLength, bufferImageHeight;
-                 uint32_t aspectMask, mipLevel, baseArrayLayer, layerCount;
-                 int32_t offX, offY, offZ; uint32_t extW, extH, extD; } VkBufImageCopyL;
+// VkBufferImageCopy -- official SDK type (vulkan_core.h:4097); accesses use imageSubresource /
+// imageOffset / imageExtent below.
+typedef VkBufferImageCopy VkBufImageCopyL;
 static void log_CmdCopyBufferToImage(void* cmd, void* src, void* dst, uint32_t dstLayout,
                                      uint32_t regionCount, const void* pRegions) {
     if (meow_vk_verbose()) {
@@ -886,8 +824,10 @@ static void log_CmdCopyBufferToImage(void* cmd, void* src, void* dst, uint32_t d
             MEOWLOGI("meowvulkan: vkCmdCopyBufferToImage CALLED cmdBuf=%{public}p (regions=%{public}u) r0{bufOff=%{public}llu "
                      "mip=%{public}u layers=%{public}u..+%{public}u off=%{public}d,%{public}d,%{public}d "
                      "ext=%{public}u x %{public}u x %{public}u} -- forwarding",
-                     cmd, regionCount, (unsigned long long)r0->bufferOffset, r0->mipLevel, r0->baseArrayLayer,
-                     r0->layerCount, r0->offX, r0->offY, r0->offZ, r0->extW, r0->extH, r0->extD);
+                     cmd, regionCount, (unsigned long long)r0->bufferOffset, r0->imageSubresource.mipLevel,
+                     r0->imageSubresource.baseArrayLayer, r0->imageSubresource.layerCount,
+                     r0->imageOffset.x, r0->imageOffset.y, r0->imageOffset.z,
+                     r0->imageExtent.width, r0->imageExtent.height, r0->imageExtent.depth);
         } else {
             MEOWLOGI("meowvulkan: vkCmdCopyBufferToImage CALLED cmdBuf=%{public}p (regions=%{public}u) -- forwarding",
                      cmd, regionCount);
@@ -916,8 +856,80 @@ static void log_CmdCopyBufferToImage(void* cmd, void* src, void* dst, uint32_t d
 // the dump ends inside the maps section, before the fault record) -- so we use the technique that
 // located every previous failure: log right before the suspect call and see where the log stops.
 typedef void (*PFN_cmdPush)(void*, uint32_t, void*, uint32_t, uint32_t, const void*);
+// F72 (shim build .49) forward declarations: the implementation lives with the F69 helpers further
+// down (it reuses meow_f69_createFence/getFenceStatus), but the push wrapper above needs the on/off
+// decision and the emulation entry point now.
+static int meow_f72_on(void);
+static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, uint32_t set,
+                                 uint32_t n, const void* writes);
+static void meow_f72_bind_submit(VkFence submitFence, int ownsFence, int ok);
+// F68 (shim build .44): causal test switch for the push-descriptor defect.
+// WHY: the first successful MC Vulkan frame (shim .43, F66 merge) had its ONE merged submit accepted
+// (submitsIn=3 -> submits=1, cmdBufs=4, rc=0) and then the driver's queue recovery fired
+// ("Gpu is reset when wait idle" / "RecoverCqError clear qid=19/20" / "return device lost"), i.e. the
+// GPU faulted on that submit's CONTENT. The log shows the frame was tiny (1 begin-rendering, 4 draws,
+// 8 barriers, 1 copyImage) and its only "never truly tested" content is vkCmdPushDescriptorSet: the
+// probe always pushed without a graphics pipeline to CONSUME the descriptors (A8 §3.2: no pipeline, no
+// draw, no SPIR-V), while MC pushes into a real pipeline. The campaign's third known blocker is exactly
+// "vkCmdPushDescriptorSet consumed by a pipeline => device lost". Dropping the pushes makes the picture
+// wrong but removes the suspect: if the device NO LONGER gets lost, the push path is confirmed as the
+// trigger and the designed remedy (emulate the push with an ordinary descriptor set) is the fix.
+// MEOW_VK_DROP_PUSH_DESCRIPTOR=1 opts in; unset = forward exactly as before.
+static int meow_vk_drop_push(void) {
+    const char* s = getenv("MEOW_VK_DROP_PUSH_DESCRIPTOR");
+    return (s != NULL && s[0] == '1') ? 1 : 0;
+}
+
+// F70 (shim build .46): causal test switch for the REAL graphics-pipeline path.
+// WHY: with F66 (merge) + F69 (timeline->fence) MC's Vulkan frame is now accepted and its completion
+// is a real GPU fence wait, and the whole system no longer janks (no fake host-side advances) -- but
+// the driver still runs its queue recovery ("Gpu is reset when wait idle" / "RecoverCqError clear
+// qid=19/20" / "return device lost") on MC's real first frame. That frame is tiny (1 begin-rendering,
+// 4 draws, 8 translated barriers, 1 copyImage; the two push-descriptor calls were already cleared by
+// F68, which failed the same way). What has NEVER been exercised on this ICD is real graphics-pipeline
+// execution: the probe had no graphics pipeline, no SPIR-V and no draws (A8 3.2), and the campaign's
+// "render-to-image works" result used a clear, not a pipeline. Dropping the draws removes exactly that
+// (a render pass with zero draws is legal), so if the queue error disappears the pipeline/draw path is
+// convicted. MEOW_VK_DROP_DRAW=1 opts in; unset = forward exactly as before.
+// NOTE: MC draws with vkCmdDrawIndirect/vkCmdDrawIndexedIndirect (A8 3.1), which this shim did NOT
+// wrap until now -- the indirect wrappers below exist so the gate can actually cover MC's draws.
+static int meow_vk_drop_draw(void) {
+    const char* s = getenv("MEOW_VK_DROP_DRAW");
+    return (s != NULL && s[0] == '1') ? 1 : 0;
+}
+
+// F71b (.48): rate-limited reporter for the causal-test drop gates. A per-call line on a hot path is
+// exactly the mistake the project already banned (F55/F56): the F70 build logged every dropped draw
+// and produced a 33,923-line export of which 30,145 lines were ours, which pushed the F71 divisor
+// evidence (and even the shim's own build tag) out of the log. First 4 calls are named (path proof),
+// then one running-total line every 4000; MEOW_VK_VERBOSE=1 restores every call.
+static void meow_log_drop(const char* what) {
+    static unsigned long total = 0;
+    ++total;
+    if (meow_vk_verbose() || total <= 4ul) {
+        MEOWLOGW("meowvulkan: %{public}s DROPPED (causal test, not forwarded) -- #%{public}lu",
+                 what, total);
+    } else if ((total % 4000ul) == 0ul) {
+        MEOWLOGW("meowvulkan: causal-test drops so far: %{public}lu (rate-limited; "
+                 "MEOW_VK_VERBOSE=1 shows every call)", total);
+    }
+}
+
 static void log_CmdPushDescriptorSet(void* cmd, uint32_t bindPoint, void* layout, uint32_t set,
                                      uint32_t n, const void* writes) {
+    if (meow_vk_drop_push()) {
+        // F68: never forwarded -- the causal test. Logged once per call (bounded: the causal run is short).
+        meow_log_drop("vkCmdPushDescriptorSet");   // F71b: rate-limited
+        return;
+    }
+    // F72 (build .49): DROP has priority over AS_SET. When the emulation succeeds the real push is
+    // never recorded; every failure path falls through to the original forward below (the emulator
+    // emits a rate-limited WARN saying why).
+    if (meow_f72_on() && meow_f72_emulate_push(cmd, bindPoint, layout, set, n, writes)) {
+        if (meow_vk_verbose())
+            MEOWLOGI("meowvulkan: vkCmdPushDescriptorSet EMULATED as an ordinary descriptor set (F72)");
+        return;
+    }
     if (meow_vk_verbose())
         MEOWLOGI("meowvulkan: vkCmdPushDescriptorSet CALLED (writes=%{public}u) -- forwarding", n);
     PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdPushDescriptorSet") : NULL;
@@ -1027,7 +1039,7 @@ typedef int (*PFN_allocMemory)(void*, const void*, const void*, void**);
 /* VkMemoryAllocateInfo: sType(0) pNext(8) allocationSize(16) memoryTypeIndex(24) -- read-only inspection,
  * the call itself is unchanged. The first allocation is where the process dies (deterministically, right
  * after this line), so its size/type are the numbers we are missing. */
-typedef struct { uint32_t sType; const void* pNext; uint64_t allocationSize; uint32_t memoryTypeIndex; } VkMemAI;
+typedef VkMemoryAllocateInfo VkMemAI;   // official SDK type (vulkan_core.h)
 static int log_AllocateMemory(void* dev, const void* ai, const void* alloc, void** mem) {
     wd_note("vkAllocateMemory");
     PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkAllocateMemory") : NULL;
@@ -1047,7 +1059,7 @@ static int log_AllocateMemory(void* dev, const void* ai, const void* alloc, void
 
 /* VkBufferCreateInfo: sType(0) pNext(8) flags(16) size(24) usage(32) -- the buffer sizes MC asks for
  * right after that allocation tell us what the Vulkan backend was setting up when it died. */
-typedef struct { uint32_t sType; const void* pNext; uint32_t flags; uint64_t size; uint32_t usage; } VkBufCI;
+typedef VkBufferCreateInfo VkBufCI;   // official SDK type (vulkan_core.h)
 typedef int (*PFN_createBuffer)(void*, const void*, const void*, void**);
 static int log_CreateBuffer(void* dev, const void* ci, const void* alloc, void** buf) {
     wd_note("vkCreateBuffer");
@@ -1143,6 +1155,9 @@ static int log_QueueSubmit(void* queue, uint32_t count, const void* submits, voi
     PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkQueueSubmit") : NULL;
     if (real == NULL) return -3;
     int rc = ((PFN_queueSubmit)real)(queue, count, submits, fence);
+    // F72 (build .49): the v1 path is not the F66 merge path, but if MC ever uses it the pool that
+    // recorded the frame must still be covered by this submit's fence. Only count==1 has one fence.
+    if (meow_f72_on() && count == 1) meow_f72_bind_submit((VkFence)(uintptr_t)fence, 0, (rc == 0));
     MEOWLOGI("meowvulkan: vkQueueSubmit rc=%{public}d count=%{public}u", rc, (unsigned)count);
     return rc;
 }
@@ -1172,21 +1187,13 @@ static int log_QueueSubmit(void* queue, uint32_t count, const void* submits, voi
 //   VkSemaphoreWaitInfo        : sType@0 pNext@8 flags@16 semaphoreCount@20 pSemaphores@24 pValues@32 (size 40)
 // Semaphores are NON-dispatchable handles => uint64_t on LP64 (NOT void*). VkQueue/VkDevice/VkCommandBuffer
 // are dispatchable => pointers.
-typedef uint64_t VkSemaphoreL;
-typedef struct { uint32_t sType; const void* pNext; VkSemaphoreL semaphore; uint64_t value;
-                 uint64_t stageMask; uint32_t deviceIndex; } VkSemaphoreSubmitInfoL;
-typedef struct { uint32_t sType; const void* pNext; void* commandBuffer; uint32_t deviceMask; } VkCommandBufferSubmitInfoL;
-typedef struct { uint32_t sType; const void* pNext; uint32_t flags; uint32_t waitSemaphoreInfoCount;
-                 const VkSemaphoreSubmitInfoL* pWaitSemaphoreInfos; uint32_t commandBufferInfoCount;
-                 const VkCommandBufferSubmitInfoL* pCommandBufferInfos; uint32_t signalSemaphoreInfoCount;
-                 const VkSemaphoreSubmitInfoL* pSignalSemaphoreInfos; } VkSubmitInfo2L;
-typedef struct { uint32_t sType; const void* pNext; uint32_t flags; uint32_t semaphoreCount;
-                 const VkSemaphoreL* pSemaphores; const uint64_t* pValues; } VkSemaphoreWaitInfoL;
-_Static_assert(sizeof(VkSemaphoreWaitInfoL) == 40, "VkSemaphoreWaitInfo must be 40 bytes on LP64");
-_Static_assert(offsetof(VkSemaphoreWaitInfoL, flags) == 16, "VkSemaphoreWaitInfo.flags offset");
-_Static_assert(offsetof(VkSemaphoreWaitInfoL, semaphoreCount) == 20, "VkSemaphoreWaitInfo.semaphoreCount offset");
-_Static_assert(offsetof(VkSemaphoreWaitInfoL, pSemaphores) == 24, "VkSemaphoreWaitInfo.pSemaphores offset");
-_Static_assert(offsetof(VkSemaphoreWaitInfoL, pValues) == 32, "VkSemaphoreWaitInfo.pValues offset");
+// Official synchronization2 submit types (vulkan_core.h:7218/7227/7234/6611). VkSemaphore is a
+// non-dispatchable handle, so the translation buffers below are typed VkSemaphore/VkCommandBuffer
+// (not the former uint64_t/void* mirrors).
+typedef VkSemaphoreSubmitInfo       VkSemaphoreSubmitInfoL;
+typedef VkCommandBufferSubmitInfo   VkCommandBufferSubmitInfoL;
+typedef VkSubmitInfo2               VkSubmitInfo2L;
+typedef VkSemaphoreWaitInfo         VkSemaphoreWaitInfoL;
 
 // =====================================================================================
 // F44 (shim build .26): synchronization2 -> core-1.0 translation.
@@ -1224,12 +1231,12 @@ _Static_assert(offsetof(VkSemaphoreWaitInfoL, pValues) == 32, "VkSemaphoreWaitIn
 // The long per-build prose that used to be appended to the version banner was moved to
 // stuffs/research/vulkan/fixes/F45-submit-translation-fix-and-short-version.md.
 // =====================================================================================
-#define ST_SUBMIT_INFO 4
-#define ST_BUFFER_MEMORY_BARRIER 44
-#define ST_IMAGE_MEMORY_BARRIER 45
-#define ST_MEMORY_BARRIER 46
-#define ST_TIMELINE_SEMAPHORE_SUBMIT_INFO 1000207003
-#define ST_SEMAPHORE_SIGNAL_INFO 1000207005   /* vulkan_core.h :334 */
+#define ST_SUBMIT_INFO                    VK_STRUCTURE_TYPE_SUBMIT_INFO
+#define ST_BUFFER_MEMORY_BARRIER          VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER
+#define ST_IMAGE_MEMORY_BARRIER           VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
+#define ST_MEMORY_BARRIER                 VK_STRUCTURE_TYPE_MEMORY_BARRIER
+#define ST_TIMELINE_SEMAPHORE_SUBMIT_INFO VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO
+#define ST_SEMAPHORE_SIGNAL_INFO          VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO
 
 static unsigned long g_sync2v1_submits;
 static unsigned long g_sync2v1_barriers;
@@ -1372,48 +1379,15 @@ static int meow_wait_via_queue_idle_decide(const char** why) {
 
 typedef int (*PFN_signalSemaphoreL)(void*, const void*);
 
-/* v1 mirrors (LP64). sType values / field offsets machine-checked against vulkan_core.h. */
-typedef struct { uint32_t sType; const void* pNext; uint32_t srcAccessMask, dstAccessMask; } VkMemBarrierL;
-_Static_assert(sizeof(VkMemBarrierL) == 24, "VkMemoryBarrier must be 24 bytes on LP64");
-_Static_assert(offsetof(VkMemBarrierL, srcAccessMask) == 16, "VkMemoryBarrier.srcAccessMask offset");
-
-typedef struct { uint32_t sType; const void* pNext; uint32_t srcAccessMask, dstAccessMask;
-                 uint32_t srcQueueFamilyIndex, dstQueueFamilyIndex; void* buffer;
-                 uint64_t offset, size; } VkBufBarrierL;
-_Static_assert(sizeof(VkBufBarrierL) == 56, "VkBufferMemoryBarrier must be 56 bytes on LP64");
-_Static_assert(offsetof(VkBufBarrierL, buffer) == 32, "VkBufferMemoryBarrier.buffer offset");
-_Static_assert(offsetof(VkBufBarrierL, offset) == 40, "VkBufferMemoryBarrier.offset offset");
-
-typedef struct { uint32_t sType; const void* pNext; uint64_t srcStageMask, srcAccessMask;
-                 uint64_t dstStageMask, dstAccessMask; } VkMemBarrier2L;
-_Static_assert(sizeof(VkMemBarrier2L) == 48, "VkMemoryBarrier2 must be 48 bytes on LP64");
-
-// VkSubmitInfo -- header :3758. NOTE: v1 has NO `flags` field (that is VkSubmitInfo2-only).
-typedef struct { uint32_t sType; const void* pNext; uint32_t waitSemaphoreCount;
-                 const uint64_t* pWaitSemaphores; const uint32_t* pWaitDstStageMask;
-                 uint32_t commandBufferCount; const void* pCommandBuffers;
-                 uint32_t signalSemaphoreCount; const uint64_t* pSignalSemaphores; } VkSubmitInfoL;
-_Static_assert(sizeof(VkSubmitInfoL) == 72, "VkSubmitInfo must be 72 bytes on LP64");
-_Static_assert(offsetof(VkSubmitInfoL, pWaitSemaphores) == 24, "VkSubmitInfo.pWaitSemaphores offset");
-_Static_assert(offsetof(VkSubmitInfoL, pWaitDstStageMask) == 32, "VkSubmitInfo.pWaitDstStageMask offset");
-_Static_assert(offsetof(VkSubmitInfoL, pCommandBuffers) == 48, "VkSubmitInfo.pCommandBuffers offset");
-_Static_assert(offsetof(VkSubmitInfoL, pSignalSemaphores) == 64, "VkSubmitInfo.pSignalSemaphores offset");
-
-// VkTimelineSemaphoreSubmitInfo -- header :6665, chained onto the translated VkSubmitInfo.
-typedef struct { uint32_t sType; const void* pNext; uint32_t waitSemaphoreValueCount;
-                 const uint64_t* pWaitSemaphoreValues; uint32_t signalSemaphoreValueCount;
-                 const uint64_t* pSignalSemaphoreValues; } VkTimelineSemSubmitInfoL;
-_Static_assert(sizeof(VkTimelineSemSubmitInfoL) == 48,
-               "VkTimelineSemaphoreSubmitInfo must be 48 bytes on LP64");
-_Static_assert(offsetof(VkTimelineSemSubmitInfoL, pWaitSemaphoreValues) == 24,
-               "VkTimelineSemaphoreSubmitInfo.pWaitSemaphoreValues offset");
-
-// VkSemaphoreSignalInfo -- header :6683, used by F50 host-side timeline signaling.
-// sType@0 pNext@8 semaphore@16 value@24 (size 32; VkSemaphore is a 64-bit non-dispatchable handle).
-typedef struct { uint32_t sType; const void* pNext; uint64_t semaphore; uint64_t value; } VkSemaphoreSignalInfoL;
-_Static_assert(sizeof(VkSemaphoreSignalInfoL) == 32, "VkSemaphoreSignalInfo must be 32 bytes on LP64");
-_Static_assert(offsetof(VkSemaphoreSignalInfoL, semaphore) == 16, "VkSemaphoreSignalInfo.semaphore offset");
-_Static_assert(offsetof(VkSemaphoreSignalInfoL, value) == 24, "VkSemaphoreSignalInfo.value offset");
+/* Official core-1.0 / timeline types: VkMemoryBarrier (vulkan_core.h:3133),
+   VkBufferMemoryBarrier (:3079), VkMemoryBarrier2 (:7168), VkSubmitInfo (:3469),
+   VkTimelineSemaphoreSubmitInfo (:6602), VkSemaphoreSignalInfo (:6620). */
+typedef VkMemoryBarrier                VkMemBarrierL;
+typedef VkBufferMemoryBarrier          VkBufBarrierL;
+typedef VkMemoryBarrier2               VkMemBarrier2L;
+typedef VkSubmitInfo                   VkSubmitInfoL;
+typedef VkTimelineSemaphoreSubmitInfo  VkTimelineSemSubmitInfoL;
+typedef VkSemaphoreSignalInfo          VkSemaphoreSignalInfoL;
 
 typedef struct { uint64_t v2; uint32_t v1; } MeowFlag2To1;
 
@@ -1497,11 +1471,11 @@ static uint32_t meow_access2_to_v1(uint64_t m, int* lost) {
 
 /* Per-submit temporary storage for one translated vkQueueSubmit call. */
 typedef struct {
-    uint64_t* waitSems;
+    VkSemaphore* waitSems;
     uint32_t* waitStages;
     uint64_t* waitVals;
-    void** cmdBufs;
-    uint64_t* sigSems;
+    VkCommandBuffer* cmdBufs;
+    VkSemaphore* sigSems;
     uint64_t* sigVals;
     VkTimelineSemSubmitInfoL tsi;
     int useTsi;
@@ -1553,6 +1527,655 @@ static void meow_submit2_tr_free(MeowSubmit2Tr* st, uint32_t n) {
 // always equals `submitsIn`, and a new `diverged=` field reports any future regression. The rc=-4
 // itself is the ICD's own VK_ERROR_DEVICE_LOST on a legitimate single-entry submit; removing the
 // break does not, and is not claimed to, cure device loss.
+// F66 (shim build .43): MERGE the entries instead of splitting them.
+// WHY (on-device F65/F65b, probe cells 8/9/12/16 vs 17): this ICD accepts exactly ONE entry per
+// submission. With N entries the SECOND one dies -- rcSeq=0,-1, and the driver says
+// "Command buffer has error and cannot be executed" / "Queue submit batches fail result 3". The
+// frame content is irrelevant (an in-place clear instead of the blit fails identically, and a
+// binary-only signal fails identically). One merged entry carrying the acquire wait + every
+// command buffer + every signal passes 60/60 frames with submit/present/timeline all rc=0 and no
+// slow acquire. So F49's "N single-entry vkQueueSubmit calls" was the wrong direction for this
+// ICD: it merely moved the failure from "second entry in one call" to "second call".
+// WHAT: build ONE VkSubmitInfo holding, in original entry order, every entry's waits (with their
+// own translated stage masks and timeline values), every command buffer and every signal; chain a
+// single VkTimelineSemaphoreSubmitInfo when any entry carried a timeline wait/signal. The merged
+// wait set is a superset of each entry's own (a wait that used to order entry k now also orders
+// the earlier command buffers) -- strictly more conservative, and submission order within one
+// queue is preserved, so this is a faithful translation for a single queue.
+// MEOW_VK_SYNC2_TO_V1_MERGE=0 restores the F49 N-call split as the A/B control.
+static int meow_sync2v1_merge_decide(const char** why) {
+    const char* s = getenv("MEOW_VK_SYNC2_TO_V1_MERGE");
+    if (s != NULL && strcmp(s, "0") == 0) {
+        if (why != NULL) *why = "explicit OFF (MEOW_VK_SYNC2_TO_V1_MERGE=0): F49 N-call split";
+        return 0;
+    }
+    if (s != NULL && s[0] == '1') {
+        if (why != NULL) *why = "explicit ON (MEOW_VK_SYNC2_TO_V1_MERGE=1)";
+        return 1;
+    }
+    if (why != NULL) *why = g_hooks ? "default ON (F66: this ICD accepts exactly one entry)"
+                                    : "default OFF (hooks off)";
+    return g_hooks ? 1 : 0;
+}
+
+// =====================================================================================
+// F69 (shim build 2026-09-18.45 timeline-as-fence): translate MC's TIMELINE semaphore
+// completion to a REAL VkFence -- never a host-side forge.
+//
+// WHY: on-device F66 evidence (see stuffs/research/vulkan/fixes/F50-host-timeline-signal.md:18)
+// is that this ICD accepts the merged v1 submit (rc=0) but never advances the timeline counter
+// from the GPU side, so MC's vkWaitSemaphores on its own timeline returns -4 (DEVICE_LOST) /
+// rc=2 (TIMEOUT). F50's host-side vkSignalSemaphore was PROVEN harmful (F60: MC resets command
+// pools while the GPU is still running -> present never completes) and is default OFF.
+// WHAT (real GPU-completion semantics):
+//   * merged submit (F66, default ON): every timeline SIGNAL semaphore is REMOVED from the
+//     submitted pSignalSemaphores (binary ones stay). One real VkFence is created and handed to
+//     vkQueueSubmit; after rc=0 the mapping (sem, value) -> fence is recorded. A later
+//     vkWaitSemaphores / vkGetSemaphoreCounterValue is answered from that fence, i.e. from
+//     ACTUAL GPU completion.
+//   * timeline WAIT inside a submit: the host first vkWaitForFences on the mapped fence (real
+//     completion of the earlier submit) and that wait is removed from pWaitSemaphores. This
+//     serialises host vs GPU but keeps the ordering correct.
+// NO host-side advance happens here: a fence signals only when the GPU is done.
+// Bounded: <=64 timeline semaphores x <=64 (value,fence) each; the oldest is evicted and its
+// fence destroyed with a rate-limited log. Single render thread (same assumption as
+// g_meow_last_queue), so the table is deliberately lock-free.
+// MEOW_VK_TIMELINE_AS_FENCE: 0 = off (EXACTLY today's behaviour), 1 = on, unset = follows g_hooks.
+// Only the F66 merged path is translated; the non-merge F49 path is left untouched.
+// =====================================================================================
+#define MEOW_F69_MAX_SEMS 64
+#define MEOW_F69_MAX_ENTRIES 64
+
+typedef struct { uint64_t value; uint64_t fence; } MeowF69Map;
+typedef struct { uint64_t sem; uint32_t count; MeowF69Map map[MEOW_F69_MAX_ENTRIES]; } MeowF69SemSlot;
+typedef struct { uint64_t sem; uint64_t value; } MeowF69Pair;
+
+static MeowF69SemSlot g_f69_sems[MEOW_F69_MAX_SEMS];
+static unsigned long g_f69_evicts;
+
+static int meow_f69_decide(const char** why) {
+    const char* s = getenv("MEOW_VK_TIMELINE_AS_FENCE");
+    if (s != NULL && strcmp(s, "0") == 0) {
+        if (why != NULL) *why = "explicit OFF (MEOW_VK_TIMELINE_AS_FENCE=0)";
+        return 0;
+    }
+    if (s != NULL && s[0] == '1') {
+        if (why != NULL) *why = "explicit ON (MEOW_VK_TIMELINE_AS_FENCE=1)";
+        return 1;
+    }
+    if (why != NULL) *why = g_hooks ? "default ON (hooks on, env unset)" : "default OFF (hooks off, env unset)";
+    return g_hooks ? 1 : 0;
+}
+static int meow_f69_on(void) { return meow_f69_decide(NULL); }
+
+typedef int  (*MeowF69PFN_createFence)(void*, const void*, const void*, void**);
+typedef void (*MeowF69PFN_destroyFence)(void*, uint64_t, const void*);
+typedef int  (*MeowF69PFN_waitForFences)(void*, uint32_t, const uint64_t*, uint32_t, uint64_t);
+typedef int  (*MeowF69PFN_getFenceStatus)(void*, uint64_t);
+
+static MeowF69PFN_createFence meow_f69_createFence(void) {
+    return (MeowF69PFN_createFence)(g_gdpa ? g_gdpa(g_dev_seen, "vkCreateFence") : NULL);
+}
+static MeowF69PFN_waitForFences meow_f69_waitForFences(void) {
+    return (MeowF69PFN_waitForFences)(g_gdpa ? g_gdpa(g_dev_seen, "vkWaitForFences") : NULL);
+}
+static MeowF69PFN_getFenceStatus meow_f69_getFenceStatus(void) {
+    return (MeowF69PFN_getFenceStatus)(g_gdpa ? g_gdpa(g_dev_seen, "vkGetFenceStatus") : NULL);
+}
+static void meow_f69_destroyFence(uint64_t fence) {
+    if (fence == 0) return;
+    MeowF69PFN_destroyFence df =
+        (MeowF69PFN_destroyFence)(g_gdpa ? g_gdpa(g_dev_seen, "vkDestroyFence") : NULL);
+    if (df != NULL) df(g_dev_seen, fence, NULL);
+}
+
+static int meow_f69_find_sem(uint64_t sem) {
+    for (int i = 0; i < MEOW_F69_MAX_SEMS; i++) {
+        if (g_f69_sems[i].sem == sem) return i;
+    }
+    return -1;
+}
+static int meow_f69_is_timeline(uint64_t sem) { return meow_f69_find_sem(sem) >= 0; }
+
+static void meow_f69_register_sem(uint64_t sem) {
+    if (sem == 0 || meow_f69_find_sem(sem) >= 0) return;
+    for (int i = 0; i < MEOW_F69_MAX_SEMS; i++) {
+        if (g_f69_sems[i].sem == 0) {
+            memset(&g_f69_sems[i], 0, sizeof(g_f69_sems[i]));
+            g_f69_sems[i].sem = sem;
+            MEOWLOGI("meowvulkan: F69 timeline sem registered sem=0x%{public}llx slot=%{public}d",
+                     (unsigned long long)sem, i);
+            return;
+        }
+    }
+    MEOWLOGW("meowvulkan: F69 timeline sem table full (%{public}d); sem=0x%{public}llx untracked",
+             MEOW_F69_MAX_SEMS, (unsigned long long)sem);
+}
+
+static void meow_f69_add_entry(uint64_t sem, uint64_t value, uint64_t fence) {
+    int si = meow_f69_find_sem(sem);
+    if (si < 0 || fence == 0) return;
+    MeowF69SemSlot* s = &g_f69_sems[si];
+    if (s->count >= MEOW_F69_MAX_ENTRIES) {
+        uint64_t victim = s->map[0].fence;
+        memmove(&s->map[0], &s->map[1], (MEOW_F69_MAX_ENTRIES - 1) * sizeof(MeowF69Map));
+        s->count = MEOW_F69_MAX_ENTRIES - 1;
+        meow_f69_destroyFence(victim);
+        unsigned long n = ++g_f69_evicts;
+        if (n <= 8 || (n % 256) == 0)
+            MEOWLOGW("meowvulkan: F69 map full sem=0x%{public}llx; evicted oldest fence=0x%{public}llx (evict#%{public}lu)",
+                     (unsigned long long)sem, (unsigned long long)victim, n);
+    }
+    s->map[s->count].value = value;
+    s->map[s->count].fence = fence;
+    s->count++;
+}
+
+// Smallest mapped value >= the requested value: waiting for it proves the counter reached it.
+static uint64_t meow_f69_wait_fence_for(uint64_t sem, uint64_t value) {
+    int si = meow_f69_find_sem(sem);
+    if (si < 0) return 0;
+    MeowF69SemSlot* s = &g_f69_sems[si];
+    uint64_t best = 0, bestVal = 0;
+    for (uint32_t i = 0; i < s->count; i++) {
+        if (s->map[i].fence != 0 && s->map[i].value >= value) {
+            if (best == 0 || s->map[i].value < bestVal) { best = s->map[i].fence; bestVal = s->map[i].value; }
+        }
+    }
+    return best;
+}
+
+// Largest mapped value whose fence is already signaled (the completed counter value).
+static uint64_t meow_f69_signaled_value(uint64_t sem) {
+    int si = meow_f69_find_sem(sem);
+    if (si < 0) return 0;
+    MeowF69SemSlot* s = &g_f69_sems[si];
+    MeowF69PFN_getFenceStatus gfs = meow_f69_getFenceStatus();
+    uint64_t best = 0;
+    if (gfs == NULL) return 0;
+    for (uint32_t i = 0; i < s->count; i++) {
+        if (s->map[i].fence != 0 && gfs(g_dev_seen, s->map[i].fence) == VK_SUCCESS) {
+            if (s->map[i].value > best) best = s->map[i].value;
+        }
+    }
+    return best;
+}
+
+static void meow_f69_forget_sem(uint64_t sem) {
+    int si = meow_f69_find_sem(sem);
+    if (si < 0) return;
+    MeowF69SemSlot* s = &g_f69_sems[si];
+    uint32_t n = s->count;
+    for (uint32_t i = 0; i < s->count; i++) meow_f69_destroyFence(s->map[i].fence);
+    memset(s, 0, sizeof(*s));
+    MEOWLOGI("meowvulkan: F69 timeline sem destroyed sem=0x%{public}llx fences=%{public}u",
+             (unsigned long long)sem, n);
+}
+
+static void meow_f69_forget_all(void) {
+    for (int i = 0; i < MEOW_F69_MAX_SEMS; i++) {
+        if (g_f69_sems[i].sem != 0) meow_f69_forget_sem(g_f69_sems[i].sem);
+    }
+}
+
+// F69: a semaphore is a timeline semaphore iff its create-info pNext chain carries a
+// VkSemaphoreTypeCreateInfo with semaphoreType == VK_SEMAPHORE_TYPE_TIMELINE.
+static int meow_f69_createinfo_is_timeline(const void* ci) {
+    const VkSemaphoreCreateInfo* sc = (const VkSemaphoreCreateInfo*)ci;
+    const VkBaseInStructure* p = (sc != NULL) ? (const VkBaseInStructure*)sc->pNext : NULL;
+    while (p != NULL) {
+        if ((uint32_t)p->sType == (uint32_t)VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO) {
+            const VkSemaphoreTypeCreateInfo* st = (const VkSemaphoreTypeCreateInfo*)p;
+            return (st->semaphoreType == VK_SEMAPHORE_TYPE_TIMELINE) ? 1 : 0;
+        }
+        p = p->pNext;
+    }
+    return 0;
+}
+
+// =====================================================================================
+// F72 (shim build 2026-09-18.49 push-as-set): emulate vkCmdPushDescriptorSet(KHR) with an
+// ORDINARY VkDescriptorSet.
+//
+// WHY: F68 cleared the two push-descriptor calls by DROPPING them, and the frame then still failed
+// the same way (device lost) -- but MC only ever binds descriptors through push, so dropping them
+// meant the draws ran with NO descriptors, i.e. a different fault, not a cleared suspect. F71
+// falsified the divisor hypothesis (plain pipelines=1 withDivisorState=0 maxDivisor=0). The
+// campaign's standing blocker is exactly "vkCmdPushDescriptorSet consumed by a real pipeline =>
+// device lost". The designed remedy (proven end-to-end in native C on this device: pool -> set ->
+// vkUpdateDescriptorSets -> vkCmdBindDescriptorSets) is to RECORD the same content through the
+// ordinary descriptor path instead of the broken push path.
+//
+// WHAT (all host-side, never a lie about the command stream's semantics):
+//   * vkCreatePipelineLayout is captured into a bounded table so (layout, set) -> its
+//     VkDescriptorSetLayout is known. A missing entry is NOT guessed: the real push is forwarded.
+//   * a push is turned into: vkAllocateDescriptorSets(pool) + copy the writes with dstSet set +
+//     vkUpdateDescriptorSets + vkCmdBindDescriptorSets(firstSet=set, count=1, dynamicOffset 0).
+//   * pools: 8 rotating VkDescriptorPool, each with a generous fixed ceiling (256 sets x 16 of
+//     every core descriptor type -- MC's write types/counts cannot be predicted). A pool is only
+//     reset/reused after the fence of the submit that used it has SIGNALED (F69 helpers:
+//     meow_f69_createFence / meow_f69_getFenceStatus / meow_f69_destroyFence).
+//   * every failure (layout not captured, no free pool, allocate failed, missing forward) degrades
+//     to forwarding the ORIGINAL push with a rate-limited WARN -- no guessing, no silent drop.
+// MEOW_VK_PUSH_AS_SET: 0 = off (EXACTLY today's behaviour), 1 = on, unset = follows g_hooks.
+// =====================================================================================
+#define MEOW_F72_NPOOLS   8
+#define MEOW_F72_MAXSETS  256
+#define MEOW_F72_PER_TYPE 16
+#define MEOW_F72_LAYOUTS  256
+
+static int meow_f72_decide(const char** why) {
+    const char* s = getenv("MEOW_VK_PUSH_AS_SET");
+    if (s != NULL && strcmp(s, "0") == 0) {
+        if (why != NULL) *why = "explicit OFF (env=0)";
+        return 0;
+    }
+    if (s != NULL && s[0] == '1') {
+        if (why != NULL) *why = "explicit ON (env=1)";
+        return 1;
+    }
+    if (why != NULL) *why = g_hooks ? "default ON (hooks on, env unset)" : "default OFF (hooks off, env unset)";
+    return g_hooks ? 1 : 0;
+}
+static int meow_f72_on(void) { return meow_f72_decide(NULL); }
+
+// Rate-limited reporter (same policy as meow_log_drop, F55/F56 project rule): the first 4 failures
+// are named, then one running total every 4000; MEOW_VK_VERBOSE=1 restores every call.
+static unsigned long g_f72_fallbacks;
+static void meow_f72_warn(const char* what, unsigned long a, unsigned long b) {
+    unsigned long n = ++g_f72_fallbacks;
+    if (meow_vk_verbose() || n <= 4ul) {
+        MEOWLOGW("meowvulkan: F72b push forwarded(reason=%{public}s a=%{public}lu b=%{public}lu) -- #%{public}lu",
+                 what, a, b, n);
+    } else if ((n % 4000ul) == 0ul) {
+        MEOWLOGW("meowvulkan: F72 push-as-set fallbacks so far: %{public}lu (rate-limited; "
+                 "MEOW_VK_VERBOSE=1 shows every call)", n);
+    }
+}
+
+static PFN_vkVoidFunctionLocal meow_f72_real(const char* name) {
+    return g_gdpa ? g_gdpa(g_dev_seen, name) : NULL;
+}
+
+// ---------------------------------------------------------------- (layout, set) -> setLayout
+typedef struct { uint64_t layout; uint32_t count; VkDescriptorSetLayout* sets; } MeowF72LayoutSlot;
+static MeowF72LayoutSlot g_f72_layouts[MEOW_F72_LAYOUTS];
+static unsigned long g_f72_layout_evicts;
+
+static void meow_f72_capture_layout(const void* ci, void* layout) {
+    if (!meow_f72_on() || ci == NULL || layout == NULL) return;
+    const VkPipelineLayoutCreateInfo* pci = (const VkPipelineLayoutCreateInfo*)ci;
+    uint32_t n = pci->setLayoutCount;
+    if (n > 0 && pci->pSetLayouts == NULL) return;
+    uint64_t key = (uint64_t)(uintptr_t)layout;
+    for (int i = 0; i < MEOW_F72_LAYOUTS; i++) {
+        if (g_f72_layouts[i].layout == key) return;   // already captured
+    }
+    int slot = -1;
+    for (int i = 0; i < MEOW_F72_LAYOUTS; i++) {
+        if (g_f72_layouts[i].layout == 0) { slot = i; break; }
+    }
+    if (slot < 0) {
+        // Bounded table: drop the oldest (slot 0) and append at the end. Rare; rate-limited.
+        free(g_f72_layouts[0].sets);
+        memmove(&g_f72_layouts[0], &g_f72_layouts[1], (MEOW_F72_LAYOUTS - 1) * sizeof(MeowF72LayoutSlot));
+        memset(&g_f72_layouts[MEOW_F72_LAYOUTS - 1], 0, sizeof(MeowF72LayoutSlot));
+        slot = MEOW_F72_LAYOUTS - 1;
+        unsigned long e = ++g_f72_layout_evicts;
+        if (e <= 4ul || (e % 256ul) == 0ul)
+            MEOWLOGW("meowvulkan: F72 pipeline-layout table full (%{public}d); evicted oldest (evict#%{public}lu)",
+                     MEOW_F72_LAYOUTS, e);
+    }
+    VkDescriptorSetLayout* copy = NULL;
+    if (n > 0) {
+        copy = (VkDescriptorSetLayout*)calloc(n, sizeof(VkDescriptorSetLayout));
+        if (copy == NULL) { meow_f72_warn("oom-layout-copy", n, 0); return; }
+        for (uint32_t i = 0; i < n; i++) copy[i] = pci->pSetLayouts[i];
+    }
+    g_f72_layouts[slot].layout = key;
+    g_f72_layouts[slot].count = n;
+    g_f72_layouts[slot].sets = copy;
+    MEOWLOGI("meowvulkan: F72 pipelineLayout captured layout=0x%{public}llx setLayouts=%{public}u slot=%{public}d",
+             (unsigned long long)key, n, slot);
+}
+
+static VkDescriptorSetLayout meow_f72_lookup_dsl(void* layout, uint32_t set) {
+    uint64_t key = (uint64_t)(uintptr_t)layout;
+    for (int i = 0; i < MEOW_F72_LAYOUTS; i++) {
+        if (g_f72_layouts[i].layout == key) {
+            if (set < g_f72_layouts[i].count && g_f72_layouts[i].sets != NULL)
+                return g_f72_layouts[i].sets[set];
+            return VK_NULL_HANDLE;
+        }
+    }
+    return VK_NULL_HANDLE;
+}
+
+// ------------------------------------------------- vkCreateDescriptorSetLayout capture + mirror
+// F72b (build .50): MC only uses push descriptors, so its VkDescriptorSetLayouts very likely carry
+// VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR -- and by spec such a layout CANNOT be used
+// with vkAllocateDescriptorSets. Emulating with the original layout would then fail on (almost) every
+// push and silently degrade to forwarding. Fix: capture each set layout's create-info and build a
+// MIRROR layout with the SAME bindings / immutable samplers but WITHOUT the push bit; allocate from
+// the mirror and bind with the ORIGINAL pipeline layout (the push bit does not participate in
+// set-layout compatibility). Mirror creation failure => that layout is not simulatable => push
+// forwards. Mirrors are destroyed on vkDestroyDescriptorSetLayout / vkDestroyDevice.
+#define MEOW_F72_DSL_MAX 256
+typedef struct {
+    uint64_t orig;
+    VkDescriptorSetLayout mirror;   // == orig when the push bit is absent; 0 = not simulatable
+    uint32_t flags;
+    uint32_t bindings;
+    int ownsMirror;
+    int pushBit;
+} MeowF72DslSlot;
+static MeowF72DslSlot g_f72_dsl[MEOW_F72_DSL_MAX];
+static unsigned long g_f72_dsl_evicts, g_f72_dsl_logged;
+
+static MeowF72DslSlot* meow_f72_dsl_find(uint64_t key) {
+    for (int i = 0; i < MEOW_F72_DSL_MAX; i++) {
+        if (g_f72_dsl[i].orig == key) return &g_f72_dsl[i];
+    }
+    return NULL;
+}
+
+static void meow_f72_dsl_log(const MeowF72DslSlot* s, int slot) {
+    unsigned long n = ++g_f72_dsl_logged;
+    if (meow_vk_verbose() || n <= 16ul || (n % 64ul) == 0ul)
+        MEOWLOGI("meowvulkan: F72b setLayout #%{public}lu flags=0x%{public}x pushBit=%{public}d bindings=%{public}u "
+                 "slot=%{public}d mirror=%{public}s", n, s->flags, s->pushBit, s->bindings, slot,
+                 (s->mirror != 0) ? (s->ownsMirror ? "created" : "identity") : "FAILED");
+}
+
+static void meow_f72_capture_dsl(const void* ci, void* orig) {
+    if (!meow_f72_on() || ci == NULL || orig == NULL) return;
+    uint64_t key = (uint64_t)(uintptr_t)orig;
+    if (meow_f72_dsl_find(key) != NULL) return;
+    const VkDescriptorSetLayoutCreateInfo* pci = (const VkDescriptorSetLayoutCreateInfo*)ci;
+    int slot = -1;
+    for (int i = 0; i < MEOW_F72_DSL_MAX; i++) {
+        if (g_f72_dsl[i].orig == 0) { slot = i; break; }
+    }
+    if (slot < 0) {
+        // Evict oldest; destroy its mirror when we own it.
+        MeowF72DslSlot* old = &g_f72_dsl[0];
+        if (old->ownsMirror && old->mirror != 0) {
+            void (*dl)(void*, void*, const void*) =
+                (void (*)(void*, void*, const void*))meow_f72_real("vkDestroyDescriptorSetLayout");
+            if (dl != NULL) dl(g_dev_seen, old->mirror, NULL);
+        }
+        memmove(&g_f72_dsl[0], &g_f72_dsl[1], (MEOW_F72_DSL_MAX - 1) * sizeof(MeowF72DslSlot));
+        memset(&g_f72_dsl[MEOW_F72_DSL_MAX - 1], 0, sizeof(MeowF72DslSlot));
+        slot = MEOW_F72_DSL_MAX - 1;
+        unsigned long e = ++g_f72_dsl_evicts;
+        if (e <= 4ul || (e % 256ul) == 0ul)
+            MEOWLOGW("meowvulkan: F72b mirror table full (%{public}d); evicted oldest (evict#%{public}lu)",
+                     MEOW_F72_DSL_MAX, e);
+    }
+    MeowF72DslSlot* s = &g_f72_dsl[slot];
+    s->orig = key;
+    s->flags = pci->flags;
+    s->bindings = pci->bindingCount;
+    s->pushBit = (pci->flags & (uint32_t)VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR) ? 1 : 0;
+    s->mirror = 0;
+    s->ownsMirror = 0;
+    if (!s->pushBit) {
+        s->mirror = (VkDescriptorSetLayout)orig;   // already allocatable: no mirror object needed
+    } else {
+        typedef int (*PFN_createDsl)(void*, const void*, const void*, void**);
+        PFN_createDsl cd = (PFN_createDsl)meow_f72_real("vkCreateDescriptorSetLayout");
+        if (cd != NULL) {
+            VkDescriptorSetLayoutCreateInfo mci = *pci;
+            mci.flags = pci->flags & ~((uint32_t)VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR);
+            VkDescriptorSetLayout mirror = VK_NULL_HANDLE;
+            int mrc = cd(g_dev_seen, &mci, NULL, (void**)&mirror);
+            if (mrc == 0 && mirror != VK_NULL_HANDLE) {
+                s->mirror = mirror;
+                s->ownsMirror = 1;
+            } else {
+                MEOWLOGW("meowvulkan: F72b mirror vkCreateDescriptorSetLayout failed rc=%{public}d", mrc);
+            }
+        } else {
+            MEOWLOGW("meowvulkan: F72b cannot resolve vkCreateDescriptorSetLayout for the mirror");
+        }
+    }
+    meow_f72_dsl_log(s, slot);
+}
+
+static VkDescriptorSetLayout meow_f72_mirror_of(VkDescriptorSetLayout dsl) {
+    if (dsl == VK_NULL_HANDLE) return VK_NULL_HANDLE;
+    MeowF72DslSlot* s = meow_f72_dsl_find((uint64_t)(uintptr_t)dsl);
+    if (s == NULL) return VK_NULL_HANDLE;
+    return s->mirror;
+}
+
+static void meow_f72_forget_dsl(uint64_t key) {
+    MeowF72DslSlot* s = meow_f72_dsl_find(key);
+    if (s == NULL) return;
+    if (s->ownsMirror && s->mirror != 0) {
+        void (*dl)(void*, void*, const void*) =
+            (void (*)(void*, void*, const void*))meow_f72_real("vkDestroyDescriptorSetLayout");
+        if (dl != NULL) dl(g_dev_seen, s->mirror, NULL);
+    }
+    memset(s, 0, sizeof(*s));
+}
+
+// ------------------------------------------------------------------ rotating descriptor pools
+typedef struct {
+    VkDescriptorPool pool;
+    VkFence fence;     // fence covering the submit that last used this pool (0 = unknown)
+    int ownsFence;     // 1 = this shim created it (destroy on reuse/teardown)
+    int pending;       // 1 = a submit using this pool has not been confirmed complete
+} MeowF72Pool;
+static MeowF72Pool g_f72_pools[MEOW_F72_NPOOLS];
+static int g_f72_active = -1;                 // pool used for the frame being recorded; -1 = none
+static unsigned long g_f72_emulated;
+
+static VkDescriptorPool meow_f72_create_pool(void) {
+    int (*create)(void*, const void*, const void*, void**) =
+        (int (*)(void*, const void*, const void*, void**))meow_f72_real("vkCreateDescriptorPool");
+    if (create == NULL) return VK_NULL_HANDLE;
+    static const VkDescriptorType kTypes[] = {
+        VK_DESCRIPTOR_TYPE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+        VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+    };
+    const uint32_t nt = (uint32_t)(sizeof(kTypes) / sizeof(kTypes[0]));
+    VkDescriptorPoolSize sizes[sizeof(kTypes) / sizeof(kTypes[0])];
+    for (uint32_t i = 0; i < nt; i++) {
+        sizes[i].type = kTypes[i];
+        sizes[i].descriptorCount = (uint32_t)MEOW_F72_MAXSETS * (uint32_t)MEOW_F72_PER_TYPE;
+    }
+    VkDescriptorPoolCreateInfo pci;
+    memset(&pci, 0, sizeof(pci));
+    pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pci.pNext = NULL;
+    pci.flags = 0;
+    pci.maxSets = (uint32_t)MEOW_F72_MAXSETS;
+    pci.poolSizeCount = nt;
+    pci.pPoolSizes = sizes;
+    VkDescriptorPool p = VK_NULL_HANDLE;
+    int rc = create(g_dev_seen, &pci, NULL, (void**)&p);
+    if (rc != 0 || p == VK_NULL_HANDLE) {
+        MEOWLOGW("meowvulkan: F72 vkCreateDescriptorPool failed rc=%{public}d", rc);
+        return VK_NULL_HANDLE;
+    }
+    return p;
+}
+
+static VkFence meow_f72_track_fence_create(void) {
+    MeowF69PFN_createFence cf = meow_f69_createFence();
+    if (cf == NULL) return VK_NULL_HANDLE;
+    VkFenceCreateInfo fci;
+    memset(&fci, 0, sizeof(fci));
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fci.pNext = NULL;
+    fci.flags = 0;
+    VkFence f = VK_NULL_HANDLE;
+    if (cf(g_dev_seen, &fci, NULL, (void**)&f) != 0) return VK_NULL_HANDLE;
+    return f;
+}
+
+static int meow_f72_reset_pool(int i) {
+    int (*reset)(void*, void*, uint32_t) =
+        (int (*)(void*, void*, uint32_t))meow_f72_real("vkResetDescriptorPool");
+    if (reset == NULL) { meow_f72_warn("no-vkResetDescriptorPool", (unsigned long)i, 0); return -1; }
+    int rc = reset(g_dev_seen, g_f72_pools[i].pool, 0);
+    if (rc != 0) { meow_f72_warn("reset-pool-rc", (unsigned long)rc, (unsigned long)i); return -1; }
+    if (g_f72_pools[i].ownsFence) meow_f69_destroyFence((uint64_t)g_f72_pools[i].fence);
+    g_f72_pools[i].fence = 0;
+    g_f72_pools[i].ownsFence = 0;
+    g_f72_pools[i].pending = 0;
+    return 0;
+}
+
+// A pool may be reset only once the fence of its last submit has signaled. A pending pool with no
+// fence is deliberately NOT reusable (we cannot prove the GPU is done).
+static int meow_f72_pool_free(int i) {
+    MeowF72Pool* p = &g_f72_pools[i];
+    if (!p->pending) return 1;
+    if (p->fence == 0) return 0;
+    MeowF69PFN_getFenceStatus gfs = meow_f69_getFenceStatus();
+    if (gfs == NULL) return 0;
+    return (gfs(g_dev_seen, (uint64_t)p->fence) == VK_SUCCESS) ? 1 : 0;
+}
+
+static int meow_f72_ensure_active(void) {
+    if (g_f72_active >= 0 && g_f72_pools[g_f72_active].pool != VK_NULL_HANDLE) return g_f72_active;
+    static int nextScan = 0;
+    for (int k = 0; k < MEOW_F72_NPOOLS; k++) {
+        int i = nextScan;
+        nextScan = (nextScan + 1) % MEOW_F72_NPOOLS;
+        if (!meow_f72_pool_free(i)) continue;
+        if (g_f72_pools[i].pool == VK_NULL_HANDLE) {
+            g_f72_pools[i].pool = meow_f72_create_pool();
+            if (g_f72_pools[i].pool == VK_NULL_HANDLE) { meow_f72_warn("create-pool", (unsigned long)i, 0); return -1; }
+        } else if (meow_f72_reset_pool(i) != 0) {
+            continue;
+        }
+        g_f72_pools[i].pending = 0;
+        g_f72_active = i;
+        return i;
+    }
+    meow_f72_warn("no-free-pool", 0, 0);
+    return -1;
+}
+
+// Called at the submit point (F66 merged path, and the v1 wrapper for completeness). Associates the
+// pool used for the frame just submitted with the fence that covers that submit, then closes the
+// frame so the next allocation picks a fresh, fence-confirmed pool.
+static void meow_f72_bind_submit(VkFence submitFence, int ownsFence, int ok) {
+    if (!meow_f72_on()) return;
+    if (g_f72_active >= 0) {
+        MeowF72Pool* p = &g_f72_pools[g_f72_active];
+        if (ok) {
+            p->fence = submitFence;
+            p->ownsFence = ownsFence;
+            p->pending = 1;
+        } else if (ownsFence && submitFence != 0) {
+            meow_f69_destroyFence((uint64_t)submitFence);   // rejected submit: not in flight
+        }
+    } else if (ownsFence && submitFence != 0) {
+        meow_f69_destroyFence((uint64_t)submitFence);
+    }
+    g_f72_active = -1;
+}
+
+// The emulation itself. Returns 1 when the push was fully recorded via the ordinary set path, 0 when
+// the caller must forward the original push (every 0 carries a rate-limited WARN).
+static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, uint32_t set,
+                                 uint32_t n, const void* writes) {
+    if (n == 0 || writes == NULL) return 0;
+    if (n > 4096) { meow_f72_warn("too-many-writes", (unsigned long)n, (unsigned long)set); return 0; }
+    VkDescriptorSetLayout dsl = meow_f72_lookup_dsl(layout, set);
+    if (dsl == VK_NULL_HANDLE) {
+        meow_f72_warn("layout-not-captured", (unsigned long)set, 0);
+        return 0;
+    }
+    // F72b: allocate from the mirror (push bit removed); bind still uses the ORIGINAL pipeline layout.
+    VkDescriptorSetLayout allocDsl = meow_f72_mirror_of(dsl);
+    if (allocDsl == VK_NULL_HANDLE) {
+        meow_f72_warn("no-mirror-layout", (unsigned long)set, 0);
+        return 0;
+    }
+    int pi = meow_f72_ensure_active();
+    if (pi < 0) return 0;
+    int (*alloc)(void*, const void*, void**) =
+        (int (*)(void*, const void*, void**))meow_f72_real("vkAllocateDescriptorSets");
+    void (*update)(void*, uint32_t, const void*, uint32_t, const void*) =
+        (void (*)(void*, uint32_t, const void*, uint32_t, const void*))meow_f72_real("vkUpdateDescriptorSets");
+    void (*bind)(void*, uint32_t, void*, uint32_t, uint32_t, const void*, uint32_t, const void*) =
+        (void (*)(void*, uint32_t, void*, uint32_t, uint32_t, const void*, uint32_t, const void*))
+            meow_f72_real("vkCmdBindDescriptorSets");
+    if (alloc == NULL || update == NULL || bind == NULL) {
+        meow_f72_warn("missing-forward", 0, 0);
+        return 0;
+    }
+    VkDescriptorSetAllocateInfo ai;
+    memset(&ai, 0, sizeof(ai));
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.pNext = NULL;
+    ai.descriptorPool = g_f72_pools[pi].pool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &allocDsl;
+    VkDescriptorSet ds = VK_NULL_HANDLE;
+    int arc = alloc(g_dev_seen, &ai, (void**)&ds);
+    if (arc != 0 || ds == VK_NULL_HANDLE) {
+        meow_f72_warn("allocate-set-failed", (unsigned long)arc, (unsigned long)set);
+        return 0;
+    }
+    VkWriteDescriptorSet* w = (VkWriteDescriptorSet*)malloc((size_t)n * sizeof(VkWriteDescriptorSet));
+    if (w == NULL) { meow_f72_warn("oom-writes", (unsigned long)n, 0); return 0; }
+    // The push ignores dstSet, but vkUpdateDescriptorSets requires it -> copy and point every write
+    // at the set just allocated. The pointed-to image/buffer arrays are used synchronously by the
+    // update call, so no deep copy of those is needed.
+    memcpy(w, writes, (size_t)n * sizeof(VkWriteDescriptorSet));
+    for (uint32_t i = 0; i < n; i++) w[i].dstSet = ds;
+    update(g_dev_seen, n, w, 0, NULL);
+    // Push descriptors carry no dynamic offsets (pDynamicOffsets is NULL / count 0).
+    bind(cmd, bindPoint, layout, set, 1, &ds, 0, NULL);
+    free(w);
+    unsigned long e = ++g_f72_emulated;
+    if (e <= 4ul || (e % 2000ul) == 0ul)
+        MEOWLOGI("meowvulkan: F72b push emulated #%{public}lu set=%{public}u writes=%{public}u pool=%{public}d",
+                 e, set, n, pi);
+    return 1;
+}
+
+static void meow_f72_shutdown(void) {
+    for (int i = 0; i < MEOW_F72_NPOOLS; i++) {
+        if (g_f72_pools[i].pool != VK_NULL_HANDLE) {
+            void (*dp)(void*, void*, const void*) =
+                (void (*)(void*, void*, const void*))meow_f72_real("vkDestroyDescriptorPool");
+            if (dp != NULL) dp(g_dev_seen, g_f72_pools[i].pool, NULL);
+            g_f72_pools[i].pool = VK_NULL_HANDLE;
+        }
+        if (g_f72_pools[i].ownsFence) meow_f69_destroyFence((uint64_t)g_f72_pools[i].fence);
+        g_f72_pools[i].fence = 0;
+        g_f72_pools[i].ownsFence = 0;
+        g_f72_pools[i].pending = 0;
+    }
+    g_f72_active = -1;
+    for (int i = 0; i < MEOW_F72_LAYOUTS; i++) {
+        free(g_f72_layouts[i].sets);
+        g_f72_layouts[i].sets = NULL;
+        g_f72_layouts[i].layout = 0;
+        g_f72_layouts[i].count = 0;
+    }
+    // F72b: destroy every mirror set layout we created.
+    for (int i = 0; i < MEOW_F72_DSL_MAX; i++) {
+        if (g_f72_dsl[i].ownsMirror && g_f72_dsl[i].mirror != 0) {
+            void (*dl)(void*, void*, const void*) =
+                (void (*)(void*, void*, const void*))meow_f72_real("vkDestroyDescriptorSetLayout");
+            if (dl != NULL) dl(g_dev_seen, g_f72_dsl[i].mirror, NULL);
+        }
+        memset(&g_f72_dsl[i], 0, sizeof(g_f72_dsl[i]));
+    }
+}
+
 static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const void* submits,
                                         uint64_t fence) {
     int (*realSubmit)(void*, uint32_t, const void*, uint64_t) =
@@ -1612,17 +2235,17 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
         totalSignals += sc;
         MeowSubmit2Tr* e = &st[i];
         if (wc > 0) {
-            e->waitSems = (uint64_t*)calloc(wc, sizeof(uint64_t));
+            e->waitSems = (VkSemaphore*)calloc(wc, sizeof(VkSemaphore));
             e->waitStages = (uint32_t*)calloc(wc, sizeof(uint32_t));
             e->waitVals = (uint64_t*)calloc(wc, sizeof(uint64_t));
             if (e->waitSems == NULL || e->waitStages == NULL || e->waitVals == NULL) ok = 0;
         }
         if (ok && cc > 0) {
-            e->cmdBufs = (void**)calloc(cc, sizeof(void*));
+            e->cmdBufs = (VkCommandBuffer*)calloc(cc, sizeof(VkCommandBuffer));
             if (e->cmdBufs == NULL) ok = 0;
         }
         if (ok && sc > 0) {
-            e->sigSems = (uint64_t*)calloc(sc, sizeof(uint64_t));
+            e->sigSems = (VkSemaphore*)calloc(sc, sizeof(VkSemaphore));
             e->sigVals = (uint64_t*)calloc(sc, sizeof(uint64_t));
             if (e->sigSems == NULL || e->sigVals == NULL) ok = 0;
         }
@@ -1683,6 +2306,15 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
     uint32_t issued = 0, stoppedAt = 0, firstErrAt = 0;
     char rcseq[512];
     rcseq[0] = '\0';
+    // F66: merge (default) vs the F49 N-call split. `merged` records which path actually ran so
+    // the self-proof line can say so and `diverged` stays meaningful (merged=1 => not a regression).
+    const char* mergeWhy = NULL;
+    int doMerge = meow_sync2v1_merge_decide(&mergeWhy);
+    int merged = 0;
+    // F69: reported by the self-proof line below (set only on the merged path).
+    uint32_t f69SigN = 0, f69WaitN = 0;
+    int f69Active = 0, f69OwnFence = 0;
+    uint64_t f69FenceUsed = 0;
     if (ok) {
         // F49: N calls, each submitCount=1 with its own entry. The caller's fence is passed to
         // EVERY call (NOT only the last). A VkFence may be referenced by several queue submissions
@@ -1695,6 +2327,226 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
         // vkQueueSubmit, so `submits` (== issued) always equals `submitsIn`; the FIRST error is kept
         // as the returned rc. (A break here was the last path that could log submits<submitsIn; it
         // was an early stop, not a fold -- see the F51 note above the function.)
+        if (doMerge) {
+            // F66: ONE merged v1 submit. See the meow_sync2v1_merge_decide note above for the
+            // on-device evidence that this ICD rejects the second entry of a multi-entry batch.
+            VkSemaphore* mwSems = (totalWaits > 0) ? (VkSemaphore*)calloc(totalWaits, sizeof(VkSemaphore)) : NULL;
+            uint32_t* mwStages = (totalWaits > 0) ? (uint32_t*)calloc(totalWaits, sizeof(uint32_t)) : NULL;
+            uint64_t* mwVals = (totalWaits > 0) ? (uint64_t*)calloc(totalWaits, sizeof(uint64_t)) : NULL;
+            VkCommandBuffer* mCBs = (totalCmds > 0) ? (VkCommandBuffer*)calloc(totalCmds, sizeof(VkCommandBuffer)) : NULL;
+            VkSemaphore* msSems = (totalSignals > 0) ? (VkSemaphore*)calloc(totalSignals, sizeof(VkSemaphore)) : NULL;
+            uint64_t* msVals = (totalSignals > 0) ? (uint64_t*)calloc(totalSignals, sizeof(uint64_t)) : NULL;
+            const int mergeAllocOk = ((totalWaits == 0) || (mwSems != NULL && mwStages != NULL && mwVals != NULL)) &&
+                                     ((totalCmds == 0) || mCBs != NULL) &&
+                                     ((totalSignals == 0) || (msSems != NULL && msVals != NULL));
+            if (!mergeAllocOk) {
+                MEOWLOGE("meowvulkan: SYNC2->V1 merge: out of memory building the merged VkSubmitInfo");
+            } else {
+                uint32_t w = 0, c = 0, g = 0;
+                for (uint32_t i = 0; i < submitCount; i++) {
+                    const MeowSubmit2Tr* e = &st[i];
+                    for (uint32_t k = 0; k < s[i].waitSemaphoreInfoCount; k++) {
+                        mwSems[w] = e->waitSems[k];
+                        mwStages[w] = e->waitStages[k];
+                        mwVals[w] = e->waitVals[k];
+                        ++w;
+                    }
+                    for (uint32_t k = 0; k < s[i].commandBufferInfoCount; k++) {
+                        mCBs[c] = e->cmdBufs[k];
+                        ++c;
+                    }
+                    for (uint32_t k = 0; k < s[i].signalSemaphoreInfoCount; k++) {
+                        msSems[g] = e->sigSems[k];
+                        msVals[g] = e->sigVals[k];
+                        ++g;
+                    }
+                }
+                VkSubmitInfoL one;
+                MeowSubmit2Tr mtr;
+                memset(&one, 0, sizeof(one));
+                memset(&mtr, 0, sizeof(mtr));
+                one.sType = ST_SUBMIT_INFO;
+                one.waitSemaphoreCount = totalWaits;
+                one.pWaitSemaphores = (totalWaits > 0) ? mwSems : NULL;
+                one.pWaitDstStageMask = (totalWaits > 0) ? mwStages : NULL;
+                one.commandBufferCount = totalCmds;
+                one.pCommandBuffers = (totalCmds > 0) ? mCBs : NULL;
+                one.signalSemaphoreCount = totalSignals;
+                one.pSignalSemaphores = (totalSignals > 0) ? msSems : NULL;
+                if (timelineChains > 0) {
+                    mtr.tsi.sType = ST_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+                    mtr.tsi.pNext = NULL;   /* never forward a synchronization2 pNext chain into v1 */
+                    mtr.tsi.waitSemaphoreValueCount = totalWaits;
+                    mtr.tsi.pWaitSemaphoreValues = (totalWaits > 0) ? mwVals : NULL;
+                    mtr.tsi.signalSemaphoreValueCount = totalSignals;
+                    mtr.tsi.pSignalSemaphoreValues = (totalSignals > 0) ? msVals : NULL;
+                    one.pNext = &mtr.tsi;
+                }
+                // ------------------------------------------------------------------ F69
+                // Real GPU-completion semantics: strip the timeline SIGNAL semaphores and cover
+                // them with one real VkFence handed to vkQueueSubmit; satisfy any timeline WAIT
+                // from an already-mapped fence on the HOST first. See the F69 block above.
+                MeowF69Pair* f69Pairs = NULL;
+                {
+                    const char* f69Why = NULL;
+                    int f69 = meow_f69_decide(&f69Why);
+                    f69FenceUsed = fence;
+                    if (f69) {
+                        // (1) timeline WAITS: real host wait, then drop from the submit.
+                        MeowF69PFN_waitForFences wff = meow_f69_waitForFences();
+                        if (wff != NULL) {
+                            uint32_t dst = 0;
+                            for (uint32_t k = 0; k < totalWaits; k++) {
+                                uint64_t ws = (uint64_t)(uintptr_t)mwSems[k];
+                                if (mwVals[k] != 0 && meow_f69_is_timeline(ws)) {
+                                    uint64_t wf = meow_f69_wait_fence_for(ws, mwVals[k]);
+                                    if (wf != 0) {
+                                        int wrc = wff(g_dev_seen, 1, &wf, VK_TRUE, UINT64_MAX);
+                                        if (wrc == VK_SUCCESS) {
+                                            ++f69WaitN;
+                                            if (f69WaitN <= 8)
+                                                MEOWLOGI("meowvulkan: F69 wait->fence sem=0x%{public}llx "
+                                                         "value=%{public}llu fence=0x%{public}llx rc=0 -- removed "
+                                                         "from submit",
+                                                         (unsigned long long)ws, (unsigned long long)mwVals[k],
+                                                         (unsigned long long)wf);
+                                            continue;   /* satisfied on host; do not ask the GPU */
+                                        }
+                                        MEOWLOGW("meowvulkan: F69 vkWaitForFences rc=%{public}d sem=0x%{public}llx "
+                                                 "value=%{public}llu -- leaving the wait to the GPU", wrc,
+                                                 (unsigned long long)ws, (unsigned long long)mwVals[k]);
+                                    }
+                                }
+                                mwSems[dst] = mwSems[k];
+                                mwStages[dst] = mwStages[k];
+                                mwVals[dst] = mwVals[k];
+                                ++dst;
+                            }
+                            totalWaits = dst;
+                        } else {
+                            MEOWLOGW("meowvulkan: F69 vkWaitForFences unresolved; timeline waits left to the GPU");
+                        }
+                        // (2) timeline SIGNALS: strip and cover with one real fence.
+                        uint32_t tlSignals = 0;
+                        for (uint32_t k = 0; k < totalSignals; k++) {
+                            if (msVals[k] != 0 && meow_f69_is_timeline((uint64_t)(uintptr_t)msSems[k])) ++tlSignals;
+                        }
+                        if (tlSignals > 0) {
+                            if (fence != 0) {
+                                MEOWLOGW("meowvulkan: F69 caller supplied fence=0x%{public}llx; NOT translating "
+                                         "timeline signals (behaviour preserved)", (unsigned long long)fence);
+                            } else {
+                                MeowF69PFN_createFence cf = meow_f69_createFence();
+                                VkFence nf = 0;
+                                int crc = -3;
+                                if (cf != NULL) {
+                                    VkFenceCreateInfo fci;
+                                    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+                                    fci.pNext = NULL;
+                                    fci.flags = 0;
+                                    crc = cf(g_dev_seen, &fci, NULL, (void**)&nf);
+                                }
+                                if (crc != 0 || nf == 0) {
+                                    MEOWLOGW("meowvulkan: F69 vkCreateFence failed rc=%{public}d; keeping today's "
+                                             "behaviour (timeline signals untouched)", crc);
+                                } else if ((f69Pairs = (MeowF69Pair*)calloc(totalSignals, sizeof(MeowF69Pair))) == NULL) {
+                                    meow_f69_destroyFence((uint64_t)nf);
+                                    MEOWLOGW("meowvulkan: F69 out of memory for signal pairs; timeline untouched");
+                                } else {
+                                    f69FenceUsed = (uint64_t)nf;
+                                    f69OwnFence = 1;
+                                    uint32_t dst = 0;
+                                    for (uint32_t k = 0; k < totalSignals; k++) {
+                                        if (msVals[k] != 0 && meow_f69_is_timeline((uint64_t)(uintptr_t)msSems[k])) {
+                                            f69Pairs[f69SigN].sem = (uint64_t)(uintptr_t)msSems[k];
+                                            f69Pairs[f69SigN].value = msVals[k];
+                                            ++f69SigN;
+                                        } else {
+                                            msSems[dst] = msSems[k];
+                                            msVals[dst] = msVals[k];
+                                            ++dst;
+                                        }
+                                    }
+                                    totalSignals = dst;
+                                    f69Active = 1;
+                                    MEOWLOGI("meowvulkan: F69 timeline->fence queue=0x%{public}p fence=0x%{public}llx "
+                                             "sigN=%{public}u sigVal0=%{public}llu waitN=%{public}u why=%{public}s",
+                                             queue, (unsigned long long)f69FenceUsed, f69SigN,
+                                             (unsigned long long)((f69SigN > 0) ? f69Pairs[0].value : 0ULL),
+                                             f69WaitN, f69Why ? f69Why : "(unset)");
+                                }
+                            }
+                        }
+                    }
+                }
+                // F69: counts changed -> keep both the v1 counts and the tsi counts consistent.
+                one.waitSemaphoreCount = totalWaits;
+                one.pWaitSemaphores = (totalWaits > 0) ? mwSems : NULL;
+                one.pWaitDstStageMask = (totalWaits > 0) ? mwStages : NULL;
+                one.signalSemaphoreCount = totalSignals;
+                one.pSignalSemaphores = (totalSignals > 0) ? msSems : NULL;
+                if (timelineChains > 0) {
+                    mtr.tsi.waitSemaphoreValueCount = totalWaits;
+                    mtr.tsi.pWaitSemaphoreValues = (totalWaits > 0) ? mwVals : NULL;
+                    mtr.tsi.signalSemaphoreValueCount = totalSignals;
+                    mtr.tsi.pSignalSemaphoreValues = (totalSignals > 0) ? msVals : NULL;
+                }
+                // F72 (build .49): cover the pool that recorded this frame's push descriptors with the
+                // fence handed to this submit. If no fence exists (fence==0 and F69 did not create
+                // one), create one purely for pool lifetime tracking -- MC passed 0, so nothing it
+                // observes changes. bind_submit() closes the frame so the next allocation rotates.
+                VkFence f72Fence = (VkFence)(uintptr_t)f69FenceUsed;
+                int f72OwnFence = 0;
+                if (meow_f72_on() && g_f72_active >= 0 && f72Fence == 0) {
+                    f72Fence = meow_f72_track_fence_create();
+                    f72OwnFence = (f72Fence != 0);
+                }
+                int r = realSubmit(queue, 1, &one, (uint64_t)(uintptr_t)f72Fence);
+                meow_f72_bind_submit(f72Fence, f72OwnFence, (r == 0));
+                merged = 1;
+                rcSeq[0] = r;
+                issued = 1;
+                if (r != 0) {
+                    firstErr = r;
+                    firstErrAt = 0;
+                    stoppedAt = 0;
+                    // F69: submit rejected -> the fence is not in flight; destroy and do not map.
+                    if (f69OwnFence) {
+                        meow_f69_destroyFence(f69FenceUsed);
+                        f69OwnFence = 0;
+                        f69Active = 0;
+                    }
+                } else {
+                    stoppedAt = 1;
+                    // F69: register (timelineSem, value) -> the fence that just covered the submit.
+                    for (uint32_t k = 0; f69OwnFence && k < f69SigN; k++) {
+                        meow_f69_add_entry(f69Pairs[k].sem, f69Pairs[k].value, f69FenceUsed);
+                    }
+                    // F50: host-side advance stays available as an A/B control (default OFF). After
+                    // F69 stripped the timeline signals only the binary (value 0) ones remain here.
+                    if (hostSignal) {
+                        for (uint32_t k = 0; k < totalSignals; k++) {
+                            if (msVals[k] == 0) continue;
+                            VkSemaphoreSignalInfoL si;
+                            si.sType = ST_SEMAPHORE_SIGNAL_INFO;
+                            si.pNext = NULL;
+                            si.semaphore = msSems[k];
+                            si.value = msVals[k];
+                            int hr = realSignal(g_dev_seen, &si);
+                            hostSigRc = hr;
+                            if (hr == 0) ++hostSigN;
+                        }
+                    }
+                }
+                free(f69Pairs);
+            }
+            free(mwSems);
+            free(mwStages);
+            free(mwVals);
+            free(mCBs);
+            free(msSems);
+            free(msVals);
+        } else {
         for (uint32_t i = 0; i < submitCount; i++) {
             int r = realSubmit(queue, 1, &outs[i], fence);
             rcSeq[i] = r;
@@ -1721,18 +2573,21 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
                     if (meow_vk_verbose())
                         MEOWLOGI("meowvulkan: SYNC2->V1 hostSignal sem=0x%{public}llx value=%{public}llu "
                                  "rc=%{public}d (GPU-side signal not relied upon)",
-                                 (unsigned long long)e->sigSems[k], (unsigned long long)e->sigVals[k], hr);
+                                 (unsigned long long)(uintptr_t)e->sigSems[k], (unsigned long long)e->sigVals[k], hr);
                 }
             }
+        }
         }
         // F51: every entry was attempted, so `submits` (== issued) equals `submitsIn`; rc is the
         // first error (0 when every entry was accepted). `diverged` is the self-proof that a batch
         // of N entries really became N calls: 0 = no divergence, 1 = fewer calls were issued than
         // entries seen (a fold / early-stop regression), with the reason in divergedReason.
         rc = firstErr;
-        stoppedAt = firstErr ? firstErrAt : submitCount;
-        int diverged = (issued != submitCount) ? 1 : 0;
-        const char* divergedReason = diverged ? "issued<submitsIn (early stop/fold regression)" : "none";
+        // F66: with the merge path there is exactly ONE call by design, so it is NOT a divergence.
+        stoppedAt = merged ? (issued != 0 ? 1u : 0u) : (firstErr ? firstErrAt : submitCount);
+        int diverged = (!merged && issued != submitCount) ? 1 : 0;
+        const char* divergedReason = merged ? "merged (F66): one entry by design"
+                                            : (diverged ? "issued<submitsIn (early stop/fold regression)" : "none");
         size_t off = 0;
         for (uint32_t i = 0; i < issued && off + 8 < sizeof(rcseq); i++) {
             off += (size_t)snprintf(rcseq + off, sizeof(rcseq) - off, "%s%d", (i ? "," : ""), rcSeq[i]);
@@ -1742,10 +2597,13 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
                  "timelineChains=%{public}u foldedMaskBits=%{public}d rc=%{public}d stoppedAt=%{public}u "
                  "fence=0x%{public}llx rcSeq=%{public}s "
                  "hostSignal=%{public}d sigN=%{public}u hostSigRc=%{public}d "
-                 "diverged=%{public}d divergedReason=%{public}s",
+                 "f69=%{public}d f69SigN=%{public}u f69WaitN=%{public}u f69OwnFence=%{public}d f69Fence=0x%{public}llx "
+                 "diverged=%{public}d divergedReason=%{public}s merged=%{public}d",
                  ++g_sync2v1_submits, submitCount, issued, totalWaits, totalCmds, totalSignals,
                  timelineChains, lostBits, rc, stoppedAt, (unsigned long long)fence, rcseq,
-                 hostSignal, hostSigN, hostSigRc, diverged, divergedReason);
+                 hostSignal, hostSigN, hostSigRc,
+                 f69Active, f69SigN, f69WaitN, f69OwnFence, (unsigned long long)f69FenceUsed,
+                 diverged, divergedReason, merged);
         // F47/F48/F49/F50: compact summary of the TRANSLATED PRODUCT (counts + masks only, never a
         // pointer dump). Counts are the per-batch totals across all entry-products; waitDstMask0
         // is the first translated wait stage. arrays=heap documents the storage lifetime.
@@ -1837,7 +2695,7 @@ static int log_QueueSubmit2(void* queue, uint32_t submitCount, const void* submi
                     const VkSemaphoreSubmitInfoL* w = &s[i].pWaitSemaphoreInfos[k];
                     MEOWLOGI("meowvulkan:   submit[%{public}u] wait[%{public}u] sem=0x%{public}llx "
                              "value=%{public}llu stageMask=0x%{public}llx",
-                             i, k, (unsigned long long)w->semaphore, (unsigned long long)w->value,
+                             i, k, (unsigned long long)(uintptr_t)w->semaphore, (unsigned long long)w->value,
                              (unsigned long long)w->stageMask);
                 }
             }
@@ -1847,7 +2705,7 @@ static int log_QueueSubmit2(void* queue, uint32_t submitCount, const void* submi
                     const VkSemaphoreSubmitInfoL* g = &s[i].pSignalSemaphoreInfos[k];
                     MEOWLOGI("meowvulkan:   submit[%{public}u] signal[%{public}u] sem=0x%{public}llx "
                              "value=%{public}llu stageMask=0x%{public}llx",
-                             i, k, (unsigned long long)g->semaphore, (unsigned long long)g->value,
+                             i, k, (unsigned long long)(uintptr_t)g->semaphore, (unsigned long long)g->value,
                              (unsigned long long)g->stageMask);
                 }
             }
@@ -1881,12 +2739,42 @@ static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
     uint32_t count = (w != NULL) ? w->semaphoreCount : 0u;
     uint64_t sem0 = 0, val0 = 0;
     if (w != NULL && count > 0) {
-        if (w->pSemaphores != NULL) sem0 = w->pSemaphores[0];
+        if (w->pSemaphores != NULL) sem0 = (uint64_t)(uintptr_t)w->pSemaphores[0];
         if (w->pValues != NULL) val0 = w->pValues[0];
     }
     MEOWLOGI("meowvulkan: vkWaitSemaphores CALLED flags=0x%{public}x timeout=%{public}llu ns count=%{public}u "
              "sem0=0x%{public}llx val0=%{public}llu -- real wait if a queue is cached (else forwarding)",
              flags, (unsigned long long)timeout, count, (unsigned long long)sem0, (unsigned long long)val0);
+    // F69 (shim build .45): if EVERY semaphore in the wait is a tracked TIMELINE semaphore with a
+    // mapped fence, answer with vkWaitForFences -- a REAL GPU-completion wait, never a host forge.
+    // Mixed/partial waits are not guessed at: they fall through to the existing F60 path untouched.
+    const char* f69Why = NULL;
+    if (meow_f69_decide(&f69Why) && w != NULL && count > 0 && count <= 64 &&
+        w->pSemaphores != NULL && w->pValues != NULL) {
+        MeowF69PFN_waitForFences wff = meow_f69_waitForFences();
+        if (wff != NULL) {
+            uint64_t ff[64];
+            uint32_t nf = 0;
+            int allMapped = 1;
+            for (uint32_t i = 0; i < count; i++) {
+                uint64_t ss = (uint64_t)(uintptr_t)w->pSemaphores[i];
+                if (!meow_f69_is_timeline(ss)) { allMapped = 0; break; }
+                uint64_t ffence = meow_f69_wait_fence_for(ss, w->pValues[i]);
+                if (ffence == 0) { allMapped = 0; break; }
+                ff[nf++] = ffence;
+            }
+            if (allMapped && nf > 0) {
+                int wrc = wff(g_dev_seen, nf, ff, VK_TRUE, timeout);
+                MEOWLOGI("meowvulkan: F69 vkWaitSemaphores->vkWaitForFences count=%{public}u timeout=%{public}llu "
+                         "rc=%{public}d sem0=0x%{public}llx val0=%{public}llu flags=0x%{public}x (%{public}s)",
+                         nf, (unsigned long long)timeout, wrc, (unsigned long long)sem0,
+                         (unsigned long long)val0, flags, f69Why ? f69Why : "(unset)");
+                return wrc;
+            }
+            MEOWLOGI("meowvulkan: F69 wait not fully mapped (count=%{public}u); using the legacy wait path",
+                     count);
+        }
+    }
     // F60 (shim build .40): real wait. The ICD's timeline completion is unusable (host-forge -> early
     // pool reset -> present never completes; no forge -> TIMEOUT/device-loss). If a submit/present
     // wrapper cached a queue, drain it with vkQueueWaitIdle: success means all submitted GPU work
@@ -1933,6 +2821,17 @@ static int log_GetSemaphoreCounterValue(void* dev, uint64_t sem, uint64_t* pValu
         MEOWLOGE("meowvulkan: cannot resolve the real vkGetSemaphoreCounterValue");
         return -3;
     }
+    // F69 (shim build .45): for a tracked timeline semaphore report the LARGEST mapped value whose
+    // fence is signaled -- the completed counter value. The ICD's own query is the broken one this
+    // whole fix bypasses. Un-tracked sems fall through to the real query unchanged.
+    const char* f69Why = NULL;
+    if (meow_f69_decide(&f69Why) && meow_f69_is_timeline((uint64_t)sem)) {
+        uint64_t v = meow_f69_signaled_value((uint64_t)sem);
+        if (pValue != NULL) *pValue = v;
+        MEOWLOGI("meowvulkan: F69 vkGetSemaphoreCounterValue->max signaled value=%{public}llu sem=0x%{public}llx "
+                 "(%{public}s)", (unsigned long long)v, (unsigned long long)sem, f69Why ? f69Why : "(unset)");
+        return VK_SUCCESS;
+    }
     int rc = ((PFN_getSemaphoreCounterValue)real)(dev, sem, pValue);
     MEOWLOGI("meowvulkan: vkGetSemaphoreCounterValue rc=%{public}d sem=0x%{public}llx value=%{public}llu",
              rc, (unsigned long long)sem,
@@ -1964,19 +2863,88 @@ static PFN_vkVoidFunctionLocal probe_resolve(const char* name) {
     return p;
 }
 
+// NOTE: the local typedef is prefixed (MeowProbePFN_) so it cannot collide with the official
+// PFN_vkCreateXXX typedefs that <vulkan/vulkan.h> now provides.
 #define PROBE_3OUT(NAME, A, B, C, D)                                            \
-    typedef int (*PFN_##NAME)(A, B, C, D);                                      \
+    typedef int (*MeowProbePFN_##NAME)(A, B, C, D);                             \
     static int log_##NAME(A a1, B a2, C a3, D a4) {                             \
         wd_note("" #NAME "");                                                   \
-        PFN_##NAME real = (PFN_##NAME)probe_resolve("" #NAME "");               \
+        MeowProbePFN_##NAME real = (MeowProbePFN_##NAME)probe_resolve("" #NAME ""); \
         if (real == NULL) return -3;                                            \
         return real(a1, a2, a3, a4);                                            \
     }
 
-PROBE_3OUT(vkCreatePipelineLayout, void*, const void*, const void*, void**)
-PROBE_3OUT(vkCreateDescriptorSetLayout, void*, const void*, const void*, void**)
+// F72 (build .49): vkCreatePipelineLayout is hand-written (not PROBE_3OUT) so the
+// (pipelineLayout, set) -> VkDescriptorSetLayout map can be captured for the push-as-set emulation.
+// The entry probe + forward are identical to the macro; the capture call is a no-op when F72 is off.
+typedef int (*MeowF72PFN_createPipelineLayout)(void*, const void*, const void*, void**);
+static int log_vkCreatePipelineLayout(void* dev, const void* ci, const void* alloc, void** out) {
+    wd_note("vkCreatePipelineLayout");
+    MeowF72PFN_createPipelineLayout real =
+        (MeowF72PFN_createPipelineLayout)probe_resolve("vkCreatePipelineLayout");
+    if (real == NULL) return -3;
+    int rc = real(dev, ci, alloc, out);
+    if (rc == 0 && out != NULL && *out != NULL) meow_f72_capture_layout(ci, *out);
+    return rc;
+}
+// F72b (build .50): vkCreateDescriptorSetLayout is hand-written so each layout's flags/bindings can
+// be captured and a push-bit-stripped MIRROR created (see the F72b block above). The destroy side is
+// wrapped too, so the mirror goes away with the original. Both are pure passthrough when F72 is off.
+typedef int (*MeowF72PFN_createDescriptorSetLayout)(void*, const void*, const void*, void**);
+static int log_vkCreateDescriptorSetLayout(void* dev, const void* ci, const void* alloc, void** out) {
+    wd_note("vkCreateDescriptorSetLayout");
+    MeowF72PFN_createDescriptorSetLayout real =
+        (MeowF72PFN_createDescriptorSetLayout)probe_resolve("vkCreateDescriptorSetLayout");
+    if (real == NULL) return -3;
+    int rc = real(dev, ci, alloc, out);
+    if (rc == 0 && out != NULL && *out != NULL) meow_f72_capture_dsl(ci, *out);
+    return rc;
+}
+typedef void (*MeowF72PFN_destroyDescriptorSetLayout)(void*, void*, const void*);
+static void log_vkDestroyDescriptorSetLayout(void* dev, void* dsl, const void* alloc) {
+    wd_note("vkDestroyDescriptorSetLayout");
+    MeowF72PFN_destroyDescriptorSetLayout real =
+        (MeowF72PFN_destroyDescriptorSetLayout)
+            (g_gdpa ? g_gdpa(g_dev_seen, "vkDestroyDescriptorSetLayout") : NULL);
+    if (real == NULL) { MEOWLOGE("meowvulkan: cannot resolve the real vkDestroyDescriptorSetLayout"); return; }
+    if (meow_f72_on()) meow_f72_forget_dsl((uint64_t)(uintptr_t)dsl);
+    real(dev, dsl, alloc);
+}
 PROBE_3OUT(vkCreateCommandPool, void*, const void*, const void*, void**)
-PROBE_3OUT(vkCreateSemaphore, void*, const void*, const void*, void**)
+// F69: vkCreateSemaphore is hand-written (not PROBE_3OUT) so TIMELINE semaphores can be registered
+// for the timeline->fence translation. Same entry probe + forward as before when F69 is off.
+typedef int (*PFN_createSemaphoreF69)(void*, const void*, const void*, void**);
+static int log_vkCreateSemaphore(void* dev, const void* ci, const void* alloc, void** out) {
+    wd_note("vkCreateSemaphore");
+    PFN_createSemaphoreF69 real = (PFN_createSemaphoreF69)probe_resolve("vkCreateSemaphore");
+    if (real == NULL) return -3;
+    int rc = real(dev, ci, alloc, out);
+    if (rc == 0 && out != NULL && *out != NULL && meow_f69_on() && meow_f69_createinfo_is_timeline(ci)) {
+        meow_f69_register_sem((uint64_t)(uintptr_t)*out);
+    }
+    return rc;
+}
+// F69: destroy side -- release the fences this shim owns for that timeline semaphore.
+typedef void (*PFN_destroySemaphoreF69)(void*, uint64_t, const void*);
+static void log_DestroySemaphore(void* dev, uint64_t sem, const void* alloc) {
+    wd_note("vkDestroySemaphore");
+    PFN_destroySemaphoreF69 real =
+        (PFN_destroySemaphoreF69)(g_gdpa ? g_gdpa(g_dev_seen, "vkDestroySemaphore") : NULL);
+    if (real == NULL) { MEOWLOGE("meowvulkan: cannot resolve the real vkDestroySemaphore"); return; }
+    if (meow_f69_on()) meow_f69_forget_sem((uint64_t)sem);
+    real(dev, sem, alloc);
+}
+// F69: device teardown -- every owned fence must go before the device does.
+typedef void (*PFN_destroyDeviceF69)(void*, const void*);
+static void log_DestroyDevice(void* dev, const void* alloc) {
+    wd_note("vkDestroyDevice");
+    PFN_destroyDeviceF69 real =
+        (PFN_destroyDeviceF69)(g_gdpa ? g_gdpa(g_dev_seen, "vkDestroyDevice") : NULL);
+    if (real == NULL) { MEOWLOGE("meowvulkan: cannot resolve the real vkDestroyDevice"); return; }
+    if (meow_f69_on()) meow_f69_forget_all();
+    meow_f72_shutdown();   // F72: destroy the emulation pools (and any tracking fences we own)
+    real(dev, alloc);
+}
 PROBE_3OUT(vkCreateFence, void*, const void*, const void*, void**)
 // NOTE: vkCreateSwapchainKHR is NOT probed here any more -- F9 (.12) replaces the entry-only
 // PROBE_3OUT with a real field-logging wrapper (log_vkCreateSwapchainKHR, defined in the F9 block
@@ -1986,19 +2954,64 @@ typedef int (*PFN_createGraphicsPipelines)(void*, void*, uint32_t, const void*, 
 static int log_CreateGraphicsPipelines(void* dev, void* cache, uint32_t count, const void* cis,
                                        const void* alloc, void* pipes) {
     wd_note("vkCreateGraphicsPipelines");
+    // F71 (shim build .47): divisor diagnostics.
+    // WHY: on-device (F70/F71) MC's Vulkan backend HARD-REQUIRES VK_EXT_vertex_attribute_divisor --
+    // with the shim's feature-query lie removed (MEOW_VK_NO_DIVISOR_FEATURE=1) MC logs
+    // "Render thread ERROR Failed to create backend Vulkan" and falls back to OpenGL 4.2. So the lie
+    // is mandatory. This ICD however genuinely lacks the extension (maxVertexAttribDivisor==1), so a
+    // divisor > 1 binding would ask the GPU for state it does not have -- the standing hypothesis for
+    // "only real draws fault" (F70: dropping the draws makes MC reach the main menu with no crash).
+    // Logging the divisor state here answers "does MC ever ask for divisor>1?" from a SAFE run
+    // (draws dropped), because pipelines are created at load time regardless of the draws.
+    // Uses the official structs (the shim includes <vulkan/vulkan.h> with VK_NO_PROTOTYPES since F62).
+    uint32_t pipesWithDiv = 0, pipesTotal = 0, maxDivSeen = 0;
+    if (count > 0 && cis != NULL) {
+        const VkGraphicsPipelineCreateInfo* gci = (const VkGraphicsPipelineCreateInfo*)cis;
+        for (uint32_t i = 0; i < count; i++) {
+            ++pipesTotal;
+            const VkPipelineVertexInputStateCreateInfo* vi = gci[i].pVertexInputState;
+            uint32_t nDiv = 0, nBind = 0;
+            if (vi != NULL) {
+                nBind = vi->vertexBindingDescriptionCount;
+                for (const VkBaseInStructure* p = (const VkBaseInStructure*)vi->pNext; p != NULL; p = p->pNext) {
+                    if (p->sType == VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT) {
+                        const VkPipelineVertexInputDivisorStateCreateInfoEXT* d =
+                            (const VkPipelineVertexInputDivisorStateCreateInfoEXT*)p;
+                        nDiv = d->vertexBindingDivisorCount;
+                        if (++pipesWithDiv == 1 || meow_vk_verbose()) {
+                            for (uint32_t k = 0; k < nDiv && k < 16; k++) {
+                                uint32_t binding = d->pVertexBindingDivisors[k].binding;
+                                uint32_t div = d->pVertexBindingDivisors[k].divisor;
+                                if (div > maxDivSeen) maxDivSeen = div;
+                                MEOWLOGI("meowvulkan: F71 pipeline[%{public}u] DIVISOR_STATE binding=%{public}u "
+                                         "divisor=%{public}u%s", i, binding, div,
+                                         div > 1u ? "  <-- >1, the ICD has maxVertexAttribDivisor=1" : "");
+                            }
+                        } else {
+                            for (uint32_t k = 0; k < nDiv && k < 16; k++) {
+                                if (d->pVertexBindingDivisors[k].divisor > maxDivSeen)
+                                    maxDivSeen = d->pVertexBindingDivisors[k].divisor;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            if (meow_vk_verbose())
+                MEOWLOGI("meowvulkan: F71 pipeline[%{public}u] vertexBindings=%{public}u divisorEntries=%{public}u",
+                         i, nBind, nDiv);
+        }
+        // One unconditional summary line per create call: the answer to "does MC ever use divisor>1?"
+        MEOWLOGI("meowvulkan: F71 divisor summary: pipelines=%{public}u withDivisorState=%{public}u maxDivisor=%{public}u",
+                 pipesTotal, pipesWithDiv, maxDivSeen);
+    }
     PFN_createGraphicsPipelines real = (PFN_createGraphicsPipelines)probe_resolve("vkCreateGraphicsPipelines");
     if (real == NULL) return -3;
     return real(dev, cache, count, cis, alloc, pipes);
 }
 
-// VkCommandBufferAllocateInfo mirror -- header :3952 (F15 .14). LP64: sType@0 pNext@8
-// commandPool@16(64-bit non-dispatchable handle) level@24(uint32 enum) commandBufferCount@28; size 32.
-typedef struct { uint32_t sType; const void* pNext; uint64_t commandPool; int32_t level;
-                 uint32_t commandBufferCount; } VkCommandBufferAllocateInfoL;
-_Static_assert(sizeof(VkCommandBufferAllocateInfoL) == 32, "VkCommandBufferAllocateInfo must be 32 bytes on LP64");
-_Static_assert(offsetof(VkCommandBufferAllocateInfoL, commandPool) == 16, "VkCommandBufferAllocateInfo.commandPool offset");
-_Static_assert(offsetof(VkCommandBufferAllocateInfoL, level) == 24, "VkCommandBufferAllocateInfo.level offset");
-_Static_assert(offsetof(VkCommandBufferAllocateInfoL, commandBufferCount) == 28, "VkCommandBufferAllocateInfo.commandBufferCount offset");
+// VkCommandBufferAllocateInfo -- official SDK type (vulkan_core.h:4058).
+typedef VkCommandBufferAllocateInfo VkCommandBufferAllocateInfoL;
 typedef int (*PFN_allocateCommandBuffers)(void*, const void*, void*);
 static int log_AllocateCommandBuffers(void* dev, const void* ai, void* cbs) {
     wd_note("vkAllocateCommandBuffers");
@@ -2008,7 +3021,7 @@ static int log_AllocateCommandBuffers(void* dev, const void* ai, void* cbs) {
     uint32_t count = (a != NULL) ? a->commandBufferCount : 0u;
     MEOWLOGI("meowvulkan: vkAllocateCommandBuffers CALLED commandPool=0x%{public}llx level=%{public}d "
              "commandBufferCount=%{public}u -- forwarding",
-             (unsigned long long)((a != NULL) ? a->commandPool : 0ull),
+             (unsigned long long)(uintptr_t)((a != NULL) ? a->commandPool : VK_NULL_HANDLE),
              (a != NULL) ? (int)a->level : 0, count);
     int rc = real(dev, ai, cbs);
     if (cbs != NULL && count > 0 && count <= 4) {
@@ -2140,13 +3153,9 @@ static int log_AcquireNextImageKHR(void* dev, void* swapchain, uint64_t timeout,
     return rc;
 }
 
-// VkPresentInfoKHR mirror -- header :9111 (LP64: waitSemaphoreCount@16 pWaitSemaphores@24
-// swapchainCount@32 pSwapchains@40 pImageIndices@48 pResults@56).
-// NOTE: VkPresentInfoKHR carries NO stageMask field (checked against the header). This wrapper
-// logs the fields that really exist and does NOT invent one.
-typedef struct { uint32_t sType; const void* pNext; uint32_t waitSemaphoreCount;
-                 const void* pWaitSemaphores; uint32_t swapchainCount; const void* pSwapchains;
-                 const uint32_t* pImageIndices; int* pResults; } VkPresentInfoKHRL;
+// VkPresentInfoKHR -- official SDK type (vulkan_core.h:8682). NOTE: it carries NO stageMask field;
+// this wrapper logs the fields that really exist and does NOT invent one.
+typedef VkPresentInfoKHR VkPresentInfoKHRL;
 // vkQueuePresentKHR -- header :9170  PFN_vkQueuePresentKHR(VkQueue, const VkPresentInfoKHR*)
 typedef int (*PFN_queuePresentKHR)(void*, const void*);
 static int log_QueuePresentKHR(void* queue, const void* pi) {
@@ -2165,10 +3174,10 @@ static int log_QueuePresentKHR(void* queue, const void* pi) {
     uint32_t idx0 = 0;
     if (p != NULL) {
         if (waitCount > 0 && p->pWaitSemaphores != NULL) {
-            sem0 = ((void* const*)p->pWaitSemaphores)[0];
+            sem0 = p->pWaitSemaphores[0];
         }
         if (scCount > 0 && p->pSwapchains != NULL) {
-            sc0 = ((void* const*)p->pSwapchains)[0];
+            sc0 = p->pSwapchains[0];
         }
         if (scCount > 0 && p->pImageIndices != NULL) {
             idx0 = p->pImageIndices[0];
@@ -2187,46 +3196,11 @@ static int log_QueuePresentKHR(void* queue, const void* pi) {
     return rc;
 }
 
-// VkImageMemoryBarrier2 mirror -- header :7554 (sType@0 pNext@8 srcStageMask@16 srcAccessMask@24
-// dstStageMask@32 dstAccessMask@40 oldLayout@48 newLayout@52 srcQFI@56 dstQFI@60 image@64
-// subresourceRange@72{aspectMask@72 baseMipLevel@76 levelCount@80 baseArrayLayer@84 layerCount@88}).
-typedef struct { uint32_t sType; const void* pNext; uint64_t srcStageMask; uint64_t srcAccessMask;
-                 uint64_t dstStageMask; uint64_t dstAccessMask; uint32_t oldLayout; uint32_t newLayout;
-                 uint32_t srcQueueFamilyIndex; uint32_t dstQueueFamilyIndex; void* image;
-                 uint32_t aspectMask; uint32_t baseMipLevel; uint32_t levelCount;
-                 uint32_t baseArrayLayer; uint32_t layerCount; } VkImgBarrier2L;
-// F7 (.10): LP64 layout asserts. These are the same offsets the F7 probe
-// (/storage/Users/currentUser/deveco/f7_probe.c) checks against the real header, so the mirror is
-// machine-checked, not eyeballed.
-_Static_assert(sizeof(VkImgBarrier2L) == 96, "VkImageMemoryBarrier2 must be 96 bytes on LP64");
-_Static_assert(offsetof(VkImgBarrier2L, srcStageMask) == 16, "imgBarrier.srcStageMask offset");
-_Static_assert(offsetof(VkImgBarrier2L, srcAccessMask) == 24, "imgBarrier.srcAccessMask offset");
-_Static_assert(offsetof(VkImgBarrier2L, dstStageMask) == 32, "imgBarrier.dstStageMask offset");
-_Static_assert(offsetof(VkImgBarrier2L, dstAccessMask) == 40, "imgBarrier.dstAccessMask offset");
-_Static_assert(offsetof(VkImgBarrier2L, oldLayout) == 48, "imgBarrier.oldLayout offset");
-_Static_assert(offsetof(VkImgBarrier2L, newLayout) == 52, "imgBarrier.newLayout offset");
-_Static_assert(offsetof(VkImgBarrier2L, image) == 64, "imgBarrier.image offset");
-_Static_assert(offsetof(VkImgBarrier2L, aspectMask) == 72, "imgBarrier.aspectMask offset");
-
-// VkBufferMemoryBarrier2 mirror -- header :7540 (sType@0 pNext@8 srcStageMask@16 srcAccessMask@24
-// dstStageMask@32 dstAccessMask@40 srcQFI@48 dstQFI@52 buffer@56 offset@64 size@72; size 80).
-typedef struct { uint32_t sType; const void* pNext; uint64_t srcStageMask; uint64_t srcAccessMask;
-                 uint64_t dstStageMask; uint64_t dstAccessMask; uint32_t srcQueueFamilyIndex;
-                 uint32_t dstQueueFamilyIndex; void* buffer; uint64_t offset; uint64_t size; } VkBufBarrier2L;
-_Static_assert(sizeof(VkBufBarrier2L) == 80, "VkBufferMemoryBarrier2 must be 80 bytes on LP64");
-_Static_assert(offsetof(VkBufBarrier2L, srcStageMask) == 16, "bufBarrier.srcStageMask offset");
-_Static_assert(offsetof(VkBufBarrier2L, srcAccessMask) == 24, "bufBarrier.srcAccessMask offset");
-_Static_assert(offsetof(VkBufBarrier2L, dstStageMask) == 32, "bufBarrier.dstStageMask offset");
-_Static_assert(offsetof(VkBufBarrier2L, dstAccessMask) == 40, "bufBarrier.dstAccessMask offset");
-_Static_assert(offsetof(VkBufBarrier2L, buffer) == 56, "bufBarrier.buffer offset");
-_Static_assert(offsetof(VkBufBarrier2L, offset) == 64, "bufBarrier.offset offset");
-_Static_assert(offsetof(VkBufBarrier2L, size) == 72, "bufBarrier.size offset");
-
-// VkDependencyInfo mirror -- header :7569.
-typedef struct { uint32_t sType; const void* pNext; uint32_t dependencyFlags; uint32_t memoryBarrierCount;
-                 const void* pMemoryBarriers; uint32_t bufferMemoryBarrierCount;
-                 const void* pBufferMemoryBarriers; uint32_t imageMemoryBarrierCount;
-                 const void* pImageMemoryBarriers; } VkDependencyInfoL;
+// Official sync2 barrier/dependency types (vulkan_core.h:7191/7177/7206). The former mirrors
+// flattened VkImageMemoryBarrier2.subresourceRange; accesses below use the official nesting.
+typedef VkImageMemoryBarrier2    VkImgBarrier2L;
+typedef VkBufferMemoryBarrier2   VkBufBarrier2L;
+typedef VkDependencyInfo         VkDependencyInfoL;
 // vkCmdPipelineBarrier2 -- header :7969; KHR alias :12434 (identical parameter list). The ICD exposes
 // the core name only, so the wrapper always forwards to "vkCmdPipelineBarrier2".
 typedef void (*PFN_cmdPipelineBarrier2)(void*, const void*);
@@ -2270,7 +3244,7 @@ static void log_CmdPipelineBarrier2(void* cmd, const void* di) {
                      "aspectMask=0x%{public}x image=%{public}p",
                      b->oldLayout, b->newLayout, (unsigned long long)b->srcStageMask,
                      (unsigned long long)b->dstStageMask, (unsigned long long)b->srcAccessMask,
-                     (unsigned long long)b->dstAccessMask, b->aspectMask, b->image);
+                     (unsigned long long)b->dstAccessMask, b->subresourceRange.aspectMask, b->image);
         }
         // F7 (.10): the buffer barrier's access masks/range, same reasoning as the image barrier above.
         if (d != NULL && bufC > 0 && d->pBufferMemoryBarriers != NULL) {
@@ -2308,6 +3282,10 @@ typedef void (*PFN_cmdDraw)(void*, uint32_t, uint32_t, uint32_t, uint32_t);
 static void log_CmdDraw(void* cmd, uint32_t vertexCount, uint32_t instanceCount,
                         uint32_t firstVertex, uint32_t firstInstance) {
     wd_note("vkCmdDraw");
+    if (meow_vk_drop_draw()) {   // F70: causal test, see meow_vk_drop_draw
+        meow_log_drop("vkCmdDraw");   // F71b: rate-limited
+        return;
+    }
     PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdDraw") : NULL;
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdDraw");
@@ -2325,6 +3303,10 @@ typedef void (*PFN_cmdDrawIndexed)(void*, uint32_t, uint32_t, uint32_t, int32_t,
 static void log_CmdDrawIndexed(void* cmd, uint32_t indexCount, uint32_t instanceCount,
                                uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) {
     wd_note("vkCmdDrawIndexed");
+    if (meow_vk_drop_draw()) {   // F70: causal test, see meow_vk_drop_draw
+        meow_log_drop("vkCmdDrawIndexed");   // F71b: rate-limited
+        return;
+    }
     PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdDrawIndexed") : NULL;
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdDrawIndexed");
@@ -2335,6 +3317,48 @@ static void log_CmdDrawIndexed(void* cmd, uint32_t indexCount, uint32_t instance
                  "firstIndex=%{public}u vertexOffset=%{public}d firstInstance=%{public}u -- forwarding",
                  cmd, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     ((PFN_cmdDrawIndexed)real)(cmd, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+}
+
+// F70: vkCmdDrawIndirect / vkCmdDrawIndexedIndirect -- header :4685 / :4694. A8 3.1 says MC uses
+// these, but this shim had never wrapped them, so MEOW_VK_DROP_DRAW could not have covered MC's real
+// draws. Signature: (cmdBuf, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride).
+typedef void (*PFN_cmdDrawIndirect)(void*, void*, uint64_t, uint32_t, uint32_t);
+static void log_CmdDrawIndirect(void* cmd, void* buffer, uint64_t offset, uint32_t drawCount,
+                                uint32_t stride) {
+    wd_note("vkCmdDrawIndirect");
+    if (meow_vk_drop_draw()) {   // F70: causal test
+        meow_log_drop("vkCmdDrawIndirect");   // F71b: rate-limited
+        return;
+    }
+    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdDrawIndirect") : NULL;
+    if (real == NULL) {
+        MEOWLOGE("meowvulkan: cannot resolve the real vkCmdDrawIndirect");
+        return;
+    }
+    if (meow_vk_verbose())
+        MEOWLOGI("meowvulkan: vkCmdDrawIndirect CALLED cmdBuf=%{public}p buffer=%{public}p offset=%{public}llu "
+                 "drawCount=%{public}u stride=%{public}u -- forwarding",
+                 cmd, buffer, (unsigned long long)offset, drawCount, stride);
+    ((PFN_cmdDrawIndirect)real)(cmd, buffer, offset, drawCount, stride);
+}
+
+static void log_CmdDrawIndexedIndirect(void* cmd, void* buffer, uint64_t offset, uint32_t drawCount,
+                                       uint32_t stride) {
+    wd_note("vkCmdDrawIndexedIndirect");
+    if (meow_vk_drop_draw()) {   // F70: causal test
+        meow_log_drop("vkCmdDrawIndexedIndirect");   // F71b: rate-limited
+        return;
+    }
+    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdDrawIndexedIndirect") : NULL;
+    if (real == NULL) {
+        MEOWLOGE("meowvulkan: cannot resolve the real vkCmdDrawIndexedIndirect");
+        return;
+    }
+    if (meow_vk_verbose())
+        MEOWLOGI("meowvulkan: vkCmdDrawIndexedIndirect CALLED cmdBuf=%{public}p buffer=%{public}p "
+                 "offset=%{public}llu drawCount=%{public}u stride=%{public}u -- forwarding",
+                 cmd, buffer, (unsigned long long)offset, drawCount, stride);
+    ((PFN_cmdDrawIndirect)real)(cmd, buffer, offset, drawCount, stride);
 }
 
 // vkCmdEndRendering -- header :7985; KHR alias :10305 (same one parameter).
@@ -2462,27 +3486,16 @@ static void log_CmdBindDescriptorSets(void* cmd, uint32_t bindPoint, void* layou
 // stageMask.)
 // =====================================================================================
 
-// VkImageSubresourceLayers mirror -- header :3984 (aspectMask@0 mipLevel@4 baseArrayLayer@8
-// layerCount@12, size 16). Shared by VkImageCopy and VkImageBlit.
-typedef struct { uint32_t aspectMask, mipLevel, baseArrayLayer, layerCount; } VkImgSubresLayersL;
-_Static_assert(sizeof(VkImgSubresLayersL) == 16, "VkImageSubresourceLayers must be 16 bytes on LP64");
+// VkImageSubresourceLayers -- official SDK type (vulkan_core.h:4090), shared by VkImageCopy/Blit.
+typedef VkImageSubresourceLayers VkImgSubresLayersL;
 
 // vkCmdCopyImage -- header :4586
 // PFN_vkCmdCopyImage(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout,
 //                    VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount,
 //                    const VkImageCopy* pRegions)
 typedef void (*PFN_cmdCopyImage)(void*, void*, uint32_t, void*, uint32_t, uint32_t, const void*);
-// VkImageCopy mirror -- header :4000 (srcSubresource@0 srcOffset@16 dstSubresource@28 dstOffset@44
-// extent@56, size 68; offsets are VkOffset3D=int32[3], extent is VkExtent3D=uint32[3]).
-typedef struct { uint32_t srcAspect, srcMip, srcBaseLayer, srcLayerCount;
-                 int32_t srcOffX, srcOffY, srcOffZ;
-                 uint32_t dstAspect, dstMip, dstBaseLayer, dstLayerCount;
-                 int32_t dstOffX, dstOffY, dstOffZ;
-                 uint32_t extW, extH, extD; } VkImageCopyL;
-_Static_assert(sizeof(VkImageCopyL) == 68, "VkImageCopy must be 68 bytes on LP64");
-_Static_assert(offsetof(VkImageCopyL, srcMip) == 4, "VkImageCopy.srcSubresource.mipLevel offset");
-_Static_assert(offsetof(VkImageCopyL, dstAspect) == 28, "VkImageCopy.dstSubresource offset");
-_Static_assert(offsetof(VkImageCopyL, extW) == 56, "VkImageCopy.extent offset");
+// VkImageCopy -- official SDK type (vulkan_core.h:4141); accesses use srcSubresource/dstSubresource.
+typedef VkImageCopy VkImageCopyL;
 
 static void log_CmdCopyImage(void* cmd, void* srcImage, uint32_t srcLayout, void* dstImage,
                              uint32_t dstLayout, uint32_t regionCount, const void* pRegions) {
@@ -2500,9 +3513,9 @@ static void log_CmdCopyImage(void* cmd, void* srcImage, uint32_t srcLayout, void
             const VkImageCopyL* r0 = (const VkImageCopyL*)pRegions;
             MEOWLOGI("meowvulkan:   copyRegion0 src{mip=%{public}u layer=%{public}u..+%{public}u} "
                      "dst{mip=%{public}u layer=%{public}u..+%{public}u} ext=%{public}u x %{public}u x %{public}u",
-                     r0->srcMip, r0->srcBaseLayer, r0->srcLayerCount,
-                     r0->dstMip, r0->dstBaseLayer, r0->dstLayerCount,
-                     r0->extW, r0->extH, r0->extD);
+                     r0->srcSubresource.mipLevel, r0->srcSubresource.baseArrayLayer, r0->srcSubresource.layerCount,
+                     r0->dstSubresource.mipLevel, r0->dstSubresource.baseArrayLayer, r0->dstSubresource.layerCount,
+                     r0->extent.width, r0->extent.height, r0->extent.depth);
         }
     }
     ((PFN_cmdCopyImage)real)(cmd, srcImage, srcLayout, dstImage, dstLayout, regionCount, pRegions);
@@ -2514,18 +3527,8 @@ static void log_CmdCopyImage(void* cmd, void* srcImage, uint32_t srcLayout, void
 //                    const VkImageBlit* pRegions, VkFilter filter)
 typedef void (*PFN_cmdBlitImage)(void*, void*, uint32_t, void*, uint32_t, uint32_t, const void*,
                                  uint32_t);
-// VkImageBlit mirror -- header :4500 (srcSubresource@0 srcOffsets[2]@16 dstSubresource@40
-// dstOffsets[2]@56, size 80). NO extent field exists -- do not add one.
-typedef struct { uint32_t srcAspect, srcMip, srcBaseLayer, srcLayerCount;
-                 int32_t srcOff0X, srcOff0Y, srcOff0Z;
-                 int32_t srcOff1X, srcOff1Y, srcOff1Z;
-                 uint32_t dstAspect, dstMip, dstBaseLayer, dstLayerCount;
-                 int32_t dstOff0X, dstOff0Y, dstOff0Z;
-                 int32_t dstOff1X, dstOff1Y, dstOff1Z; } VkImageBlitL;
-_Static_assert(sizeof(VkImageBlitL) == 80, "VkImageBlit must be 80 bytes on LP64");
-_Static_assert(offsetof(VkImageBlitL, srcMip) == 4, "VkImageBlit.srcSubresource.mipLevel offset");
-_Static_assert(offsetof(VkImageBlitL, dstAspect) == 40, "VkImageBlit.dstSubresource offset");
-_Static_assert(offsetof(VkImageBlitL, dstOff1Z) == 76, "VkImageBlit.dstOffsets[1].z offset");
+// VkImageBlit -- official SDK type (vulkan_core.h:4134). NO extent field exists -- do not add one.
+typedef VkImageBlit VkImageBlitL;
 
 // Diagnostic bisect switch (2026-09-17, shim build .13). Hypothesis under test: this ICD mishandles a
 // blit whose DST region is vertically inverted (dstOffsets[1].y < dstOffsets[0].y). With
@@ -2564,14 +3567,14 @@ static void log_CmdBlitImage(void* cmd, void* srcImage, uint32_t srcLayout, void
             const VkImageBlitL* r0 = (const VkImageBlitL*)pRegions;
             MEOWLOGI("meowvulkan:   blitRegion0 src{mip=%{public}u layer=%{public}u..+%{public}u} "
                      "off0=%{public}d,%{public}d,%{public}d off1=%{public}d,%{public}d,%{public}d",
-                     r0->srcMip, r0->srcBaseLayer, r0->srcLayerCount,
-                     r0->srcOff0X, r0->srcOff0Y, r0->srcOff0Z,
-                     r0->srcOff1X, r0->srcOff1Y, r0->srcOff1Z);
+                     r0->srcSubresource.mipLevel, r0->srcSubresource.baseArrayLayer, r0->srcSubresource.layerCount,
+                     r0->srcOffsets[0].x, r0->srcOffsets[0].y, r0->srcOffsets[0].z,
+                     r0->srcOffsets[1].x, r0->srcOffsets[1].y, r0->srcOffsets[1].z);
             MEOWLOGI("meowvulkan:   blitRegion0 dst{mip=%{public}u layer=%{public}u..+%{public}u} "
                      "off0=%{public}d,%{public}d,%{public}d off1=%{public}d,%{public}d,%{public}d",
-                     r0->dstMip, r0->dstBaseLayer, r0->dstLayerCount,
-                     r0->dstOff0X, r0->dstOff0Y, r0->dstOff0Z,
-                     r0->dstOff1X, r0->dstOff1Y, r0->dstOff1Z);
+                     r0->dstSubresource.mipLevel, r0->dstSubresource.baseArrayLayer, r0->dstSubresource.layerCount,
+                     r0->dstOffsets[0].x, r0->dstOffsets[0].y, r0->dstOffsets[0].z,
+                     r0->dstOffsets[1].x, r0->dstOffsets[1].y, r0->dstOffsets[1].z);
         }
     }
     // DIAGNOSTIC (build .13): MEOW_VK_NO_FLIP_BLIT=1 rewrites the FIRST region's dstOffsets into the
@@ -2588,24 +3591,24 @@ static void log_CmdBlitImage(void* cmd, void* srcImage, uint32_t srcLayout, void
         } else {
             memcpy(flipCopy, pRegions, (size_t)regionCount * sizeof(VkImageBlitL));
             VkImageBlitL* r0 = &flipCopy[0];
-            int32_t x0 = r0->dstOff0X, x1 = r0->dstOff1X;
-            int32_t y0 = r0->dstOff0Y, y1 = r0->dstOff1Y;
-            int32_t z0 = r0->dstOff0Z, z1 = r0->dstOff1Z;
+            int32_t x0 = r0->dstOffsets[0].x, x1 = r0->dstOffsets[1].x;
+            int32_t y0 = r0->dstOffsets[0].y, y1 = r0->dstOffsets[1].y;
+            int32_t z0 = r0->dstOffsets[0].z, z1 = r0->dstOffsets[1].z;
             MEOWLOGI("meowvulkan: DIAG MEOW_VK_NO_FLIP_BLIT=1 (diagnostic: forward-normalising dst "
                      "region 0; frame will be vertically flipped) ORIGINAL dst "
                      "off0=%{public}d,%{public}d,%{public}d off1=%{public}d,%{public}d,%{public}d",
                      x0, y0, z0, x1, y1, z1);
-            r0->dstOff0X = meow_i32_min(x0, x1);
-            r0->dstOff1X = meow_i32_max(x0, x1);
-            r0->dstOff0Y = meow_i32_min(y0, y1);
-            r0->dstOff1Y = meow_i32_max(y0, y1);
-            r0->dstOff0Z = meow_i32_min(z0, z1);
-            r0->dstOff1Z = meow_i32_max(z0, z1);
+            r0->dstOffsets[0].x = meow_i32_min(x0, x1);
+            r0->dstOffsets[1].x = meow_i32_max(x0, x1);
+            r0->dstOffsets[0].y = meow_i32_min(y0, y1);
+            r0->dstOffsets[1].y = meow_i32_max(y0, y1);
+            r0->dstOffsets[0].z = meow_i32_min(z0, z1);
+            r0->dstOffsets[1].z = meow_i32_max(z0, z1);
             MEOWLOGI("meowvulkan: DIAG MEOW_VK_NO_FLIP_BLIT=1 REWRITTEN dst "
                      "off0=%{public}d,%{public}d,%{public}d off1=%{public}d,%{public}d,%{public}d "
                      "-- forwarding rewritten region (src untouched)",
-                     r0->dstOff0X, r0->dstOff0Y, r0->dstOff0Z,
-                     r0->dstOff1X, r0->dstOff1Y, r0->dstOff1Z);
+                     r0->dstOffsets[0].x, r0->dstOffsets[0].y, r0->dstOffsets[0].z,
+                     r0->dstOffsets[1].x, r0->dstOffsets[1].y, r0->dstOffsets[1].z);
             regionsToSend = flipCopy;
         }
     }
@@ -2618,19 +3621,10 @@ static void log_CmdBlitImage(void* cmd, void* srcImage, uint32_t srcLayout, void
 //                          const VkClearColorValue* pColor, uint32_t rangeCount,
 //                          const VkImageSubresourceRange* pRanges)
 typedef void (*PFN_cmdClearColorImage)(void*, void*, uint32_t, const void*, uint32_t, const void*);
-// VkClearColorValue mirror -- header :4231. It is a UNION { float float32[4]; int32_t int32[4];
-// uint32_t uint32[4]; } (16 bytes). We log the raw uint32 bits (format-agnostic and exact) plus the
-// float reinterpretation; we never assume the image format.
-typedef union { float f[4]; int32_t i[4]; uint32_t u[4]; } VkClearColorValueL;
-_Static_assert(sizeof(VkClearColorValueL) == 16, "VkClearColorValue must be 16 bytes");
-_Static_assert(sizeof(VkClearColorValueL) == sizeof(uint32_t[4]), "VkClearColorValue is 4x32-bit");
-// VkImageSubresourceRange mirror -- header :3926 (aspectMask@0 baseMipLevel@4 levelCount@8
-// baseArrayLayer@12 layerCount@16, size 20).
-typedef struct { uint32_t aspectMask, baseMipLevel, levelCount, baseArrayLayer, layerCount;
-                 } VkImageSubresourceRangeL;
-_Static_assert(sizeof(VkImageSubresourceRangeL) == 20, "VkImageSubresourceRange must be 20 bytes on LP64");
-_Static_assert(offsetof(VkImageSubresourceRangeL, levelCount) == 8, "VkImageSubresourceRange.levelCount offset");
-_Static_assert(offsetof(VkImageSubresourceRangeL, layerCount) == 16, "VkImageSubresourceRange.layerCount offset");
+// Official SDK types: VkClearColorValue union (vulkan_core.h:4106; members float32/int32/uint32) and
+// VkImageSubresourceRange (vulkan_core.h:3112).
+typedef VkClearColorValue        VkClearColorValueL;
+typedef VkImageSubresourceRange  VkImageSubresourceRangeL;
 
 static void log_CmdClearColorImage(void* cmd, void* image, uint32_t imageLayout, const void* pColor,
                                    uint32_t rangeCount, const void* pRanges) {
@@ -2653,9 +3647,9 @@ static void log_CmdClearColorImage(void* cmd, void* image, uint32_t imageLayout,
         if (pColor != NULL) {
             const VkClearColorValueL* c = (const VkClearColorValueL*)pColor;
             MEOWLOGI("meowvulkan:   clearColor raw u32=0x%{public}08x,0x%{public}08x,0x%{public}08x,0x%{public}08x",
-                     c->u[0], c->u[1], c->u[2], c->u[3]);
+                     c->uint32[0], c->uint32[1], c->uint32[2], c->uint32[3]);
             MEOWLOGI("meowvulkan:   clearColor as f32=%{public}f,%{public}f,%{public}f,%{public}f",
-                     (double)c->f[0], (double)c->f[1], (double)c->f[2], (double)c->f[3]);
+                     (double)c->float32[0], (double)c->float32[1], (double)c->float32[2], (double)c->float32[3]);
         }
     }
     ((PFN_cmdClearColorImage)real)(cmd, image, imageLayout, pColor, rangeCount, pRanges);
@@ -2665,10 +3659,8 @@ static void log_CmdClearColorImage(void* cmd, void* image, uint32_t imageLayout,
 // PFN_vkCmdSetViewport(VkCommandBuffer commandBuffer, uint32_t firstViewport, uint32_t viewportCount,
 //                      const VkViewport* pViewports)
 typedef void (*PFN_cmdSetViewport)(void*, uint32_t, uint32_t, const void*);
-// VkViewport mirror -- header :4275 (x@0 y@4 width@8 height@12 minDepth@16 maxDepth@20, size 24).
-typedef struct { float x, y, width, height, minDepth, maxDepth; } VkViewportL;
-_Static_assert(sizeof(VkViewportL) == 24, "VkViewport must be 24 bytes on LP64");
-_Static_assert(offsetof(VkViewportL, minDepth) == 16, "VkViewport.minDepth offset");
+// VkViewport -- official SDK type (vulkan_core.h:3751).
+typedef VkViewport VkViewportL;
 
 static void log_CmdSetViewport(void* cmd, uint32_t firstViewport, uint32_t viewportCount,
                                const void* pViewports) {
@@ -2696,10 +3688,8 @@ static void log_CmdSetViewport(void* cmd, uint32_t firstViewport, uint32_t viewp
 // PFN_vkCmdSetScissor(VkCommandBuffer commandBuffer, uint32_t firstScissor, uint32_t scissorCount,
 //                     const VkRect2D* pScissors)
 typedef void (*PFN_cmdSetScissor)(void*, uint32_t, uint32_t, const void*);
-// VkRect2D mirror -- header :3422 (offset{x@0 y@4} extent{width@8 height@12}, size 16).
-typedef struct { int32_t x, y; uint32_t width, height; } VkRect2DL;
-_Static_assert(sizeof(VkRect2DL) == 16, "VkRect2D must be 16 bytes on LP64");
-_Static_assert(offsetof(VkRect2DL, width) == 8, "VkRect2D.extent.width offset");
+// VkRect2D -- official SDK type (vulkan_core.h:3064); accesses use offset.x/y, extent.width/height.
+typedef VkRect2D VkRect2DL;
 
 static void log_CmdSetScissor(void* cmd, uint32_t firstScissor, uint32_t scissorCount,
                               const void* pScissors) {
@@ -2715,7 +3705,7 @@ static void log_CmdSetScissor(void* cmd, uint32_t firstScissor, uint32_t scissor
         if (scissorCount > 0 && pScissors != NULL) {
             const VkRect2DL* s0 = (const VkRect2DL*)pScissors;
             MEOWLOGI("meowvulkan:   scissor0 offset=%{public}d,%{public}d extent=%{public}u x %{public}u",
-                     s0->x, s0->y, s0->width, s0->height);
+                     s0->offset.x, s0->offset.y, s0->extent.width, s0->extent.height);
         }
     }
     ((PFN_cmdSetScissor)real)(cmd, firstScissor, scissorCount, pScissors);
@@ -2726,14 +3716,9 @@ static void log_CmdSetScissor(void* cmd, uint32_t firstScissor, uint32_t scissor
 //                           const VkClearAttachment* pAttachments, uint32_t rectCount,
 //                           const VkClearRect* pRects)
 typedef void (*PFN_cmdClearAttachments)(void*, uint32_t, const void*, uint32_t, const void*);
-// VkClearAttachment mirror -- header :4494 (aspectMask@0 colorAttachment@4 clearValue@8, size 24).
-// clearValue is a VkClearValue union (VkClearColorValue 16B | VkClearDepthStencilValue 8B) -> 16B;
-// it is logged as raw 32-bit words, never interpreted as one specific member.
-typedef struct { uint32_t aspectMask, colorAttachment;
-                 uint32_t cv0, cv1, cv2, cv3; } VkClearAttachmentL;
-_Static_assert(sizeof(VkClearAttachmentL) == 24, "VkClearAttachment must be 24 bytes on LP64");
-_Static_assert(offsetof(VkClearAttachmentL, colorAttachment) == 4, "VkClearAttachment.colorAttachment offset");
-_Static_assert(offsetof(VkClearAttachmentL, cv0) == 8, "VkClearAttachment.clearValue offset");
+// VkClearAttachment -- official SDK type (vulkan_core.h:4122); clearValue is the official union, read
+// as raw 32-bit words via clearValue.color.uint32[] below.
+typedef VkClearAttachment VkClearAttachmentL;
 
 static void log_CmdClearAttachments(void* cmd, uint32_t attachmentCount, const void* pAttachments,
                                     uint32_t rectCount, const void* pRects) {
@@ -2750,7 +3735,9 @@ static void log_CmdClearAttachments(void* cmd, uint32_t attachmentCount, const v
             const VkClearAttachmentL* a0 = (const VkClearAttachmentL*)pAttachments;
             MEOWLOGI("meowvulkan:   clearAttachment0 aspectMask=0x%{public}x colorAttachment=%{public}u "
                      "clearValue.raw=0x%{public}08x,0x%{public}08x,0x%{public}08x,0x%{public}08x",
-                     a0->aspectMask, a0->colorAttachment, a0->cv0, a0->cv1, a0->cv2, a0->cv3);
+                     a0->aspectMask, a0->colorAttachment, a0->clearValue.color.uint32[0],
+                     a0->clearValue.color.uint32[1], a0->clearValue.color.uint32[2],
+                     a0->clearValue.color.uint32[3]);
         }
     }
     ((PFN_cmdClearAttachments)real)(cmd, attachmentCount, pAttachments, rectCount, pRects);
@@ -2823,19 +3810,9 @@ static PFN_vkVoidFunctionLocal real_proc(const char* name) {
 // vkCmdPipelineBarrier -- header :4591. This is the v1 entry point, DISTINCT from vkCmdPipelineBarrier2
 // above (:741). Its srcStageMask/dstStageMask are 32-bit VkPipelineStageFlags (VkFlags = uint32_t,
 // header :2953/:97), NOT the 64-bit masks of VkDependencyInfo (VkPipelineStageFlags2 = uint64_t).
-// VkImageMemoryBarrier mirror -- header :4020 (LP64: sType@0 pNext@8 srcAccessMask@16 dstAccessMask@20
-// oldLayout@24 newLayout@28 srcQueueFamilyIndex@32 dstQueueFamilyIndex@36 image@40
-// subresourceRange@48{aspectMask@48 baseMipLevel@52 levelCount@56 baseArrayLayer@60 layerCount@64};
-// size 72. VkAccessFlags/VkImageLayout are 32-bit; VkImage is a dispatchable handle => pointer.)
-typedef struct { uint32_t sType; const void* pNext; uint32_t srcAccessMask, dstAccessMask;
-                 int32_t oldLayout, newLayout; uint32_t srcQueueFamilyIndex, dstQueueFamilyIndex;
-                 void* image; uint32_t aspectMask, baseMipLevel, levelCount, baseArrayLayer,
-                 layerCount; } VkImgBarrierL;
-_Static_assert(sizeof(VkImgBarrierL) == 72, "VkImageMemoryBarrier must be 72 bytes on LP64");
-_Static_assert(offsetof(VkImgBarrierL, oldLayout) == 24, "VkImageMemoryBarrier.oldLayout offset");
-_Static_assert(offsetof(VkImgBarrierL, newLayout) == 28, "VkImageMemoryBarrier.newLayout offset");
-_Static_assert(offsetof(VkImgBarrierL, image) == 40, "VkImageMemoryBarrier.image offset");
-_Static_assert(offsetof(VkImgBarrierL, aspectMask) == 48, "VkImageMemoryBarrier.subresourceRange.aspectMask offset");
+// VkImageMemoryBarrier -- official SDK type (vulkan_core.h:3120); subresourceRange is nested, so the
+// accesses below use <barrier>.subresourceRange.<member>.
+typedef VkImageMemoryBarrier VkImgBarrierL;
 
 // F44: VkDependencyInfo -> vkCmdPipelineBarrier. Forward-declared above (near the sync2
 // submit translation) because the v1 image-barrier mirror only exists from here on.
@@ -2918,16 +3895,16 @@ static int meow_translate_cmd_pipeline_barrier2(void* cmd, const void* di) {
             ib[k].pNext = p[k].pNext;
             ib[k].srcAccessMask = meow_access2_to_v1(p[k].srcAccessMask, &lostBits);
             ib[k].dstAccessMask = meow_access2_to_v1(p[k].dstAccessMask, &lostBits);
-            ib[k].oldLayout = (int32_t)p[k].oldLayout;
-            ib[k].newLayout = (int32_t)p[k].newLayout;
+            ib[k].oldLayout = p[k].oldLayout;
+            ib[k].newLayout = p[k].newLayout;
             ib[k].srcQueueFamilyIndex = p[k].srcQueueFamilyIndex;
             ib[k].dstQueueFamilyIndex = p[k].dstQueueFamilyIndex;
             ib[k].image = p[k].image;
-            ib[k].aspectMask = p[k].aspectMask;
-            ib[k].baseMipLevel = p[k].baseMipLevel;
-            ib[k].levelCount = p[k].levelCount;
-            ib[k].baseArrayLayer = p[k].baseArrayLayer;
-            ib[k].layerCount = p[k].layerCount;
+            ib[k].subresourceRange.aspectMask = p[k].subresourceRange.aspectMask;
+            ib[k].subresourceRange.baseMipLevel = p[k].subresourceRange.baseMipLevel;
+            ib[k].subresourceRange.levelCount = p[k].subresourceRange.levelCount;
+            ib[k].subresourceRange.baseArrayLayer = p[k].subresourceRange.baseArrayLayer;
+            ib[k].subresourceRange.layerCount = p[k].subresourceRange.layerCount;
         }
     }
     real(cmd, srcStage, dstStage, d->dependencyFlags, mc, mb, bc, bb, ic, ib);
@@ -2987,7 +3964,8 @@ static void log_CmdPipelineBarrier(void* cmd, uint32_t srcStageMask, uint32_t ds
             const VkImgBarrierL* b = (const VkImgBarrierL*)pImageMemoryBarriers;
             MEOWLOGI("meowvulkan:   imgBarrier0 oldLayout=%{public}d newLayout=%{public}d "
                      "srcStageMask=0x%{public}x dstStageMask=0x%{public}x aspectMask=0x%{public}x image=%{public}p",
-                     b->oldLayout, b->newLayout, srcStageMask, dstStageMask, b->aspectMask, b->image);
+                     b->oldLayout, b->newLayout, srcStageMask, dstStageMask,
+                     b->subresourceRange.aspectMask, b->image);
         }
     }
     ((PFN_cmdPipelineBarrier)real)(cmd, srcStageMask, dstStageMask, dependencyFlags,
@@ -3075,12 +4053,8 @@ static void log_CmdExecuteCommands(void* cmd, uint32_t commandBufferCount, const
 // vkCmdBeginDebugUtilsLabelEXT"), so the wrappers are registered in BOTH vkGetInstanceProcAddr and
 // vkGetDeviceProcAddr and resolution prefers g_gdpa, then falls back to the instance path. The real
 // name keeps its EXT suffix (it is part of the name, unlike the KHR core aliases).
-// VkDebugUtilsLabelEXT mirror -- header :16273 (LP64: sType@0 pNext@8 pLabelName@16 color[4]@24, size 40).
-typedef struct { uint32_t sType; const void* pNext; const char* pLabelName; float color[4];
-                 } VkDebugUtilsLabelL;
-_Static_assert(sizeof(VkDebugUtilsLabelL) == 40, "VkDebugUtilsLabelEXT must be 40 bytes on LP64");
-_Static_assert(offsetof(VkDebugUtilsLabelL, pLabelName) == 16, "VkDebugUtilsLabelEXT.pLabelName offset");
-_Static_assert(offsetof(VkDebugUtilsLabelL, color) == 24, "VkDebugUtilsLabelEXT.color offset");
+// VkDebugUtilsLabelEXT -- official SDK type (vulkan_core.h:14153).
+typedef VkDebugUtilsLabelEXT VkDebugUtilsLabelL;
 
 static PFN_vkVoidFunctionLocal resolve_debug_label(const char* name) {
     PFN_vkVoidFunctionLocal p = g_gdpa ? g_gdpa(g_dev_seen, name) : NULL;
@@ -3161,36 +4135,11 @@ static void log_CmdInsertDebugUtilsLabelEXT(void* cmd, const void* pLabelInfo) {
 // RULE: forward the SAME argument list. No parameter is ever added, not even for logging.
 // =====================================================================================
 
-// VkDescriptorUpdateTemplateEntry mirror -- header :6031. LP64: dstBinding@0 dstArrayElement@4
-// descriptorCount@8 descriptorType@12 offset@16 stride@24; size 32. VkDescriptorType is a 32-bit enum.
-typedef struct { uint32_t dstBinding, dstArrayElement, descriptorCount, descriptorType;
-                 uint64_t offset, stride; } VkDUTEntryL;
-_Static_assert(sizeof(VkDUTEntryL) == 32, "VkDescriptorUpdateTemplateEntry must be 32 bytes on LP64");
-_Static_assert(offsetof(VkDUTEntryL, dstBinding) == 0, "VkDescriptorUpdateTemplateEntry.dstBinding offset");
-_Static_assert(offsetof(VkDUTEntryL, dstArrayElement) == 4, "VkDescriptorUpdateTemplateEntry.dstArrayElement offset");
-_Static_assert(offsetof(VkDUTEntryL, descriptorCount) == 8, "VkDescriptorUpdateTemplateEntry.descriptorCount offset");
-_Static_assert(offsetof(VkDUTEntryL, descriptorType) == 12, "VkDescriptorUpdateTemplateEntry.descriptorType offset");
-_Static_assert(offsetof(VkDUTEntryL, offset) == 16, "VkDescriptorUpdateTemplateEntry.offset offset");
-_Static_assert(offsetof(VkDUTEntryL, stride) == 24, "VkDescriptorUpdateTemplateEntry.stride offset");
+// VkDescriptorUpdateTemplateEntry -- official SDK type (vulkan_core.h:5667).
+typedef VkDescriptorUpdateTemplateEntry VkDUTEntryL;
 
-// VkDescriptorUpdateTemplateCreateInfo mirror -- header :6040. LP64: sType@0 pNext@8 flags@16
-// descriptorUpdateEntryCount@20 pDescriptorUpdateEntries@24 templateType@32 descriptorSetLayout@40
-// pipelineBindPoint@48 pipelineLayout@56 set@64; size 72. VkDescriptorSetLayout / VkPipelineLayout are
-// NON-dispatchable handles => pointer on this ABI (header :54-60, VK_USE_64_BIT_PTR_DEFINES==1).
-typedef struct { uint32_t sType; const void* pNext; uint32_t flags, descriptorUpdateEntryCount;
-                 const VkDUTEntryL* pDescriptorUpdateEntries; uint32_t templateType;
-                 void* descriptorSetLayout; uint32_t pipelineBindPoint; void* pipelineLayout;
-                 uint32_t set; } VkDUTCreateInfoL;
-_Static_assert(sizeof(VkDUTCreateInfoL) == 72, "VkDescriptorUpdateTemplateCreateInfo must be 72 bytes on LP64");
-_Static_assert(offsetof(VkDUTCreateInfoL, pNext) == 8, "VkDescriptorUpdateTemplateCreateInfo.pNext offset");
-_Static_assert(offsetof(VkDUTCreateInfoL, flags) == 16, "VkDescriptorUpdateTemplateCreateInfo.flags offset");
-_Static_assert(offsetof(VkDUTCreateInfoL, descriptorUpdateEntryCount) == 20, "VkDescriptorUpdateTemplateCreateInfo.descriptorUpdateEntryCount offset");
-_Static_assert(offsetof(VkDUTCreateInfoL, pDescriptorUpdateEntries) == 24, "VkDescriptorUpdateTemplateCreateInfo.pDescriptorUpdateEntries offset");
-_Static_assert(offsetof(VkDUTCreateInfoL, templateType) == 32, "VkDescriptorUpdateTemplateCreateInfo.templateType offset");
-_Static_assert(offsetof(VkDUTCreateInfoL, descriptorSetLayout) == 40, "VkDescriptorUpdateTemplateCreateInfo.descriptorSetLayout offset");
-_Static_assert(offsetof(VkDUTCreateInfoL, pipelineBindPoint) == 48, "VkDescriptorUpdateTemplateCreateInfo.pipelineBindPoint offset");
-_Static_assert(offsetof(VkDUTCreateInfoL, pipelineLayout) == 56, "VkDescriptorUpdateTemplateCreateInfo.pipelineLayout offset");
-_Static_assert(offsetof(VkDUTCreateInfoL, set) == 64, "VkDescriptorUpdateTemplateCreateInfo.set offset");
+// VkDescriptorUpdateTemplateCreateInfo -- official SDK type (vulkan_core.h:5676).
+typedef VkDescriptorUpdateTemplateCreateInfo VkDUTCreateInfoL;
 
 // Bounded cache: template handle -> the shape MC created it with. Written once per create, read on
 // every push. <=32 templates is far above what MC creates; overflow is logged, never silent. A lock is
@@ -3292,6 +4241,14 @@ static void log_CmdPushDescriptorSetWithTemplate(void* cmd, void* tmpl, void* la
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdPushDescriptorSetWithTemplate");
         return;
     }
+    // F72b (build .50): this form is deliberately NOT emulated this round; count it (rate-limited) so
+    // the log can state whether MC actually depends on the template push path.
+    static unsigned long f72bWtN = 0;
+    unsigned long wtN = ++f72bWtN;
+    if (meow_vk_verbose() || wtN <= 4ul)
+        MEOWLOGW("meowvulkan: F72b WithTemplate push seen: %{public}lu (not emulated, forwarding)", wtN);
+    else if ((wtN % 2000ul) == 0ul)
+        MEOWLOGW("meowvulkan: F72b WithTemplate pushes so far: %{public}lu (rate-limited, not emulated)", wtN);
     if (meow_vk_verbose()) {
         MEOWLOGI("meowvulkan: vkCmdPushDescriptorSetWithTemplate CALLED cmdBuf=%{public}p "
                  "template=%{public}p layout=%{public}p set=%{public}u pData=%{public}p -- forwarding",
@@ -3362,9 +4319,9 @@ static void log_CmdPushDescriptorSetWithTemplate(void* cmd, void* tmpl, void* la
 // RULE: forward the SAME argument list. No parameter is ever invented, not even for logging.
 // =====================================================================================
 
-// Non-dispatchable handles: one 64-bit word (see the note above). Mirrors VkSemaphoreL (:395).
-typedef uint64_t VkEventL;
-typedef uint64_t VkQueryPoolL;
+// Official non-dispatchable handles (vulkan_core.h); one 64-bit word on this LP64 target.
+typedef VkEvent     VkEventL;
+typedef VkQueryPool VkQueryPoolL;
 _Static_assert(sizeof(VkEventL) == 8, "VkEvent is a 64-bit non-dispatchable handle");
 _Static_assert(sizeof(VkQueryPoolL) == 8, "VkQueryPool is a 64-bit non-dispatchable handle");
 
@@ -3599,16 +4556,8 @@ static void log_CmdWriteTimestamp2(void* cmd, uint64_t stage, uint64_t queryPool
 // RULE: forward the SAME argument list. No parameter is ever invented, not even for logging.
 // =====================================================================================
 
-// VkQueryPoolCreateInfo mirror -- header :3873. VkQueryPoolCreateFlags and
-// VkQueryPipelineStatisticFlags are VkFlags (=uint32, header :3007/:3026); VkQueryType is int32.
-typedef struct { uint32_t sType; const void* pNext; uint32_t flags; int32_t queryType;
-                 uint32_t queryCount; uint32_t pipelineStatistics; } VkQueryPoolCIL;
-_Static_assert(sizeof(VkQueryPoolCIL) == 32, "VkQueryPoolCreateInfo must be 32 bytes on LP64");
-_Static_assert(offsetof(VkQueryPoolCIL, pNext) == 8, "queryPoolCI.pNext offset");
-_Static_assert(offsetof(VkQueryPoolCIL, flags) == 16, "queryPoolCI.flags offset");
-_Static_assert(offsetof(VkQueryPoolCIL, queryType) == 20, "queryPoolCI.queryType offset");
-_Static_assert(offsetof(VkQueryPoolCIL, queryCount) == 24, "queryPoolCI.queryCount offset");
-_Static_assert(offsetof(VkQueryPoolCIL, pipelineStatistics) == 28, "queryPoolCI.pipelineStatistics offset");
+// VkQueryPoolCreateInfo -- official SDK type (vulkan_core.h:3873).
+typedef VkQueryPoolCreateInfo VkQueryPoolCIL;
 
 // vkCreateQueryPool -- header :4567. VkQueryPool (the out handle) is a 64-bit non-dispatchable
 // handle, so `out` is a void** and *out is printed with 0x%{public}llx. Forwarded with the identical
@@ -3642,19 +4591,10 @@ static int log_CreateQueryPool(void* dev, const void* ci, const void* alloc, voi
     return rc;
 }
 
-// VkQueueFamilyProperties mirror -- header :3715. VkQueueFlags is VkFlags (=uint32, header :2875);
-// minImageTransferGranularity is VkExtent3D (3x uint32, header :3405).
-typedef struct { uint32_t queueFlags; uint32_t queueCount; uint32_t timestampValidBits;
-                 uint32_t minGranW, minGranH, minGranD; } VkQueueFamilyPropsL;
-_Static_assert(sizeof(VkQueueFamilyPropsL) == 24, "VkQueueFamilyProperties must be 24 bytes on LP64");
-_Static_assert(offsetof(VkQueueFamilyPropsL, queueCount) == 4, "qfp.queueCount offset");
-_Static_assert(offsetof(VkQueueFamilyPropsL, timestampValidBits) == 8, "qfp.timestampValidBits offset");
-_Static_assert(offsetof(VkQueueFamilyPropsL, minGranW) == 12, "qfp.minImageTransferGranularity.width offset");
-
-// VkQueueFamilyProperties2 mirror -- header :5832 (sType@0, pNext@8, inline queueFamilyProperties@16).
-typedef struct { uint32_t sType; void* pNext; VkQueueFamilyPropsL props; } VkQueueFamilyProps2L;
-_Static_assert(sizeof(VkQueueFamilyProps2L) == 40, "VkQueueFamilyProperties2 must be 40 bytes on LP64");
-_Static_assert(offsetof(VkQueueFamilyProps2L, props) == 16, "qfp2.queueFamilyProperties offset");
+// VkQueueFamilyProperties / VkQueueFamilyProperties2 -- official SDK types (vulkan_core.h:3715/5832).
+// Accesses below use the official `queueFamilyProperties` member (not the former `props`).
+typedef VkQueueFamilyProperties  VkQueueFamilyPropsL;
+typedef VkQueueFamilyProperties2 VkQueueFamilyProps2L;
 
 // One line per family. ★ timestampValidBits == 0 means "this queue does NOT support timestamps" --
 // writing a timestamp on such a queue is the VUID violation behind hypothesis (a).
@@ -3716,7 +4656,7 @@ static void log_GetPhysicalDeviceQueueFamilyProperties2(void* pdev, uint32_t* co
         uint32_t n = (outCount > 16u) ? 16u : outCount;
         const VkQueueFamilyProps2L* a = (const VkQueueFamilyProps2L*)props2;
         for (uint32_t i = 0; i < n; i++) {
-            log_queue_family_one(&a[i].props, i, "vkGetPhysicalDeviceQueueFamilyProperties2");
+            log_queue_family_one(&a[i].queueFamilyProperties, i, "vkGetPhysicalDeviceQueueFamilyProperties2");
         }
     }
 }
@@ -3728,8 +4668,9 @@ static void log_GetPhysicalDeviceQueueFamilyProperties2(void* pdev, uint32_t* co
 // DEFERRED: real pages appear at vkBindBufferMemory/vkMapMemory, and for LAZILY_ALLOCATED types the
 // memory is address space only until first access. Our crash sits exactly in that window, so the table
 // is the missing input: if the allocator picked a type it cannot legally map, that is the bug.
-typedef struct { uint32_t propertyFlags; uint32_t heapIndex; } VkMemTypeL;
-typedef struct { uint32_t memoryTypeCount; VkMemTypeL memoryTypes[32]; uint32_t memoryHeapCount; } VkMemPropsL;
+// Official memory-type table types (vulkan_core.h:3227/3399).
+typedef VkMemoryType VkMemTypeL;
+typedef VkPhysicalDeviceMemoryProperties VkMemPropsL;
 
 static void log_mem_types(const VkMemPropsL* mp) {
     if (mp == NULL) return;
@@ -3783,24 +4724,12 @@ static void hook_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice pdev, void*
 // RULE: forward the SAME argument list. No parameter is ever invented, not even for logging.
 // =====================================================================================
 
-// VkSurfaceCapabilitiesKHR mirror -- header :8997 (LP64: minImageCount@0 maxImageCount@4
-// currentExtent@8 minImageExtent@16 maxImageExtent@24 maxImageArrayLayers@32
-// supportedTransforms@36 currentTransform@40 supportedCompositeAlpha@44 supportedUsageFlags@48,
-// size 52 -- 13 uint32 words). VkFlags/enums are all 4 bytes. MOVED UP (F27 .22) from its old spot
-// below the swapchain wrapper so the wrapper can cross-check the request against the cached caps.
-typedef struct { uint32_t minImageCount, maxImageCount;
-                 uint32_t curW, curH; uint32_t minW, minH; uint32_t maxW, maxH;
-                 uint32_t maxImageArrayLayers; uint32_t supportedTransforms; uint32_t currentTransform;
-                 uint32_t supportedCompositeAlpha; uint32_t supportedUsageFlags; } VkSurfaceCapsKHRL;
-_Static_assert(sizeof(VkSurfaceCapsKHRL) == 52, "VkSurfaceCapabilitiesKHR must be 52 bytes on LP64");
-_Static_assert(offsetof(VkSurfaceCapsKHRL, curW) == 8, "caps.currentExtent.width offset");
-_Static_assert(offsetof(VkSurfaceCapsKHRL, maxImageArrayLayers) == 32, "caps.maxImageArrayLayers offset");
-_Static_assert(offsetof(VkSurfaceCapsKHRL, currentTransform) == 40, "caps.currentTransform offset");
-_Static_assert(offsetof(VkSurfaceCapsKHRL, supportedUsageFlags) == 48, "caps.supportedUsageFlags offset");
+// VkSurfaceCapabilitiesKHR -- official SDK type (vulkan_core.h:8583); extent fields are nested
+// (currentExtent/minImageExtent/maxImageExtent), so accesses below use the official nesting.
+typedef VkSurfaceCapabilitiesKHR VkSurfaceCapsKHRL;
 
-// VkSurfaceFormatKHR mirror -- header :9010 (format@0 colorSpace@4, size 8).
-typedef struct { int32_t format, colorSpace; } VkSurfaceFormatKHRL;
-_Static_assert(sizeof(VkSurfaceFormatKHRL) == 8, "VkSurfaceFormatKHR must be 8 bytes on LP64");
+// VkSurfaceFormatKHR -- official SDK type (vulkan_core.h:9010).
+typedef VkSurfaceFormatKHR VkSurfaceFormatKHRL;
 
 // F27 (.22): caches of what the surface actually advertises, filled by the three surface-query
 // wrappers below (each still forwards exactly ONCE and only records the result). The
@@ -3819,26 +4748,9 @@ static int32_t g_meow_present_modes[MEOW_PRESENT_MODE_MAX];
 static uint32_t g_meow_present_mode_count = 0;
 static int g_meow_present_modes_valid = 0;
 
-// VkSwapchainCreateInfoKHR mirror -- header :9090 (LP64: sType@0 pNext@8 flags@16 surface@24
-// minImageCount@32 imageFormat@36 imageColorSpace@40 imageExtent@44 imageArrayLayers@52
-// imageUsage@56 imageSharingMode@60 queueFamilyIndexCount@64 pQueueFamilyIndices@72
-// preTransform@80 compositeAlpha@84 presentMode@88 clipped@92 oldSwapchain@96, size 104).
-// Enums are int32 on this ABI; VkFlags is uint32; VkSurfaceKHR/VkSwapchainKHR are 8-byte handles.
-// Only real header fields are listed; the two 4-byte gaps (after `flags`, after
-// `queueFamilyIndexCount`) are natural ABI padding, proven by the offsetof asserts below.
-typedef struct { uint32_t sType; const void* pNext; uint32_t flags; uint64_t surface;
-                 uint32_t minImageCount; int32_t imageFormat; int32_t imageColorSpace;
-                 uint32_t extentW, extentH; uint32_t imageArrayLayers; uint32_t imageUsage;
-                 int32_t imageSharingMode; uint32_t queueFamilyIndexCount;
-                 const void* pQueueFamilyIndices; int32_t preTransform; int32_t compositeAlpha;
-                 int32_t presentMode; uint32_t clipped; uint64_t oldSwapchain; } VkSwapchainCIKHRL;
-_Static_assert(sizeof(VkSwapchainCIKHRL) == 104, "VkSwapchainCreateInfoKHR must be 104 bytes on LP64");
-_Static_assert(offsetof(VkSwapchainCIKHRL, surface) == 24, "swapchainCI.surface offset");
-_Static_assert(offsetof(VkSwapchainCIKHRL, minImageCount) == 32, "swapchainCI.minImageCount offset");
-_Static_assert(offsetof(VkSwapchainCIKHRL, extentW) == 44, "swapchainCI.imageExtent.width offset");
-_Static_assert(offsetof(VkSwapchainCIKHRL, imageUsage) == 56, "swapchainCI.imageUsage offset");
-_Static_assert(offsetof(VkSwapchainCIKHRL, pQueueFamilyIndices) == 72, "swapchainCI.pQueueFamilyIndices offset");
-_Static_assert(offsetof(VkSwapchainCIKHRL, oldSwapchain) == 96, "swapchainCI.oldSwapchain offset");
+// VkSwapchainCreateInfoKHR -- official SDK type (vulkan_core.h:8661); the extent is nested
+// (imageExtent.width/height) and surface/oldSwapchain are typed handles (VkSurfaceKHR/VkSwapchainKHR).
+typedef VkSwapchainCreateInfoKHR VkSwapchainCIKHRL;
 
 // Diagnostic switch (2026-09-17, shim build .21). MEOW_VK_SWAPCHAIN_USAGE_EXTRA=<n> is parsed with
 // strtoul(s, NULL, 0), so both decimal and 0x-prefixed forms work; an unset/empty/invalid value
@@ -3863,36 +4775,23 @@ static unsigned long meow_vk_swapchain_usage_extra(void) {
     return v;
 }
 
-// VkImageUsageFlagBits values, copied verbatim from the authoritative header
-// ref/lwjgl3/modules/lwjgl/vulkan/src/main/c/vulkan/vulkan_core.h:2802-2830. Only the bits this
-// diagnostic names in its log line are listed. VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT (header :2829)
-// is the same value as VK_IMAGE_USAGE_HOST_TRANSFER_BIT (header :2811).
-#define MEOW_VK_IMAGE_USAGE_TRANSFER_SRC_BIT             0x00000001u
-#define MEOW_VK_IMAGE_USAGE_TRANSFER_DST_BIT             0x00000002u
-#define MEOW_VK_IMAGE_USAGE_SAMPLED_BIT                  0x00000004u
-#define MEOW_VK_IMAGE_USAGE_STORAGE_BIT                  0x00000008u
-#define MEOW_VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT         0x00000010u
-#define MEOW_VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT 0x00000020u
-#define MEOW_VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT     0x00000040u
-#define MEOW_VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT         0x00000080u
-#define MEOW_VK_IMAGE_USAGE_HOST_TRANSFER_BIT            0x00400000u
-_Static_assert(MEOW_VK_IMAGE_USAGE_TRANSFER_SRC_BIT == 0x00000001u, "VK_IMAGE_USAGE_TRANSFER_SRC_BIT (header :2803)");
-_Static_assert(MEOW_VK_IMAGE_USAGE_TRANSFER_DST_BIT == 0x00000002u, "VK_IMAGE_USAGE_TRANSFER_DST_BIT (header :2804)");
-_Static_assert(MEOW_VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT == 0x00000010u, "VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT (header :2807)");
-_Static_assert(MEOW_VK_IMAGE_USAGE_HOST_TRANSFER_BIT == 0x00400000u, "VK_IMAGE_USAGE_HOST_TRANSFER_BIT (header :2811)");
+// VkImageUsageFlagBits / VkCompositeAlphaFlagBitsKHR -- now official SDK enum constants
+// (vulkan_core.h). The former hand-typed values and their _Static_asserts are gone; the names below
+// are thin aliases so the diagnostic log text stays unchanged.
+#define MEOW_VK_IMAGE_USAGE_TRANSFER_SRC_BIT             VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+#define MEOW_VK_IMAGE_USAGE_TRANSFER_DST_BIT             VK_IMAGE_USAGE_TRANSFER_DST_BIT
+#define MEOW_VK_IMAGE_USAGE_SAMPLED_BIT                  VK_IMAGE_USAGE_SAMPLED_BIT
+#define MEOW_VK_IMAGE_USAGE_STORAGE_BIT                  VK_IMAGE_USAGE_STORAGE_BIT
+#define MEOW_VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+#define MEOW_VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+#define MEOW_VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT     VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT
+#define MEOW_VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT         VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT
+#define MEOW_VK_IMAGE_USAGE_HOST_TRANSFER_BIT            VK_IMAGE_USAGE_HOST_TRANSFER_BIT
 
-// VkCompositeAlphaFlagBitsKHR values, copied verbatim from the authoritative header
-// <SDK>/openharmony/native/sysroot/usr/include/vulkan/vulkan_core.h:8574-8580 (same spellings at
-// ref/lwjgl3/modules/lwjgl/vulkan/src/main/c/vulkan/vulkan_core.h). Only these four real bits exist;
-// supportedCompositeAlpha is a VkCompositeAlphaFlagsKHR and at least one bit is always advertised.
-#define MEOW_VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR          0x00000001u
-#define MEOW_VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR  0x00000002u
-#define MEOW_VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR 0x00000004u
-#define MEOW_VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR         0x00000008u
-_Static_assert(MEOW_VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR == 0x00000001u, "VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR (header :8575)");
-_Static_assert(MEOW_VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR == 0x00000002u, "VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR (header :8576)");
-_Static_assert(MEOW_VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR == 0x00000004u, "VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR (header :8577)");
-_Static_assert(MEOW_VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR == 0x00000008u, "VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR (header :8578)");
+#define MEOW_VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR          VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+#define MEOW_VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR  VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR
+#define MEOW_VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR
+#define MEOW_VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR         VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR
 
 // Diagnostic switch (2026-09-17, shim build .22). MEOW_VK_FIX_COMPOSITE_ALPHA: unset/empty/invalid
 // => 0 (disabled); any non-zero value enables the fix. Same env-read-once shape as
@@ -3929,14 +4828,14 @@ static int g_meow_supported_composite_alpha_valid = 0;
 // The task text proposed "0=FIFO"; the header says otherwise (0=IMMEDIATE, 2=FIFO). The switch below
 // therefore gates on the PRESENCE of the env var, not on a non-zero value, so that even 0 can be
 // selected; use MEOW_VK_FIX_PRESENT_MODE=2 for FIFO.
-#define MEOW_VK_PRESENT_MODE_IMMEDIATE_KHR    0
-#define MEOW_VK_PRESENT_MODE_MAILBOX_KHR      1
-#define MEOW_VK_PRESENT_MODE_FIFO_KHR         2
-#define MEOW_VK_PRESENT_MODE_FIFO_RELAXED_KHR 3
-#define MEOW_VK_FORMAT_UNDEFINED              0
-#define MEOW_VK_SHARING_MODE_EXCLUSIVE        0
-#define MEOW_VK_SHARING_MODE_CONCURRENT       1
-#define MEOW_VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR 0x00000001u
+#define MEOW_VK_PRESENT_MODE_IMMEDIATE_KHR    VK_PRESENT_MODE_IMMEDIATE_KHR
+#define MEOW_VK_PRESENT_MODE_MAILBOX_KHR      VK_PRESENT_MODE_MAILBOX_KHR
+#define MEOW_VK_PRESENT_MODE_FIFO_KHR         VK_PRESENT_MODE_FIFO_KHR
+#define MEOW_VK_PRESENT_MODE_FIFO_RELAXED_KHR VK_PRESENT_MODE_FIFO_RELAXED_KHR
+#define MEOW_VK_FORMAT_UNDEFINED              VK_FORMAT_UNDEFINED
+#define MEOW_VK_SHARING_MODE_EXCLUSIVE        VK_SHARING_MODE_EXCLUSIVE
+#define MEOW_VK_SHARING_MODE_CONCURRENT       VK_SHARING_MODE_CONCURRENT
+#define MEOW_VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
 
 static const char* meow_present_mode_name(int32_t m) {
     switch (m) {
@@ -3994,6 +4893,41 @@ static VkSwapchainCIKHRL* meow_swapchain_mut(const VkSwapchainCIKHRL* c, VkSwapc
         *copy = *c;
         *fwdCi = (const void*)copy;
     }
+    /* F73 (shim build .51): WSI orientation / extent overrides.
+     * WHY: with F72 (push->descriptor-set) MC's native Vulkan backend finally RENDERS on this device,
+     * but the picture arrives rotated 90 deg counter-clockwise and stretched ("lying on its side,
+     * skinny and long"). This platform's OHOS surface reports currentTransform = 0x2
+     * (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR, measured repeatedly in the surface-capabilities logs),
+     * and a 90-degree presentation transform rotates the presented image unless the app swapped its
+     * rendering/extent to match -- which produces exactly that symptom on a landscape 2-in-1 window.
+     * Both overrides are opt-in so that today's behaviour stays byte-identical by default, and each is
+     * a single variable:
+     *   MEOW_VK_FIX_SURFACE_TRANSFORM=identity  -> force preTransform = IDENTITY (the WSI stops rotating)
+     *   MEOW_VK_FIX_EXTENT=current              -> force imageExtent = cached caps.currentExtent
+     */
+    {
+        const char* t = getenv("MEOW_VK_FIX_SURFACE_TRANSFORM");
+        if (t != NULL && strcmp(t, "identity") == 0) {
+            if ((uint32_t)copy->preTransform != MEOW_VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+                MEOWLOGI("meowvulkan: F73 forcing preTransform 0x%{public}x -> IDENTITY(0x1) "
+                         "(MEOW_VK_FIX_SURFACE_TRANSFORM=identity)", (unsigned)copy->preTransform);
+                copy->preTransform = (int32_t)MEOW_VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+            }
+        }
+        const char* e = getenv("MEOW_VK_FIX_EXTENT");
+        if (e != NULL && strcmp(e, "current") == 0 && g_meow_caps_valid) {
+            uint32_t cw = g_meow_caps.currentExtent.width;
+            uint32_t ch = g_meow_caps.currentExtent.height;
+            if (cw != 0xFFFFFFFFu && cw != 0u &&
+                (copy->imageExtent.width != cw || copy->imageExtent.height != ch)) {
+                MEOWLOGI("meowvulkan: F73 forcing imageExtent %{public}ux%{public}u -> %{public}ux%{public}u "
+                         "(MEOW_VK_FIX_EXTENT=current)",
+                         copy->imageExtent.width, copy->imageExtent.height, cw, ch);
+                copy->imageExtent.width = cw;
+                copy->imageExtent.height = ch;
+            }
+        }
+    }
     return copy;
 }
 
@@ -4020,13 +4954,13 @@ static void meow_crosscheck_swapchain(const VkSwapchainCIKHRL* c) {
         return;
     }
     MEOWLOGI("meowvulkan: CROSSCHECK request vs cached surface (surface=0x%{public}llx)",
-             (unsigned long long)c->surface);
+             (unsigned long long)(uintptr_t)c->surface);
     if (!g_meow_caps_valid) {
         MEOWLOGI("meowvulkan:   caps=? (surface capabilities not cached) -> all caps verdicts are ?");
         MEOWLOGI("meowvulkan:   minImageCount=%{public}u imageExtent=%{public}ux%{public}u "
                  "imageArrayLayers=%{public}u imageUsage=0x%{public}x preTransform=0x%{public}x "
                  "compositeAlpha=0x%{public}x",
-                 c->minImageCount, c->extentW, c->extentH, c->imageArrayLayers,
+                 c->minImageCount, c->imageExtent.width, c->imageExtent.height, c->imageArrayLayers,
                  (unsigned)c->imageUsage, (unsigned)c->preTransform, (unsigned)c->compositeAlpha);
     } else {
         const VkSurfaceCapsKHRL* k = &g_meow_caps;
@@ -4034,14 +4968,18 @@ static void meow_crosscheck_swapchain(const VkSwapchainCIKHRL* c) {
                  (k->maxImageCount == 0u || c->minImageCount <= k->maxImageCount);
         MEOWLOGI("meowvulkan:   minImageCount req=%{public}u caps=[%{public}u..%{public}u] %{public}s",
                  c->minImageCount, k->minImageCount, k->maxImageCount, ok ? "[OK]" : "[*** VIOLATION ***]");
-        ok = (k->curW == 0xFFFFFFFFu && k->curH == 0xFFFFFFFFu)
-                 ? (c->extentW >= k->minW && c->extentW <= k->maxW &&
-                    c->extentH >= k->minH && c->extentH <= k->maxH)
-                 : (c->extentW == k->curW && c->extentH == k->curH);
+        ok = (k->currentExtent.width == 0xFFFFFFFFu && k->currentExtent.height == 0xFFFFFFFFu)
+                 ? (c->imageExtent.width >= k->minImageExtent.width &&
+                    c->imageExtent.width <= k->maxImageExtent.width &&
+                    c->imageExtent.height >= k->minImageExtent.height &&
+                    c->imageExtent.height <= k->maxImageExtent.height)
+                 : (c->imageExtent.width == k->currentExtent.width &&
+                    c->imageExtent.height == k->currentExtent.height);
         MEOWLOGI("meowvulkan:   imageExtent req=%{public}ux%{public}u current=%{public}ux%{public}u "
                  "min=%{public}ux%{public}u max=%{public}ux%{public}u %{public}s",
-                 c->extentW, c->extentH, k->curW, k->curH, k->minW, k->minH, k->maxW, k->maxH,
-                 ok ? "[OK]" : "[*** VIOLATION ***]");
+                 c->imageExtent.width, c->imageExtent.height, k->currentExtent.width, k->currentExtent.height,
+                 k->minImageExtent.width, k->minImageExtent.height, k->maxImageExtent.width,
+                 k->maxImageExtent.height, ok ? "[OK]" : "[*** VIOLATION ***]");
         MEOWLOGI("meowvulkan:   imageArrayLayers req=%{public}u max=%{public}u %{public}s",
                  c->imageArrayLayers, k->maxImageArrayLayers,
                  (c->imageArrayLayers <= k->maxImageArrayLayers) ? "[OK]" : "[*** VIOLATION ***]");
@@ -4052,7 +4990,12 @@ static void meow_crosscheck_swapchain(const VkSwapchainCIKHRL* c) {
                  (unsigned)c->preTransform, k->currentTransform, k->supportedTransforms,
                  (((k->supportedTransforms & (uint32_t)c->preTransform) != 0u) &&
                   (k->currentTransform == MEOW_VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR ||
-                   c->preTransform == (int32_t)k->currentTransform)) ? "[OK]" : "[*** VIOLATION ***]");
+                   c->preTransform == (int32_t)k->currentTransform ||
+                   /* F73: a preTransform forced to IDENTITY by MEOW_VK_FIX_SURFACE_TRANSFORM is a
+                    * deliberate override, not a violation -- do not cry wolf about it. */
+                   (((uint32_t)c->preTransform) == MEOW_VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR &&
+                    getenv("MEOW_VK_FIX_SURFACE_TRANSFORM") != NULL)))
+                     ? "[OK]" : "[*** VIOLATION ***]");
         MEOWLOGI("meowvulkan:   compositeAlpha req=0x%{public}x supported=0x%{public}x %{public}s",
                  (unsigned)c->compositeAlpha, (unsigned)k->supportedCompositeAlpha,
                  (((uint32_t)c->compositeAlpha != 0u) &&
@@ -4116,17 +5059,35 @@ static int log_vkCreateSwapchainKHR(void* dev, const void* ci, const void* alloc
                  "imageArrayLayers=%{public}u imageUsage=0x%{public}x imageSharingMode=%{public}d "
                  "queueFamilyIndexCount=%{public}u preTransform=0x%{public}x compositeAlpha=0x%{public}x "
                  "presentMode=%{public}d clipped=%{public}u oldSwapchain=0x%{public}llx -- forwarding",
-                 (unsigned long long)c->surface, c->minImageCount, c->imageFormat, c->imageColorSpace,
-                 c->extentW, c->extentH, c->imageArrayLayers, (unsigned)c->imageUsage,
+                 (unsigned long long)(uintptr_t)c->surface, c->minImageCount, c->imageFormat, c->imageColorSpace,
+                 c->imageExtent.width, c->imageExtent.height, c->imageArrayLayers, (unsigned)c->imageUsage,
                  c->imageSharingMode, c->queueFamilyIndexCount, (unsigned)c->preTransform,
                  (unsigned)c->compositeAlpha, c->presentMode, c->clipped,
-                 (unsigned long long)c->oldSwapchain);
+                 (unsigned long long)(uintptr_t)c->oldSwapchain);
     } else {
         MEOWLOGI("meowvulkan: vkCreateSwapchainKHR CALLED pCreateInfo=NULL -- forwarding");
     }
     // F27 (.22): read-only cross-check of the REQUEST against the cached surface caps/formats/modes.
     // Runs before any override below, so it always describes what the caller (MC) really asked for.
     meow_crosscheck_swapchain(c);
+    // F73b (.52): ALWAYS take the mutable copy here, so the WSI overrides inside meow_swapchain_mut()
+    // (F73: forced preTransform / forced imageExtent) are actually reachable. BUG being fixed:
+    // meow_swapchain_mut() used to be called only from the other MEOW_VK_FIX_* branches, so with ONLY
+    // an F73 switch set it never ran at all -- proved on-device (MEOW_VK_FIX_SURFACE_TRANSFORM=identity
+    // was present in the render env, yet no "F73 forcing" line appeared). With no override set this
+    // insertion is a plain struct copy and every forwarded field is unchanged. The receipt line below
+    // exists so that silence can never again be mistaken for "the switch did not reach us".
+    if (c != NULL) {
+        VkSwapchainCIKHRL* mPre = meow_swapchain_mut(c, &ciCopy, &fwdCi);
+        const char* tPre = getenv("MEOW_VK_FIX_SURFACE_TRANSFORM");
+        const char* ePre = getenv("MEOW_VK_FIX_EXTENT");
+        MEOWLOGI("meowvulkan: F73 receipt: FIX_SURFACE_TRANSFORM=%{public}s FIX_EXTENT=%{public}s | "
+                 "requested preTransform=0x%{public}x extent=%{public}ux%{public}u -> forwarded "
+                 "preTransform=0x%{public}x extent=%{public}ux%{public}u",
+                 tPre != NULL ? tPre : "(unset)", ePre != NULL ? ePre : "(unset)",
+                 (unsigned)c->preTransform, c->imageExtent.width, c->imageExtent.height,
+                 (unsigned)mPre->preTransform, mPre->imageExtent.width, mPre->imageExtent.height);
+    }
     // DIAGNOSTIC (build .21): OR the env value into imageUsage on a LOCAL COPY only; log only when
     // the bits actually change. Default (unset / 0) forwards the caller's pointer untouched.
     unsigned long extra = meow_vk_swapchain_usage_extra();
@@ -4265,8 +5226,8 @@ static void meow_vk_log_slow_acquire(void* swapchain, int rc, long long dt_ms) {
              g_meow_sw_valid ? g_meow_sw_present_mode : 0, pmodename,
              g_meow_caps_valid,
              g_meow_caps_valid ? g_meow_caps.minImageCount : 0u,
-             g_meow_caps_valid ? g_meow_caps.curW : 0u,
-             g_meow_caps_valid ? g_meow_caps.curH : 0u,
+             g_meow_caps_valid ? g_meow_caps.currentExtent.width : 0u,
+             g_meow_caps_valid ? g_meow_caps.currentExtent.height : 0u,
              g_meow_caps_valid ? g_meow_caps.supportedUsageFlags : 0u,
              g_meow_formats_valid, g_meow_format_count, fmt0, cs0,
              g_meow_present_modes_valid, g_meow_present_mode_count, pm0);
@@ -4303,8 +5264,9 @@ static int log_GetPhysicalDeviceSurfaceCapabilitiesKHR(void* pdev, void* surface
                  "maxImageArrayLayers=%{public}u currentTransform=0x%{public}x "
                  "supportedTransforms=0x%{public}x supportedCompositeAlpha=0x%{public}x "
                  "supportedUsageFlags=0x%{public}x (TRANSFER_DST bit0x2: %{public}s)",
-                 rc, c->minImageCount, c->maxImageCount, c->curW, c->curH, c->minW, c->minH,
-                 c->maxW, c->maxH, c->maxImageArrayLayers, c->currentTransform,
+                 rc, c->minImageCount, c->maxImageCount, c->currentExtent.width, c->currentExtent.height,
+                 c->minImageExtent.width, c->minImageExtent.height, c->maxImageExtent.width,
+                 c->maxImageExtent.height, c->maxImageArrayLayers, c->currentTransform,
                  c->supportedTransforms, c->supportedCompositeAlpha,
                  c->supportedUsageFlags,
                  ((c->supportedUsageFlags & 0x2u) != 0u) ? "SUPPORTED" : "*** ABSENT ***");
@@ -4477,7 +5439,7 @@ static void init_once(void) {
              g_real, g_hooks, sw ? sw : "(unset)");
     // Deployment self-certification: this campaign lost a run to "the fix was in the tree but not on
     // the device", so every shim build now names itself. Bump the tag whenever the shim changes.
-    MEOWLOGI("meowvulkan: shim build 2026-09-18.41 f53-lazy-off");
+    MEOWLOGI("meowvulkan: shim build 2026-09-18.52 f73-reachable");
     // Crash backtraces for the Vulkan path are handled by meowbt, which the bridge now installs from
     // meowSetSurfaceId (see egl_gl.c) -- reachable on this path, unlike the GL-only install sites.
     // Enable with the documented envs: MEOW_BT=1 (and optionally MEOW_BT_FILE=<path>).
@@ -4601,7 +5563,8 @@ static int meow_vk_skip_vk13_write(void) {
 }
 
 // Diagnostic bisect switch (2026-09-17, shim build .9). "THE ONE LIE" is the unconditional
-// VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT.rateDivisor = 1 write below. The other two
+// VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT.vertexAttributeInstanceRateDivisor = 1 write
+// below (the official SDK field name; the old local mirror mislabelled it `rateDivisor`). The other two
 // forged feature bits (dynamic_rendering / push_descriptor) are proven real implementations, so
 // this single-variable switch isolates the divisor lie: MEOW_VK_NO_DIVISOR_FEATURE=1 skips ONLY
 // that write and changes nothing else. maxVertexAttribDivisor property reads are untouched.
@@ -4672,7 +5635,7 @@ static void meow_vk_strip_feature_bits(void* pNext) {
     // extension IS. MEOW_VK_KEEP_SYNC2=0 restores the F35/F36 behaviour (zero both sync2 fields) as an
     // A/B control; unset or any other value keeps them.
     int keepSync2 = meow_vk_keep_sync2();
-    for (VkBase* p = (VkBase*)pNext; p != NULL; p = (VkBase*)p->pNext) {
+    for (VkBaseOutStructure* p = (VkBaseOutStructure*)pNext; p != NULL; p = p->pNext) {
         switch (p->sType) {
             case ST_VK13_FEATURES: {
                 Vk13Features* f = (Vk13Features*)p;
@@ -4702,18 +5665,18 @@ static void meow_vk_strip_feature_bits(void* pNext) {
             }
             case ST_DIVISOR_FEATURES_EXT: {
                 VkDivisorFeaturesExt* f = (VkDivisorFeaturesExt*)p;
-                if (f->rateDivisor) {
+                if (f->vertexAttributeInstanceRateDivisor) {
                     MEOWLOGI("meowvulkan: F35 strip: "
                              "VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT.vertexAttributeInstanceRateDivisor "
-                             "%{public}u -> 0", f->rateDivisor);
-                    f->rateDivisor = 0;
+                             "%{public}u -> 0", f->vertexAttributeInstanceRateDivisor);
+                    f->vertexAttributeInstanceRateDivisor = 0;
                     stripped++;
                 }
-                if (f->rateZeroDivisor) {
+                if (f->vertexAttributeInstanceRateZeroDivisor) {
                     MEOWLOGI("meowvulkan: F35 strip: "
                              "VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT.vertexAttributeInstanceRateZeroDivisor "
-                             "%{public}u -> 0", f->rateZeroDivisor);
-                    f->rateZeroDivisor = 0;
+                             "%{public}u -> 0", f->vertexAttributeInstanceRateZeroDivisor);
+                    f->vertexAttributeInstanceRateZeroDivisor = 0;
                     stripped++;
                 }
                 break;
@@ -4742,7 +5705,7 @@ static void meow_vk_strip_feature_bits(void* pNext) {
 static void hook_GetPhysicalDeviceFeatures2(VkPhysicalDevice pdev, void* pFeatures) {
     void (*real)(VkPhysicalDevice, void*) = (void (*)(VkPhysicalDevice, void*))real_proc("vkGetPhysicalDeviceFeatures2");
     if (real) real(pdev, pFeatures);
-    for (VkBase* p = (VkBase*)pFeatures; p != NULL; p = (VkBase*)p->pNext) {
+    for (VkBaseOutStructure* p = (VkBaseOutStructure*)pFeatures; p != NULL; p = p->pNext) {
         switch (p->sType) {
             case ST_VK13_FEATURES:
                 if (meow_vk_skip_vk13_write()) {
@@ -4762,11 +5725,11 @@ static void hook_GetPhysicalDeviceFeatures2(VkPhysicalDevice pdev, void* pFeatur
                 // MEOW_VK_NO_DIVISOR_FEATURE=1 (build .9) skips just this write so the lie can be
                 // bisected on its own; everything else is unchanged.
                 if (meow_vk_skip_divisor_feature()) {
-                    MEOWLOGI("meowvulkan: DIAG: skipping VertexAttributeDivisorFeaturesEXT.rateDivisor write");
+                    MEOWLOGI("meowvulkan: DIAG: skipping VertexAttributeDivisorFeaturesEXT.vertexAttributeInstanceRateDivisor write");
                     break;
                 }
-                ((VkDivisorFeaturesExt*)p)->rateDivisor = 1;
-                MEOWLOGI("meowvulkan: set VertexAttributeDivisorFeaturesEXT.rateDivisor=1 (this one is a lie)");
+                ((VkDivisorFeaturesExt*)p)->vertexAttributeInstanceRateDivisor = 1;
+                MEOWLOGI("meowvulkan: set VertexAttributeDivisorFeaturesEXT.vertexAttributeInstanceRateDivisor=1 (this one is a lie)");
                 break;
             default: break;
         }
@@ -4788,16 +5751,16 @@ static VkResult hook_CreateDevice(VkPhysicalDevice pdev, const VkDeviceCI* ci, c
     static const char* kept[256];
     uint32_t n = 0;
     int extChanged = 0;
-    const char* const* names = (const char* const*)ci->ppExts;
-    if (names != NULL && ci->extCount > 0) {
-        for (uint32_t i = 0; i < ci->extCount && n < 256; i++) {
+    const char* const* names = (const char* const*)ci->ppEnabledExtensionNames;
+    if (names != NULL && ci->enabledExtensionCount > 0) {
+        for (uint32_t i = 0; i < ci->enabledExtensionCount && n < 256; i++) {
             if (names[i] && is_gated(names[i])) {
                 MEOWLOGI("meowvulkan: createDevice dropping (ICD rejects it): %{public}s", names[i]);
                 continue;
             }
             kept[n++] = names[i];
         }
-        extChanged = (n != ci->extCount);
+        extChanged = (n != ci->enabledExtensionCount);
     }
 
     // F35/F36 (.24): also strip feature BITS the ICD does not implement (F36: default ON with hooks; =0 disables).
@@ -4806,8 +5769,8 @@ static VkResult hook_CreateDevice(VkPhysicalDevice pdev, const VkDeviceCI* ci, c
 
     VkDeviceCI copy = *ci;
     if (extChanged) {
-        copy.extCount = n;
-        copy.ppExts = (const void*)kept;
+        copy.enabledExtensionCount = n;
+        copy.ppEnabledExtensionNames = kept;
     }
     if (stripFeatures) {
         MEOWLOGI("meowvulkan: createDevice stripping unsupported feature bits (F36: default with hooks; MEOW_VK_STRIP_UNSUPPORTED_FEATURES=0 disables)");
@@ -5037,8 +6000,16 @@ PFN_vkVoidFunctionLocal vkGetDeviceProcAddr(VkDevice dev, const char* name) {
     // Init-tail probes (entry-only): the last "… CALLED" line printed before death names the call.
     if (g_hooks && !strcmp(mapped, "vkCreatePipelineLayout")) return (PFN_vkVoidFunctionLocal)log_vkCreatePipelineLayout;
     if (g_hooks && !strcmp(mapped, "vkCreateDescriptorSetLayout")) return (PFN_vkVoidFunctionLocal)log_vkCreateDescriptorSetLayout;
+    // F72b (build .50): destroy side so each mirror set layout is released with its original.
+    if (g_hooks && !strcmp(mapped, "vkDestroyDescriptorSetLayout")) return (PFN_vkVoidFunctionLocal)log_vkDestroyDescriptorSetLayout;
     if (g_hooks && !strcmp(mapped, "vkCreateCommandPool")) return (PFN_vkVoidFunctionLocal)log_vkCreateCommandPool;
-    if (g_hooks && !strcmp(mapped, "vkCreateSemaphore")) return (PFN_vkVoidFunctionLocal)log_vkCreateSemaphore;
+    if (g_hooks && (!strcmp(mapped, "vkCreateSemaphore") ||
+                    (name != NULL && !strcmp(name, "vkCreateSemaphoreKHR")))) return (PFN_vkVoidFunctionLocal)log_vkCreateSemaphore;
+    // F69: destroy side of the timeline tracking. Registered by the same style as neighbours; a
+    // pure passthrough when MEOW_VK_TIMELINE_AS_FENCE is off.
+    if (g_hooks && (!strcmp(mapped, "vkDestroySemaphore") ||
+                    (name != NULL && !strcmp(name, "vkDestroySemaphoreKHR")))) return (PFN_vkVoidFunctionLocal)log_DestroySemaphore;
+    if (g_hooks && !strcmp(mapped, "vkDestroyDevice")) return (PFN_vkVoidFunctionLocal)log_DestroyDevice;
     if (g_hooks && !strcmp(mapped, "vkCreateFence")) return (PFN_vkVoidFunctionLocal)log_vkCreateFence;
     if (g_hooks && !strcmp(mapped, "vkCreateSwapchainKHR")) return (PFN_vkVoidFunctionLocal)log_vkCreateSwapchainKHR;
     if (g_hooks && !strcmp(mapped, "vkCreateGraphicsPipelines")) return (PFN_vkVoidFunctionLocal)log_CreateGraphicsPipelines;
@@ -5059,6 +6030,10 @@ PFN_vkVoidFunctionLocal vkGetDeviceProcAddr(VkDevice dev, const char* name) {
     if (g_hooks && !strcmp(mapped, "vkCmdBindPipeline")) return (PFN_vkVoidFunctionLocal)log_CmdBindPipeline;
     if (g_hooks && !strcmp(mapped, "vkCmdDraw")) return (PFN_vkVoidFunctionLocal)log_CmdDraw;
     if (g_hooks && !strcmp(mapped, "vkCmdDrawIndexed")) return (PFN_vkVoidFunctionLocal)log_CmdDrawIndexed;
+    // F70 (.46): the indirect draw family was NOT wrapped before; it exists so MEOW_VK_DROP_DRAW can
+    // reach MC's actual draws (A8 3.1: MC uses vkCmdDrawIndirect / vkCmdDrawIndexedIndirect).
+    if (g_hooks && !strcmp(mapped, "vkCmdDrawIndirect")) return (PFN_vkVoidFunctionLocal)log_CmdDrawIndirect;
+    if (g_hooks && !strcmp(mapped, "vkCmdDrawIndexedIndirect")) return (PFN_vkVoidFunctionLocal)log_CmdDrawIndexedIndirect;
     if (g_hooks && (!strcmp(mapped, "vkCmdEndRendering") ||
                     !strcmp(mapped, "vkCmdEndRenderingKHR"))) {
         if (mapped != name) MEOWLOGI("meowvulkan: wrapper serves %{public}s (mapped %{public}s)", name, mapped);
