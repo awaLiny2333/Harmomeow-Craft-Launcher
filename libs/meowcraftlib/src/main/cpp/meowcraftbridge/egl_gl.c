@@ -69,6 +69,10 @@ static int g_appliedHeight;
  * surface path (glfwCreateWindowSurface), never from the GL path. */
 static void meow_apply_window_usage(OHNativeWindow *win);
 
+/* Vulkan WSI window policy (see the definition). Only the GLFW path uses it; the SDL3
+ * `ohos` driver in tools/sdl deliberately does not -- see SDL_ohosvulkan.c for why. */
+static void meow_vk_prepare_surface_window(void *nativeWindow);
+
 /* ------------------------------------------------------------------------- */
 /* gl4es (desktop-GL -> GLES fixed-function translator) support              */
 /* ------------------------------------------------------------------------- *
@@ -797,20 +801,8 @@ int glfwCreateWindowSurface(void *instance, void *window, const void *allocator,
         MEOWLOGE("glfwCreateWindowSurface: vkCreateSurfaceOHOS not resolvable");
         return MEOW_VK_ERROR_EXTENSION_NOT_PRESENT;
     }
-    /* Vulkan counterpart of egl_build_surface(): pin the producer buffer geometry to the current
-     * display-scale-derived size BEFORE the VkSurface exists, so the first
-     * vkGetPhysicalDeviceSurfaceCapabilitiesKHR already reports the right currentExtent. This
-     * runs on the render thread (MC's Vulkan init), never on the UI thread. */
-    struct meow_environ_s *env = meow_environ;
-    if (env != NULL && env->width > 0 && env->height > 0) {
-        OH_NativeWindow_NativeWindowHandleOpt((OHNativeWindow *)nw, SET_BUFFER_GEOMETRY, env->width,
-                                              env->height);
-        MEOWLOGI("glfwCreateWindowSurface: pinned window geometry %{public}d x %{public}d",
-                 env->width, env->height);
-    }
-    /* Render thread, after JVM launch: HOME (filesDir) is set by now, so retry the
-     * file-driven usage/format resolution before the VkSurface and its buffers exist. */
-    meow_apply_window_usage((OHNativeWindow *)nw);
+    /* Pin the producer geometry and apply the usage/format policy before the VkSurface exists. */
+    meow_vk_prepare_surface_window(nw);
     meow_vk_surface_ci_ohos ci = { MEOW_VK_ST_SURFACE_CREATE_INFO_OHOS, NULL, 0, nw };
     void *surface = NULL;
     int rc = createSurface(instance, &ci, NULL, &surface);
@@ -818,6 +810,29 @@ int glfwCreateWindowSurface(void *instance, void *window, const void *allocator,
     MEOWLOGI("glfwCreateWindowSurface: window=%{public}p rc=%{public}d surface=%{public}p", nw, rc,
              surface);
     return rc;
+}
+
+/* Vulkan WSI window policy: Vulkan counterpart of egl_build_surface(). Pin the
+ * producer buffer geometry to the current display-scale-derived size BEFORE the
+ * VkSurface exists, so the first vkGetPhysicalDeviceSurfaceCapabilitiesKHR already
+ * reports the right currentExtent; then apply the file-driven usage/format policy.
+ * Runs on the render thread (MC's Vulkan init), never on the UI thread.
+ * (Only the GLFW path uses this; the SDL3 `ohos` driver in tools/sdl does not —
+ * see SDL_ohosvulkan.c for why.) */
+static void meow_vk_prepare_surface_window(void *nativeWindow) {
+    OHNativeWindow *nw = (OHNativeWindow *)nativeWindow;
+    struct meow_environ_s *env = meow_environ;
+
+    if (nw == NULL) {
+        MEOWLOGW("vk surface prep: window is NULL, geometry/usage skipped");
+        return;
+    }
+    if (env != NULL && env->width > 0 && env->height > 0) {
+        OH_NativeWindow_NativeWindowHandleOpt(nw, SET_BUFFER_GEOMETRY, env->width, env->height);
+        MEOWLOGI("vk surface prep: pinned window geometry %{public}d x %{public}d", env->width,
+                 env->height);
+    }
+    meow_apply_window_usage(nw);
 }
 
 void meowSwapBuffers(void) {
