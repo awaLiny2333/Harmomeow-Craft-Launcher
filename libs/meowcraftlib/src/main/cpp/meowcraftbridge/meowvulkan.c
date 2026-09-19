@@ -2424,6 +2424,13 @@ static unsigned long g_f72_ring_hits, g_f72_ring_misses;
 // F99 (.77): pushes whose writes did NOT provably cover their layout -> reuse refused (the set is
 // allocated fresh and never recorded as reusable). Stays 0 for a well-behaved caller.
 static unsigned long g_f72_ring_gate_reject;
+// F101 (.79 wait-counters): W1-P0 wait accounting (W1 verdict: F69's wait is already the narrowest;
+// the open question is whether the F60 whole-queue drain fires every frame -- never counted before).
+// Counters only: no branch, no wait duration and no env changes. Incremented in log_WaitSemaphores /
+// log_GetSemaphoreCounterValue; printed on the existing F72b totals line (same print point).
+static unsigned long g_wait_calls, g_wait_f69, g_wait_f60_drain, g_wait_fwd;
+static unsigned long g_wait_fence_ms, g_wait_drain_ms;   // cumulative wall time, ms
+static unsigned long g_gscv_calls;                       // vkGetSemaphoreCounterValue polls
 // F93 (.71 fix-pool-reclaim): why meow_f72_pool_free() refused a pending pool, tallied on the SAME
 // F72b totals line (no new print point). Healthy default path => all three stay ~0; if a regression
 // returns, exactly one of them grows and names the cause in the log itself:
@@ -3053,14 +3060,22 @@ static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, ui
                  //   borrow_full    = F78 borrow table (MEOW_F69_MAX_BORROWS) saturated
                  //   f69_evict      = F69 map (MEOW_F69_MAX_ENTRIES) saturated/evicted
                  "bind_fail=%{public}lu fence0_bind=%{public}lu dead_full_skip=%{public}lu stranded_reset=%{public}lu "
-                 "borrow_full=%{public}lu f69_evict=%{public}lu",
+                 "borrow_full=%{public}lu f69_evict=%{public}lu "
+                 // F101 (.79): W1-P0 wait accounting, same line, no new print point.
+                 //   wait_calls / wait_f69 / wait_drain / wait_fwd = how the frame's waits were served
+                 //   wait_fence_ms / wait_drain_ms = cumulative wall time in each wait
+                 //   gscv = vkGetSemaphoreCounterValue polls (the per-fence query tax)
+                 "wait_calls=%{public}lu wait_f69=%{public}lu wait_drain=%{public}lu wait_fwd=%{public}lu "
+                 "wait_fence_ms=%{public}lu wait_drain_ms=%{public}lu gscv=%{public}lu",
                  g_f72_emulated, g_f72_forwarded, g_f72_npools, g_f72_resets, g_f72_allocs,
                  g_f72_grows, g_f72_ring_hits, g_f72_ring_misses, g_f72_ring_gate_reject,
                  g_f72_reclaim_fail_nofence, g_f72_reclaim_fail_noquery, g_f72_reclaim_fail_notsignaled,
                  g_f72_reclaim_status_notready, g_f72_reclaim_status_error, g_f72_reclaim_status_proven,
                  g_f72_bind_pools,
                  g_f95_bind_fail, g_f95_fence0_bind, g_f95_dead_full_skip, g_f95_stranded_reset,
-                 g_f95_borrow_full, g_f69_evicts);
+                 g_f95_borrow_full, g_f69_evicts,
+                 g_wait_calls, g_wait_f69, g_wait_f60_drain, g_wait_fwd,
+                 g_wait_fence_ms, g_wait_drain_ms, g_gscv_calls);
         f86_last_fwd = g_f72_forwarded;
         f86_last_grow = g_f72_grows;
     }
@@ -3728,6 +3743,8 @@ typedef int (*PFN_waitSemaphores)(void*, const void*, uint64_t);
 typedef int (*PFN_queueWaitIdleF)(void*);   /* header :4544 VkResult (*)(VkQueue) */
 static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
     wd_note("vkWaitSemaphores");
+    ++g_wait_calls;                                    // F101: one per frame (MC's awaitSubmitCompletion)
+    long long t0 = wd_now_ns();                        // F101: wait wall-time baseline
     PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkWaitSemaphores, &meow_d_vkWaitSemaphores, "vkWaitSemaphores");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkWaitSemaphores");
@@ -3778,9 +3795,12 @@ static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
                     g_meow_f84_wait_last_rc = VK_SUCCESS;
                     if (meow_vk_verbose())
                         MEOWLOGI("meowvulkan: F69 vkWaitSemaphores count=%{public}u proven-complete (no wait)", nf);
+                    ++g_wait_f69;   // F101: F69 answered with zero driver wait (allProven shortcut)
                     return VK_SUCCESS;
                 }
                 int wrc = wff(g_dev_seen, nf, ff, VK_TRUE, timeout);
+                ++g_wait_f69;   // F101: F69 served this wait
+                g_wait_fence_ms += (unsigned long)((wd_now_ns() - t0) / 1000000);   // F101
                 g_meow_f84_wait_last_rc = wrc;
                 // F92: a successful wait proves every listed fence signaled; remember it so the next
                 // poll costs zero driver calls (fences are one-way until destroyed).
@@ -3816,6 +3836,8 @@ static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
         if (idle != NULL) {
             int qrc = ((PFN_queueWaitIdleF)idle)(g_meow_last_queue);
             unsigned long n = ++g_meow_wait_qidle;
+            ++g_wait_f60_drain;   // F101: the F60 fallback really drained the whole queue
+            g_wait_drain_ms += (unsigned long)((wd_now_ns() - t0) / 1000000);   // F101
             if (qrc == VK_SUCCESS) {
                 // F85: per-wait success line -> verbose (poll loop). Slow heartbeat every 20000.
                 if (meow_vk_verbose() || n <= 4ul || (n % 20000ul) == 0ul)
@@ -3851,6 +3873,7 @@ static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
         MEOWLOGW("meowvulkan: no cached queue yet; forwarding to the real vkWaitSemaphores (%{public}s)",
                  qidleWhy ? qidleWhy : "(unset)");
     }
+    ++g_wait_fwd;   // F101: no shim-side wait answered -- fell through to the real vkWaitSemaphores
     int rc = ((PFN_waitSemaphores)real)(dev, wi, timeout);
     // F85: per-wait result -> verbose; only a real error prints by default.
     if (meow_vk_verbose() || rc < 0)
@@ -3862,6 +3885,7 @@ static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
 typedef int (*PFN_getSemaphoreCounterValue)(void*, uint64_t, uint64_t*);
 static int log_GetSemaphoreCounterValue(void* dev, uint64_t sem, uint64_t* pValue) {
     wd_note("vkGetSemaphoreCounterValue");
+    ++g_gscv_calls;   // F101: drives the per-fence query tax (meow_f69_signaled_value)
     PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkGetSemaphoreCounterValue, &meow_d_vkGetSemaphoreCounterValue, "vkGetSemaphoreCounterValue");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkGetSemaphoreCounterValue");
@@ -6233,7 +6257,7 @@ static void init_once(void) {
     // Deployment self-certification: this campaign lost a run to "the fix was in the tree but not on
     // the device", so every shim build now names itself. Bump the tag whenever the shim changes.
     // F74 env switch tiers (A/B) are documented in the header comment at the top of this file.
-    MEOWLOGI("meowvulkan: shim build 2026-09-19.78 ring-optin-revert");
+    MEOWLOGI("meowvulkan: shim build 2026-09-19.81 revert-shim-time");
     // Crash backtraces for the Vulkan path are handled by meowbt, which the bridge now installs from
     // meowSetSurfaceId (see egl_gl.c) -- reachable on this path, unlike the GL-only install sites.
     // Enable with the documented envs: MEOW_BT=1 (and optionally MEOW_BT_FILE=<path>).
