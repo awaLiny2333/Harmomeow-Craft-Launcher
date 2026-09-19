@@ -55,6 +55,12 @@
 //   MEOW_VK_NO_DIVISOR_FEATURE=1       skip the divisor feature lie (would make MC refuse Vulkan).
 //   MEOW_VK_DROP_DRAW=1                drop all draws, to bisect a failing frame.
 //   MEOW_VK_DROP_PUSH_DESCRIPTOR=1     drop all push descriptors, to bisect a failing frame.
+//   MEOW_VK_F72_RING=1                 F92: reuse descriptor sets from a per-pool free table instead of
+//                                      a fresh vkAllocateDescriptorSets per push (default OFF; the
+//                                      default path is unchanged, the env is the escape hatch).
+//   MEOW_VK_TOTALS_SEC=<seconds>       F98: print the F72b push totals line every N seconds even when
+//                                      pools/forwarded are stable (steady-state visibility). Default
+//                                      OFF; the default trigger (forwarded/grow change) is unchanged.
 // ===============================================================================
 //
 // STATUS: production shim. The four corrections above are the shipped Vulkan path -- the launcher
@@ -198,6 +204,25 @@ MEOW_F87_SLOT(vkCmdWriteTimestamp)
 MEOW_F87_SLOT(vkCmdWriteTimestamp2)
 MEOW_F87_SLOT(vkAllocateDescriptorSets)
 MEOW_F87_SLOT(vkUpdateDescriptorSets)
+// F92 (.70 per-call cost): the remaining per-frame/per-call resolution points. Same F87 pair-per-wrapper
+// contract (one pointer compare per call; g_gdpa() only on device change or first use). Device change
+// invalidates automatically because meow_cached_proc re-resolves whenever g_dev_seen differs.
+MEOW_F87_SLOT(vkCreateFence)
+MEOW_F87_SLOT(vkWaitForFences)
+MEOW_F87_SLOT(vkGetFenceStatus)
+MEOW_F87_SLOT(vkDestroyFence)
+MEOW_F87_SLOT(vkQueueWaitIdle)
+MEOW_F87_SLOT(vkWaitSemaphores)
+MEOW_F87_SLOT(vkGetSemaphoreCounterValue)
+MEOW_F87_SLOT(vkDeviceWaitIdle)
+MEOW_F87_SLOT(vkResetDescriptorPool)
+MEOW_F87_SLOT(vkAcquireNextImageKHR)
+MEOW_F87_SLOT(vkQueuePresentKHR)
+MEOW_F87_SLOT(vkBeginCommandBuffer)
+MEOW_F87_SLOT(vkAllocateCommandBuffers)
+MEOW_F87_SLOT(vkCmdBeginDebugUtilsLabelEXT)
+MEOW_F87_SLOT(vkCmdEndDebugUtilsLabelEXT)
+MEOW_F87_SLOT(vkCmdInsertDebugUtilsLabelEXT)
 
 // F60 (shim build .40): the queue used by the most recent submit/present, so the vkWaitSemaphores
 // wrapper can perform a REAL wait (vkQueueWaitIdle) instead of trusting this ICD's broken timeline
@@ -959,8 +984,14 @@ static int meow_vk_drop_push(void) {
 // NOTE: MC draws with vkCmdDrawIndirect/vkCmdDrawIndexedIndirect (A8 3.1), which this shim did NOT
 // wrap until now -- the indirect wrappers below exist so the gate can actually cover MC's draws.
 static int meow_vk_drop_draw(void) {
-    const char* s = getenv("MEOW_VK_DROP_DRAW");
-    return (s != NULL && s[0] == '1') ? 1 : 0;
+    // F92 (.70): called once per draw (indirect draws included). The env read was one getenv() per
+    // call; cache it once per process exactly like meow_vk_drop_push (F87). Same decision logic.
+    static int s_drop = -1;
+    if (s_drop < 0) {
+        const char* s = getenv("MEOW_VK_DROP_DRAW");
+        s_drop = (s != NULL && s[0] == '1') ? 1 : 0;
+    }
+    return s_drop;
 }
 
 // F71b (.48): rate-limited reporter for the causal-test drop gates. A per-call line on a hot path is
@@ -1251,12 +1282,18 @@ static int log_QueueSubmit(void* queue, uint32_t count, const void* submits, voi
     // F72 (build .49) / F91: cover the pool that recorded the frame with this submit's fence. If MC
     // handed no fence, create a shim-owned tracking fence FIRST and hand it to the submit (review A40
     // F-02/F-08: the old code bound ownsFence=0, so a fence==0 submit pinned its pools forever and the
-    // cap path degraded to the real push). Only count==1 has a single fence to cover the frame.
+    // cap path degraded to the real push).
+    // F96 (.74 bind-merged-submit): a vkQueueSubmit's ONE VkFence covers the ENTIRE batch -- every
+    // VkSubmitInfo entry in pSubmits signals it (Vulkan spec: the fence signals once all submissions
+    // complete), so there is no reason to require count==1. The old `count == 1` gate meant a real
+    // multi-entry submit (count>=2) never registered the frame's pools -> they stayed non-pending and
+    // could neither be recycled nor reused (the "stranded pool" that grows one new pool per 256 push).
+    // Register for ANY non-empty batch, exactly once, with the batch's single fence.
     VkFence sf = (VkFence)(uintptr_t)fence;
     int ownsFence = 0;
-    if (meow_f72_on() && count == 1) sf = meow_f72_fence_for_submit(sf, &ownsFence);
+    if (meow_f72_on() && count >= 1) sf = meow_f72_fence_for_submit(sf, &ownsFence);
     int rc = ((PFN_queueSubmit)real)(queue, count, submits, (void*)sf);
-    if (meow_f72_on() && count == 1) meow_f72_bind_submit(sf, ownsFence, (rc == 0));
+    if (meow_f72_on() && count >= 1) meow_f72_bind_submit(sf, ownsFence, (rc == 0));
     // Tier B: per-call result line -> verbose gate (default OFF).
     if (meow_vk_verbose())
         MEOWLOGI("meowvulkan: vkQueueSubmit rc=%{public}d count=%{public}u", rc, (unsigned)count);
@@ -1359,18 +1396,30 @@ static long long g_meow_max_gap_ms;
 // removed; the barrier and submit translations now share this single decision (legacy
 // MEOW_VK_SYNC2_TO_V1, defaulting to the hooks state).
 static int meow_sync2_to_v1_decide(const char** why) {
-    const char* s = getenv("MEOW_VK_SYNC2_TO_V1");
-    if (s != NULL && strcmp(s, "0") == 0) {
-        if (why != NULL) *why = "explicit OFF (MEOW_VK_SYNC2_TO_V1=0)";
-        return 0;                     /* explicit off (F43 baseline reproduction) */
+    // F97 (.75, residual-percall-2): env read lazily ONCE and cached (same policy as g_hooks and
+    // meow_f72_decide). This decide runs on EVERY vkCmdPipelineBarrier2 (dozens/frame, :4043) and
+    // every vkQueueSubmit2 (1/frame, :3403), so the per-call getenv+strcmp was pure overhead. The
+    // decision logic and every `why` string are byte-for-byte unchanged; only the getenv() count
+    // dropped from one per call to one per process. g_hooks is resolved once by init_once() before
+    // any wrapper runs, so caching the branch is equivalent.
+    static int s_decided = -1;
+    static const char* s_why = NULL;
+    if (s_decided < 0) {
+        const char* s = getenv("MEOW_VK_SYNC2_TO_V1");
+        if (s != NULL && strcmp(s, "0") == 0) {
+            s_decided = 0;                            /* explicit off (F43 baseline reproduction) */
+            s_why = "explicit OFF (MEOW_VK_SYNC2_TO_V1=0)";
+        } else if (s != NULL && s[0] == '1') {
+            s_decided = 1;                            /* explicit on */
+            s_why = "explicit ON (MEOW_VK_SYNC2_TO_V1=1)";
+        } else {
+            s_decided = g_hooks ? 1 : 0;              /* default follows the hooks */
+            s_why = g_hooks ? "default ON (hooks on, env unset)"
+                            : "default OFF (hooks off, env unset)";
+        }
     }
-    if (s != NULL && s[0] == '1') {
-        if (why != NULL) *why = "explicit ON (MEOW_VK_SYNC2_TO_V1=1)";
-        return 1;                     /* explicit on */
-    }
-    if (why != NULL) *why = g_hooks ? "default ON (hooks on, env unset)"
-                                    : "default OFF (hooks off, env unset)";
-    return g_hooks ? 1 : 0;           /* default follows the hooks */
+    if (why != NULL) *why = s_why;
+    return s_decided;
 }
 static int meow_vk_sync2_to_v1(void) { return meow_sync2_to_v1_decide(NULL); }
 
@@ -1391,17 +1440,25 @@ static int meow_vk_sync2_to_v1(void) { return meow_sync2_to_v1_decide(NULL); }
 // serialises every wait to full GPU idle and does not advance the timeline counter itself.
 // MEOW_VK_WAIT_VIA_QUEUE_IDLE=0 restores the original pure-forward path (A/B control).
 static int meow_wait_via_queue_idle_decide(const char** why) {
-    const char* s = getenv("MEOW_VK_WAIT_VIA_QUEUE_IDLE");
-    if (s != NULL && strcmp(s, "0") == 0) {
-        if (why != NULL) *why = "explicit OFF (MEOW_VK_WAIT_VIA_QUEUE_IDLE=0)";
-        return 0;
+    // F97 (.75, residual-percall-2): lazy one-shot cache (see meow_sync2_to_v1_decide). This decide
+    // runs on EVERY vkWaitSemaphores/poll (:3591). Logic and `why` strings unchanged.
+    static int s_decided = -1;
+    static const char* s_why = NULL;
+    if (s_decided < 0) {
+        const char* s = getenv("MEOW_VK_WAIT_VIA_QUEUE_IDLE");
+        if (s != NULL && strcmp(s, "0") == 0) {
+            s_decided = 0;
+            s_why = "explicit OFF (MEOW_VK_WAIT_VIA_QUEUE_IDLE=0)";
+        } else if (s != NULL && s[0] == '1') {
+            s_decided = 1;
+            s_why = "explicit ON (MEOW_VK_WAIT_VIA_QUEUE_IDLE=1)";
+        } else {
+            s_decided = 1;
+            s_why = "default ON (real wait via vkQueueWaitIdle)";
+        }
     }
-    if (s != NULL && s[0] == '1') {
-        if (why != NULL) *why = "explicit ON (MEOW_VK_WAIT_VIA_QUEUE_IDLE=1)";
-        return 1;
-    }
-    if (why != NULL) *why = "default ON (real wait via vkQueueWaitIdle)";
-    return 1;
+    if (why != NULL) *why = s_why;
+    return s_decided;
 }
 
 /* Official core-1.0 / timeline types: VkMemoryBarrier (vulkan_core.h:3133),
@@ -1503,10 +1560,49 @@ typedef struct {
     uint64_t* sigVals;
     VkTimelineSemSubmitInfoL tsi;
     int useTsi;
+    int scratch;   /* F97: 1 => the six pointers above alias the file-level F97 scratch (never freed) */
 } MeowSubmit2Tr;
 
+// =====================================================================================
+// F97 (.75, residual-percall-2): A3 -- file-level reusable scratch for the per-frame submit and
+// barrier translation temporaries (was a calloc/free storm: 2 arrays + <=7 per entry + <=6 merged +
+// <=3 per barrier, every frame).
+//
+// LIFETIME PROOF (must hold before reusing a buffer): every one of these arrays is handed to a
+// SYNCHRONOUS Vulkan call -- vkQueueSubmit / vkCmdPipelineBarrier -- which reads it (and everything
+// it points to) DURING the call and copies the values it keeps into its own state; the host is only
+// required to keep the arrays valid until the call returns (Vulkan parameter-lifetime rules for a
+// queue / command-recording command, exactly the rule the F88 `g_f72_writes` scratch already relies
+// on: meowvulkan.c:2304). Nothing in this file stores any of these pointers after the call, and no
+// wrapper is re-entered by the driver call (the real entry points are the ICD's, not ours), so a
+// single static buffer per role is safe under the documented single-render-thread contract
+// (A10 G5 / F91 thread probe). Anything larger than the scratch capacity keeps the original
+// calloc/free path -- the scratch is never a truncation point.
+// =====================================================================================
+#define MEOW_F97_MAX_ENTRIES 64   /* == the submitCount cap enforced in meow_translate_queue_submit2 */
+#define MEOW_F97_CAP 16           /* per-entry / merged / barrier array capacity; overflow -> calloc */
+static MeowSubmit2Tr          g_f97_st[MEOW_F97_MAX_ENTRIES];
+static VkSubmitInfoL          g_f97_outs[MEOW_F97_MAX_ENTRIES];
+static VkSemaphore            g_f97_e_wsems[MEOW_F97_MAX_ENTRIES][MEOW_F97_CAP];
+static uint32_t               g_f97_e_wstages[MEOW_F97_MAX_ENTRIES][MEOW_F97_CAP];
+static uint64_t               g_f97_e_wvals[MEOW_F97_MAX_ENTRIES][MEOW_F97_CAP];
+static VkCommandBuffer        g_f97_e_cmds[MEOW_F97_MAX_ENTRIES][MEOW_F97_CAP];
+static VkSemaphore            g_f97_e_ssems[MEOW_F97_MAX_ENTRIES][MEOW_F97_CAP];
+static uint64_t               g_f97_e_svals[MEOW_F97_MAX_ENTRIES][MEOW_F97_CAP];
+static VkSemaphore            g_f97_m_wsems[MEOW_F97_CAP];
+static uint32_t               g_f97_m_wstages[MEOW_F97_CAP];
+static uint64_t               g_f97_m_wvals[MEOW_F97_CAP];
+static VkCommandBuffer        g_f97_m_cmds[MEOW_F97_CAP];
+static VkSemaphore            g_f97_m_ssems[MEOW_F97_CAP];
+static uint64_t               g_f97_m_svals[MEOW_F97_CAP];
+static VkMemoryBarrier        g_f97_b_mem[MEOW_F97_CAP];
+static VkBufferMemoryBarrier  g_f97_b_buf[MEOW_F97_CAP];
+static VkImageMemoryBarrier   g_f97_b_img[MEOW_F97_CAP];
+
 static void meow_submit2_tr_free(MeowSubmit2Tr* st, uint32_t n) {
+    if (st == NULL) return;
     for (uint32_t i = 0; i < n; i++) {
+        if (st[i].scratch) continue;   // F97: aliases the file-level scratch -> never freed here
         free(st[i].waitSems);
         free(st[i].waitStages);
         free(st[i].waitVals);
@@ -1514,7 +1610,7 @@ static void meow_submit2_tr_free(MeowSubmit2Tr* st, uint32_t n) {
         free(st[i].sigSems);
         free(st[i].sigVals);
     }
-    free(st);
+    if (st != g_f97_st) free(st);      // F97: the struct array itself is usually the scratch
 }
 
 // Translate one vkQueueSubmit2 call into vkQueueSubmit call(s) and issue them.
@@ -1568,18 +1664,26 @@ static void meow_submit2_tr_free(MeowSubmit2Tr* st, uint32_t n) {
 // queue is preserved, so this is a faithful translation for a single queue.
 // MEOW_VK_SYNC2_TO_V1_MERGE=0 restores the F49 N-call split as the A/B control.
 static int meow_sync2v1_merge_decide(const char** why) {
-    const char* s = getenv("MEOW_VK_SYNC2_TO_V1_MERGE");
-    if (s != NULL && strcmp(s, "0") == 0) {
-        if (why != NULL) *why = "explicit OFF (MEOW_VK_SYNC2_TO_V1_MERGE=0): F49 N-call split";
-        return 0;
+    // F97 (.75, residual-percall-2): lazy one-shot cache (see meow_sync2_to_v1_decide). This decide
+    // runs on EVERY translated submit (:3045). Logic and `why` strings unchanged.
+    static int s_decided = -1;
+    static const char* s_why = NULL;
+    if (s_decided < 0) {
+        const char* s = getenv("MEOW_VK_SYNC2_TO_V1_MERGE");
+        if (s != NULL && strcmp(s, "0") == 0) {
+            s_decided = 0;
+            s_why = "explicit OFF (MEOW_VK_SYNC2_TO_V1_MERGE=0): F49 N-call split";
+        } else if (s != NULL && s[0] == '1') {
+            s_decided = 1;
+            s_why = "explicit ON (MEOW_VK_SYNC2_TO_V1_MERGE=1)";
+        } else {
+            s_decided = g_hooks ? 1 : 0;
+            s_why = g_hooks ? "default ON (F66: this ICD accepts exactly one entry)"
+                            : "default OFF (hooks off)";
+        }
     }
-    if (s != NULL && s[0] == '1') {
-        if (why != NULL) *why = "explicit ON (MEOW_VK_SYNC2_TO_V1_MERGE=1)";
-        return 1;
-    }
-    if (why != NULL) *why = g_hooks ? "default ON (F66: this ICD accepts exactly one entry)"
-                                    : "default OFF (hooks off)";
-    return g_hooks ? 1 : 0;
+    if (why != NULL) *why = s_why;
+    return s_decided;
 }
 
 // =====================================================================================
@@ -1610,7 +1714,7 @@ static int meow_sync2v1_merge_decide(const char** why) {
 #define MEOW_F69_MAX_SEMS 64
 #define MEOW_F69_MAX_ENTRIES 64
 
-typedef struct { uint64_t value; uint64_t fence; } MeowF69Map;
+typedef struct { uint64_t value; uint64_t fence; int signaled; uint64_t queue; } MeowF69Map;
 typedef struct { uint64_t sem; uint32_t count; MeowF69Map map[MEOW_F69_MAX_ENTRIES]; } MeowF69SemSlot;
 typedef struct { uint64_t sem; uint64_t value; } MeowF69Pair;
 
@@ -1618,17 +1722,26 @@ static MeowF69SemSlot g_f69_sems[MEOW_F69_MAX_SEMS];
 static unsigned long g_f69_evicts;
 
 static int meow_f69_decide(const char** why) {
-    const char* s = getenv("MEOW_VK_TIMELINE_AS_FENCE");
-    if (s != NULL && strcmp(s, "0") == 0) {
-        if (why != NULL) *why = "explicit OFF (MEOW_VK_TIMELINE_AS_FENCE=0)";
-        return 0;
+    // F97 (.75, residual-percall-2): lazy one-shot cache (see meow_sync2_to_v1_decide). This decide
+    // runs on EVERY wait (:3532), every vkGetSemaphoreCounterValue poll (:3646) and every translated
+    // submit (:3125), i.e. the hottest of the four. Logic and `why` strings unchanged.
+    static int s_decided = -1;
+    static const char* s_why = NULL;
+    if (s_decided < 0) {
+        const char* s = getenv("MEOW_VK_TIMELINE_AS_FENCE");
+        if (s != NULL && strcmp(s, "0") == 0) {
+            s_decided = 0;
+            s_why = "explicit OFF (MEOW_VK_TIMELINE_AS_FENCE=0)";
+        } else if (s != NULL && s[0] == '1') {
+            s_decided = 1;
+            s_why = "explicit ON (MEOW_VK_TIMELINE_AS_FENCE=1)";
+        } else {
+            s_decided = g_hooks ? 1 : 0;
+            s_why = g_hooks ? "default ON (hooks on, env unset)" : "default OFF (hooks off, env unset)";
+        }
     }
-    if (s != NULL && s[0] == '1') {
-        if (why != NULL) *why = "explicit ON (MEOW_VK_TIMELINE_AS_FENCE=1)";
-        return 1;
-    }
-    if (why != NULL) *why = g_hooks ? "default ON (hooks on, env unset)" : "default OFF (hooks off, env unset)";
-    return g_hooks ? 1 : 0;
+    if (why != NULL) *why = s_why;
+    return s_decided;
 }
 static int meow_f69_on(void) { return meow_f69_decide(NULL); }
 
@@ -1637,19 +1750,23 @@ typedef void (*MeowF69PFN_destroyFence)(void*, uint64_t, const void*);
 typedef int  (*MeowF69PFN_waitForFences)(void*, uint32_t, const uint64_t*, uint32_t, uint64_t);
 typedef int  (*MeowF69PFN_getFenceStatus)(void*, uint64_t);
 
+// F92 (.70): these four were resolved through g_gdpa() on EVERY call. getFenceStatus runs once per
+// pending pool per frame (meow_f72_pool_free) and waitForFences once per frame (F69 merged submit +
+// vkWaitSemaphores poll), so they now use the F87 per-wrapper cache. Same failure behaviour: a NULL
+// g_gdpa leaves the slot NULL and it is retried on the next call.
 static MeowF69PFN_createFence meow_f69_createFence(void) {
-    return (MeowF69PFN_createFence)(g_gdpa ? g_gdpa(g_dev_seen, "vkCreateFence") : NULL);
+    return (MeowF69PFN_createFence)meow_cached_proc(&meow_p_vkCreateFence, &meow_d_vkCreateFence, "vkCreateFence");
 }
 static MeowF69PFN_waitForFences meow_f69_waitForFences(void) {
-    return (MeowF69PFN_waitForFences)(g_gdpa ? g_gdpa(g_dev_seen, "vkWaitForFences") : NULL);
+    return (MeowF69PFN_waitForFences)meow_cached_proc(&meow_p_vkWaitForFences, &meow_d_vkWaitForFences, "vkWaitForFences");
 }
 static MeowF69PFN_getFenceStatus meow_f69_getFenceStatus(void) {
-    return (MeowF69PFN_getFenceStatus)(g_gdpa ? g_gdpa(g_dev_seen, "vkGetFenceStatus") : NULL);
+    return (MeowF69PFN_getFenceStatus)meow_cached_proc(&meow_p_vkGetFenceStatus, &meow_d_vkGetFenceStatus, "vkGetFenceStatus");
 }
 static void meow_f69_destroyFence_raw(uint64_t fence) {
     if (fence == 0) return;
     MeowF69PFN_destroyFence df =
-        (MeowF69PFN_destroyFence)(g_gdpa ? g_gdpa(g_dev_seen, "vkDestroyFence") : NULL);
+        (MeowF69PFN_destroyFence)meow_cached_proc(&meow_p_vkDestroyFence, &meow_d_vkDestroyFence, "vkDestroyFence");
     if (df != NULL) df(g_dev_seen, fence, NULL);
 }
 
@@ -1664,6 +1781,9 @@ static void meow_f69_destroyFence_raw(uint64_t fence) {
 #define MEOW_F69_MAX_BORROWS 64
 typedef struct { uint64_t fence; int refs; int released; } MeowF69Borrow;
 static MeowF69Borrow g_f69_borrows[MEOW_F69_MAX_BORROWS];
+// F95 (.73): saturation count for THIS fixed table (defined early so meow_f69_borrow_ref can bump it;
+// printed on the existing F72b totals line). Declared once here, no duplicate definition later.
+static unsigned long g_f95_borrow_full;
 
 static MeowF69Borrow* meow_f69_borrow_find(uint64_t fence) {
     for (int i = 0; i < MEOW_F69_MAX_BORROWS; i++) {
@@ -1684,6 +1804,10 @@ static void meow_f69_borrow_ref(uint64_t fence) {
             return;
         }
     }
+    // F95 (.73): a full borrow table is a REAL saturation, not noise: an untracked fence can be
+    // destroyed by F69's map eviction while an F72 pool still holds it (dangling pool fence). Count
+    // it so the next totals line tells this apart from "the table was never full".
+    ++g_f95_borrow_full;
     MEOWLOGW("meowvulkan: F78 borrow table full (%{public}d); fence=0x%{public}llx untracked",
              MEOW_F69_MAX_BORROWS, (unsigned long long)fence);
 }
@@ -1732,7 +1856,7 @@ static void meow_f69_register_sem(uint64_t sem) {
              MEOW_F69_MAX_SEMS, (unsigned long long)sem);
 }
 
-static void meow_f69_add_entry(uint64_t sem, uint64_t value, uint64_t fence) {
+static void meow_f69_add_entry(uint64_t sem, uint64_t value, uint64_t fence, uint64_t queue) {
     int si = meow_f69_find_sem(sem);
     if (si < 0 || fence == 0) return;
     MeowF69SemSlot* s = &g_f69_sems[si];
@@ -1748,7 +1872,47 @@ static void meow_f69_add_entry(uint64_t sem, uint64_t value, uint64_t fence) {
     }
     s->map[s->count].value = value;
     s->map[s->count].fence = fence;
+    // F97 (.75, residual-percall-2): remember the queue this fence was submitted to. The whole-queue
+    // idle proof (meow_f69_mark_queue_idle) only trusts vkQueueWaitIdle on THIS queue, so a fence
+    // submitted to a different queue is never marked complete by an unrelated idle.
+    s->map[s->count].queue = queue;
+    // F93 (.71 fix-pool-reclaim): the slot about to be written may be a REUSED one -- after the
+    // eviction memmove above, index `count` still holds the previous newest entry, whose `signaled`
+    // bit may be 1. F92-B added `signaled` but never (re)initialised it here, so a brand-new
+    // (value,fence) inherited a stale "already signaled" proof. That made meow_f69_completion_proven()
+    // / meow_f69_signaled_value() report completion that no real query ever proved -> the merged
+    // submit dropped its timeline wait ("少等", I1 violation) and MC ran frames ahead, so the F72
+    // pool completion fences were never observed SIGNALED -> pools never reclaimed. Initialise it.
+    s->map[s->count].signaled = 0;
     s->count++;
+}
+
+// F92 (.70, invariant I1 companion): a fence, once observed SIGNALED, stays signaled until it is
+// destroyed -- and a destroyed fence's map entry is removed in the same step (meow_f69_add_entry
+// eviction / meow_f69_forget_sem / meow_f69_destroyFence_raw), so no stale handle can be reused.
+// Marking the bit therefore never makes the shim "wait less": it only records a completion that a REAL
+// driver query already proved. meow_f69_completion_proven() short-circuits a wait ONLY on that bit;
+// when the bit is clear it does NOT query the driver (which would add a call to the not-ready case) --
+// the caller proceeds with exactly today's wait. Strictly never worse, never a forged success.
+static int meow_f69_completion_proven(uint64_t sem, uint64_t fence) {
+    if (fence == 0) return 0;
+    int si = meow_f69_find_sem(sem);
+    if (si < 0) return 0;
+    MeowF69SemSlot* s = &g_f69_sems[si];
+    for (uint32_t i = 0; i < s->count; i++) {
+        if (s->map[i].fence == fence) return s->map[i].signaled;
+    }
+    return 0;
+}
+
+static void meow_f69_mark_completion(uint64_t sem, uint64_t fence) {
+    if (fence == 0) return;
+    int si = meow_f69_find_sem(sem);
+    if (si < 0) return;
+    MeowF69SemSlot* s = &g_f69_sems[si];
+    for (uint32_t i = 0; i < s->count; i++) {
+        if (s->map[i].fence == fence) { s->map[i].signaled = 1; return; }
+    }
 }
 
 // Smallest mapped value >= the requested value: waiting for it proves the counter reached it.
@@ -1774,11 +1938,38 @@ static uint64_t meow_f69_signaled_value(uint64_t sem) {
     uint64_t best = 0;
     if (gfs == NULL) return 0;
     for (uint32_t i = 0; i < s->count; i++) {
-        if (s->map[i].fence != 0 && gfs(g_dev_seen, s->map[i].fence) == VK_SUCCESS) {
+        if (s->map[i].fence == 0) continue;
+        // F92: a previously-proven fence needs no driver query at all (MC polls this heavily).
+        if (s->map[i].signaled || gfs(g_dev_seen, s->map[i].fence) == VK_SUCCESS) {
+            s->map[i].signaled = 1;
             if (s->map[i].value > best) best = s->map[i].value;
         }
     }
     return best;
+}
+
+// F97 (.75, residual-percall-2): A1 -- reuse the F60 "whole queue idle" proof for the F69 map.
+// A successful vkQueueWaitIdle(Q) is the SAME boundary F94/F95 already trust as stronger than any
+// single fence: it proves EVERY submission to Q before that point completed. Every F69 map entry is
+// added only AFTER its vkQueueSubmit returned rc=0 and records the queue it was submitted to
+// (meow_f69_add_entry on the merged path), so at the idle point every entry whose `.queue == Q` is
+// backed by a real VkFence the GPU has signaled. Recording that one-way bit removes the per-poll
+// vkGetFenceStatus storm in meow_f69_signaled_value WITHOUT changing its reported value: the value
+// is still the largest mapped value covered by a REAL completion proof -- only the proof source
+// changes (queue-idle boundary instead of a per-fence query). It is idempotent, and an entry added
+// after the idle is simply marked at the next idle of its queue (F93 keeps new entries signaled=0),
+// so no fence that was still in flight at idle time is ever marked. Only reachable while F69 is on.
+static void meow_f69_mark_queue_idle(uint64_t queue) {
+    if (!meow_f69_on()) return;
+    if (queue == 0) return;
+    for (int i = 0; i < MEOW_F69_MAX_SEMS; i++) {
+        MeowF69SemSlot* s = &g_f69_sems[i];
+        if (s->sem == 0) continue;
+        for (uint32_t k = 0; k < s->count; k++) {
+            MeowF69Map* m = &s->map[k];
+            if (m->fence != 0 && !m->signaled && m->queue == queue) m->signaled = 1;
+        }
+    }
 }
 
 static void meow_f69_forget_sem(uint64_t sem) {
@@ -1843,6 +2034,10 @@ static int meow_f69_createinfo_is_timeline(const void* ci) {
 #define MEOW_F72_MAXSETS  256
 #define MEOW_F72_PER_TYPE 16
 #define MEOW_F72_LAYOUTS  256
+// F93 (.71, requirement B): force a proven completion boundary once this many pools have been grown
+// in a row with no successful reclaim in between. Far below MEOW_F72_NPOOLS, so the count can never
+// creep to the cap even if fence-signal reclaim is stuck.
+#define MEOW_F72_EARLY_RECLAIM_GROWS 2
 
 static int meow_f72_decide(const char** why) {
     // F87 (.65): env read lazily ONCE and cached (same policy as g_hooks: first use wins); the
@@ -1867,6 +2062,45 @@ static int meow_f72_decide(const char** why) {
     return s_decided;
 }
 static int meow_f72_on(void) { return meow_f72_decide(NULL); }
+
+// =====================================================================================
+// F92 (.70) F72 ring reuse -- TIER B, DEFAULT OFF (MEOW_VK_F72_RING=1 opts in).
+//
+// WHY: in the default (`.65`-proven) path every push costs a real vkAllocateDescriptorSets. With
+// MEOW_VK_F72_RING=1 a push may instead reuse a descriptor set that was returned to a per-pool free
+// table at a PROVEN completion boundary. This is exactly the class of change the project has crashed
+// on twice, so it is opt-in and honour the following invariants (see the F92 report):
+//   I2  free table empty  => STILL vkAllocateDescriptorSets from the CURRENT pool; a pool is left
+//       only on capacity exhaustion (nsets >= MAXSETS) or VK_ERROR_OUT_OF_POOL_MEMORY. (The `.67`
+//       bug -- rotate the pool the instant the free table was empty -- is NOT reintroduced.)
+//   I3  a set enters the free table ONLY inside meow_f72_pool_recycle(), which is reachable only from
+//       meow_f72_reset_pool(), i.e. only after the pool's fence has SIGNALED (pool_free) or a
+//       successful vkQueueWaitIdle (quiesce). The generation that produced the set is then provably
+//       complete.
+//   I4  a set is in `ring` XOR `issued`, never both; it is issued at most once between recycle
+//       boundaries, and every reissue is separated from its previous use by a proven completion.
+// Default path: meow_f72_ring_on()==0 makes every branch below a no-op, so the control flow and the
+// bytes executed are identical to `.69` when the env is unset.
+// =====================================================================================
+typedef struct { VkDescriptorSet set; VkDescriptorSetLayout layout; } MeowF72SetRef;
+
+static int meow_f72_ring_decide(const char** why) {
+    static int s_decided = -1;
+    static const char* s_why = NULL;
+    if (s_decided < 0) {
+        const char* s = getenv("MEOW_VK_F72_RING");
+        if (s != NULL && s[0] == '1') {
+            s_decided = 1;
+            s_why = "explicit ON (MEOW_VK_F72_RING=1)";
+        } else {
+            s_decided = 0;
+            s_why = "default OFF (MEOW_VK_F72_RING=1 to enable)";
+        }
+    }
+    if (why != NULL) *why = s_why;
+    return s_decided;
+}
+static int meow_f72_ring_on(void) { return meow_f72_ring_decide(NULL); }
 
 // Rate-limited reporter (same policy as meow_log_drop, F55/F56 project rule): the first 4 failures
 // are named, then one running total every 4000; MEOW_VK_VERBOSE=1 restores every call.
@@ -2105,6 +2339,16 @@ typedef struct {
     int pending;       // 1 = a submit using this pool has not been confirmed complete
     int used;          // 1 = already used for the frame currently being recorded
     int nsets;         // sets allocated since this pool's last reset (0 .. MEOW_F72_MAXSETS)
+    // F92 (.70, invariant-I1 companion): one-way "this pool's fence was observed signaled". Set only
+    // from a real vkGetFenceStatus success; cleared whenever the pool gets a new fence (pool_release)
+    // so a reused pool can never carry a stale completion bit.
+    int fenceSignaled;
+    // F92 (.70, MEOW_VK_F72_RING=1 only): free table + current-generation issue list. Untouched
+    // (and never read/written) when the ring is off.
+    MeowF72SetRef ring[MEOW_F72_MAXSETS];      // reuse candidates, valid only at a proven boundary
+    int ringCount;
+    MeowF72SetRef issued[MEOW_F72_MAXSETS];    // sets issued since the last recycle boundary
+    int issuedCount;
 } MeowF72Pool;
 static MeowF72Pool g_f72_pools[MEOW_F72_NPOOLS];   // MEOW_F72_NPOOLS == hard cap
 static int g_f72_npools;                           // pools created so far (grow-on-demand)
@@ -2116,6 +2360,53 @@ static int g_f72_active = -1;                 // pool used for the frame being r
 // the old F89 acceptance table invited misreads.
 static unsigned long g_f72_emulated, g_f72_forwarded, g_f72_resets, g_f72_grows;
 static unsigned long g_f72_allocs;
+// F92 (.70): ring-reuse counters (printed on the existing F72b totals line). Both stay 0 unless
+// MEOW_VK_F72_RING=1. ring_misses counts a real vkAllocateDescriptorSets caused by an empty/mismatched
+// free table (I2: that alone never rotates the pool).
+static unsigned long g_f72_ring_hits, g_f72_ring_misses;
+// F93 (.71 fix-pool-reclaim): why meow_f72_pool_free() refused a pending pool, tallied on the SAME
+// F72b totals line (no new print point). Healthy default path => all three stay ~0; if a regression
+// returns, exactly one of them grows and names the cause in the log itself:
+//   reclaim_fail_nofence     -> the pool never got a fence (F91 owned-fence path regressed)
+//   reclaim_fail_noquery     -> vkGetFenceStatus could not be resolved (both cached and uncached)
+//   reclaim_fail_notsignaled -> the fence is real but the driver says it has not signaled yet
+static unsigned long g_f72_reclaim_fail_nofence, g_f72_reclaim_fail_noquery, g_f72_reclaim_fail_notsignaled;
+// F94 (A, build 2026-09-19.72 pool-fence-fix): CLASSIFY the vkGetFenceStatus result instead of
+// collapsing every non-success into "notsignaled". Tallied on the SAME F72b totals line (no new print
+// point). Decision key for the next device run:
+//   reclaim_status_notready -> a REAL, live fence that simply has not completed yet (I1: keep waiting)
+//   reclaim_status_error    -> the query returned a real error code (e.g. DEVICE_LOST) or an invalid
+//                              handle -> the fence is unusable; reclaim must come from a queue-idle
+//                              boundary, not from this fence
+//   reclaim_status_proven   -> successful reclaim gates (fence observed VK_SUCCESS). Must grow.
+static unsigned long g_f72_reclaim_status_notready, g_f72_reclaim_status_error, g_f72_reclaim_status_proven;
+// F94 (A)/F96: number of (used pool -> pending) registrations performed by a SUCCESSFUL real submit,
+// summed over every used pool of that submit. Semantics: with the normal one-pool-per-frame workload
+// it grows by exactly +1 per submitted frame (a frame that filled and rotated through K pools binds
+// K). It must track the frame count. If it freezes while grow climbs, the frame's pools never became
+// pending (no submit registered them) -- the "池永不回收" root the F94/F95/F96 counters discriminate.
+static unsigned long g_f72_bind_pools;
+// F93 (B): consecutive creations with no successful reclaim. The F91 valve also fires when this
+// reaches MEOW_F72_EARLY_RECLAIM_GROWS; cleared in meow_f72_pool_release() (every reclaim goes there).
+static int g_f72_grow_streak;
+// F95 (.73 fix-cap-saturation): DISCRIMINATING counters for the "reclaim froze at ~35" contract.
+// WHY: the three F94 counters (resets / reclaim_status_proven / bind_pools) freeze TOGETHER while
+// grow/pools keep climbing one per ~256 pushes. That signature has exactly two code-level worlds:
+//   (W1) meow_f72_bind_submit() is reached but ok==0 (the submit failed) -> bind_fail grows and no
+//        pool ever becomes `pending`; full pools stay non-pending and are re-selected, so each frame
+//        grows one pool. This is the world the F95 boundedness fix targets.
+//   (W2) meow_f72_bind_submit() is never reached (used stays set) -> no pending pool at all; grow
+//        continues and no reuse is possible. The only shim-side bound then is the proven-idle valve.
+// Each field names exactly which fixed table / path saturated on the NEXT device run, on the SAME
+// `F72b push totals` line (no new print point):
+//   bind_fail      -> (W1): submits started failing (ok==0) -- with used pools present.
+//   fence0_bind    -> pools moved used->pending with NO completion fence (fence==0 => pinned).
+//   dead_full_skip -> a full, non-pending pool was skipped by the scan (stranded capacity).
+//   stranded_reset -> a non-pending pool with leftover sets was reclaimed at a proven queue-idle.
+//   borrow_full    -> the F78 borrow table (MEOW_F69_MAX_BORROWS) rejected a borrow (table saturated).
+//   f69_evict      -> the F69 map (MEOW_F69_MAX_ENTRIES) evicted an entry/fence (table saturated).
+// g_f95_borrow_full is declared next to the F78 borrow table (defined before its user).
+static unsigned long g_f95_bind_fail, g_f95_fence0_bind, g_f95_dead_full_skip, g_f95_stranded_reset;
 
 // R1 (kept from F88): per-push scratch for the VkWriteDescriptorSet copy. vkUpdateDescriptorSets is a host-side
 // device command: it consumes pDescriptorWrites (and the image/buffer arrays it points to) DURING the
@@ -2198,6 +2489,50 @@ static void meow_f72_pool_release(int i) {
     p->fence = 0;
     p->ownsFence = 0;
     p->pending = 0;
+    // F92: a new fence (or none) invalidates the one-way completion bit -- never carry it across.
+    p->fenceSignaled = 0;
+    // F93 (B): this is the tail of BOTH reclaim paths (reset_pool / pool_recycle), so a pool having
+    // actually been reclaimed resets the grow-without-reclaim streak.
+    g_f72_grow_streak = 0;
+}
+
+// F92 (.70, ring ON only): the reclaim path. Reached ONLY where reset_pool is legal (=> pool fence
+// SIGNALED, or a successful queue-idle), so I3 holds: the generation that produced every `issued`
+// set is provably complete. Instead of invalidating them with vkResetDescriptorPool we return them
+// to the free table. `nsets` is deliberately NOT cleared: it counts distinct driver allocations and
+// keeps the pool bounded at MEOW_F72_MAXSETS exactly as before.
+static int meow_f72_pool_recycle(int i) {
+    MeowF72Pool* p = &g_f72_pools[i];
+    for (int k = 0; k < p->issuedCount; k++) {
+        if (p->ringCount < MEOW_F72_MAXSETS) p->ring[p->ringCount++] = p->issued[k];
+    }
+    p->issuedCount = 0;
+    meow_f72_pool_release(i);
+    return 0;
+}
+
+// F92: pop a reusable set carrying the EXACT mirror layout this push needs (0 = hit). A layout
+// mismatch is a miss: a set allocated for another layout can never be bound for this push.
+static int meow_f72_ring_take(int i, VkDescriptorSetLayout dsl, VkDescriptorSet* out) {
+    MeowF72Pool* p = &g_f72_pools[i];
+    for (int k = 0; k < p->ringCount; k++) {
+        if (p->ring[k].layout != dsl) continue;
+        *out = p->ring[k].set;
+        p->ring[k] = p->ring[--p->ringCount];
+        return 0;
+    }
+    return -1;
+}
+
+// F92 (I4): record a set as issued for the current generation. Called exactly once per successful
+// acquire (ring hit OR fresh allocation), so a set is never in `ring` and `issued` at once.
+static void meow_f72_ring_record_issued(int i, VkDescriptorSet set, VkDescriptorSetLayout dsl) {
+    MeowF72Pool* p = &g_f72_pools[i];
+    if (p->issuedCount < MEOW_F72_MAXSETS) {
+        p->issued[p->issuedCount].set = set;
+        p->issued[p->issuedCount].layout = dsl;
+        ++p->issuedCount;
+    }
 }
 
 // .65 reset path (F90: this IS the reclaim path again). A whole-pool vkResetDescriptorPool invalidates
@@ -2205,8 +2540,12 @@ static void meow_f72_pool_release(int i) {
 // SIGNALED -- exactly the guard in meow_f72_pool_free(). `resets` counts these; it is the cadence the
 // `.65` device run showed bounded (resets=66048 over 14.52M pushes, ~1 per frame).
 static int meow_f72_reset_pool(int i) {
+    // F92: ring ON shifts the same proven boundary from "reset" to "recycle"; ring OFF is byte-for-byte
+    // the old function.
+    if (meow_f72_ring_on()) return meow_f72_pool_recycle(i);
     int (*reset)(void*, void*, uint32_t) =
-        (int (*)(void*, void*, uint32_t))meow_f72_real("vkResetDescriptorPool");
+        (int (*)(void*, void*, uint32_t))meow_cached_proc(
+            &meow_p_vkResetDescriptorPool, &meow_d_vkResetDescriptorPool, "vkResetDescriptorPool");
     if (reset == NULL) { meow_f72_warn("no-vkResetDescriptorPool", (long)i, 0); return -1; }
     int rc = reset(g_dev_seen, g_f72_pools[i].pool, 0);
     if (rc != 0) { meow_f72_warn("reset-pool-rc", (long)rc, (long)i); return -1; }
@@ -2217,15 +2556,48 @@ static int meow_f72_reset_pool(int i) {
     return 0;
 }
 
+// F94 (B, build 2026-09-19.72 pool-fence-fix): reclaim every PENDING pool at a proven completion
+// boundary. Callable ONLY when the GPU is known idle (a successful vkQueueWaitIdle): that is a
+// strictly STRONGER proof than any single fence signal, so resetting the pools' sets is legal and I1
+// ("never treat an unproven completion as complete") is preserved. This is what bounds the pool count
+// even when the borrowed/created completion fence is never observed SIGNALED: MC already drains the
+// queue once per frame (F60, awaitSubmitCompletion -> vkWaitSemaphores -> vkQueueWaitIdle), so the
+// reclaim now happens on that boundary instead of depending on the fragile per-pool fence query.
+// Pools used by the frame currently being recorded are `used==1, pending==0` and are never touched.
+static void meow_f72_reclaim_pending_now(void) {
+    if (!meow_f72_on()) return;
+    for (int i = 0; i < g_f72_npools; i++) {
+        if (!g_f72_pools[i].pending) continue;
+        (void)meow_f72_reset_pool(i);   // logs+skips a failure; the caller proved queue-idle
+    }
+}
+
 // A pool may be reset only once the fence of its last submit has signaled. A pending pool with no
 // fence is deliberately NOT reusable (we cannot prove the GPU is done).
 static int meow_f72_pool_free(int i) {
     MeowF72Pool* p = &g_f72_pools[i];
     if (!p->pending) return 1;
-    if (p->fence == 0) return 0;
+    // F92 (I1 companion): reuse the one-way bit; it is only ever set from a real VK_SUCCESS query and
+    // cleared when the pool's fence changes, so this never reports "done" without a driver proof.
+    if (p->fenceSignaled) return 1;
+    if (p->fence == 0) { ++g_f72_reclaim_fail_nofence; return 0; }
     MeowF69PFN_getFenceStatus gfs = meow_f69_getFenceStatus();
-    if (gfs == NULL) return 0;
-    return (gfs(g_dev_seen, (uint64_t)p->fence) == VK_SUCCESS) ? 1 : 0;
+    // F93 (.71): the cached slot is an optimisation, not the only way to answer. If it failed, resolve
+    // once through the uncached device path before declaring the pool unreclaimable -- a single NULL
+    // resolution must never lock reclaim forever.
+    if (gfs == NULL)
+        gfs = (MeowF69PFN_getFenceStatus)(g_gdpa ? g_gdpa(g_dev_seen, "vkGetFenceStatus") : NULL);
+    if (gfs == NULL) { ++g_f72_reclaim_fail_noquery; return 0; }
+    // F94 (A): classify the result. VK_SUCCESS -> a real, proven completion. VK_NOT_READY -> live but
+    // unfinished. Anything else (a negative VkResult, or an invalid/destroyed handle) -> the fence
+    // cannot be used as a completion proof at all; the queue-idle boundary above is then the only
+    // reclaim route. Neither failure mode is ever upgraded to "complete" (I1).
+    int st = gfs(g_dev_seen, (uint64_t)p->fence);
+    if (st == VK_SUCCESS) { p->fenceSignaled = 1; ++g_f72_reclaim_status_proven; return 1; }
+    if (st == VK_NOT_READY) { ++g_f72_reclaim_status_notready; }
+    else { ++g_f72_reclaim_status_error; }
+    ++g_f72_reclaim_fail_notsignaled;
+    return 0;
 }
 
 static int meow_f72_used_count(void) {
@@ -2246,12 +2618,23 @@ static int meow_f72_used_count(void) {
 // vkCmdPushDescriptorSet (the historical device-losing path): we would rather stall once.
 static int meow_f72_quiesce_and_reclaim(void) {
     if (g_meow_last_queue == NULL) return 0;
-    int (*idle)(void*) = (int (*)(void*))(g_gdpa ? g_gdpa(g_dev_seen, "vkQueueWaitIdle") : NULL);
+    int (*idle)(void*) = (int (*)(void*))meow_cached_proc(&meow_p_vkQueueWaitIdle, &meow_d_vkQueueWaitIdle, "vkQueueWaitIdle");
     if (idle == NULL) return 0;
     if (idle(g_meow_last_queue) != VK_SUCCESS) return 0;   // cannot prove completion -> touch nothing
+    // F97 (.75): same proven-idle boundary -> every F69 fence submitted to this queue is complete.
+    meow_f69_mark_queue_idle((uint64_t)(uintptr_t)g_meow_last_queue);
+    // F95 (.73): vkQueueWaitIdle==VK_SUCCESS proves NO GPU work is in flight, which is a stronger
+    // boundary than any single fence. It is therefore legal to reset not only `pending` pools but ALSO
+    // a `!used` pool that is stranded with leftover sets and was never successfully bound (`pending`
+    // never set -- e.g. a frame whose submit was rejected, world W1). Those pools are invisible to the
+    // fence path forever (pool_free only ever runs on `pending` pools) and are exactly the ones that
+    // make the allocator grow a new pool per ~MEOW_F72_MAXSETS pushes. A pool used by the frame being
+    // recorded has `used==1` and is NEVER touched here (invariant: no reset of in-flight sets).
     for (int i = 0; i < g_f72_npools; i++) {
-        if (!g_f72_pools[i].pending) continue;
-        (void)meow_f72_reset_pool(i);   // logs+skips a failure; the queue is idle so this is legal
+        if (g_f72_pools[i].used) continue;                                       // frame being recorded
+        if (!g_f72_pools[i].pending && g_f72_pools[i].nsets == 0) continue;      // nothing to reclaim
+        int stranded = !g_f72_pools[i].pending;
+        if (meow_f72_reset_pool(i) == 0 && stranded) ++g_f95_stranded_reset;
     }
     return 1;
 }
@@ -2268,16 +2651,36 @@ static int meow_f72_ensure_active(void) {
             if (meow_f72_reset_pool(i) != 0) continue;
         }
     }
+    // F95 (.73): a `!pending` pool that already holds MEOW_F72_MAXSETS sets is STRANDED capacity: it
+    // was allocated in a frame that never produced a successful bind (world W1: submit rejected), so
+    // pool_free() never runs on it and no reset ever frees it. Selecting it is a lie (it cannot hold
+    // another set); it only makes pool_take_set() return 1 and forces the caller to grow. Detect it up
+    // front so the F93 valve (a proven queue-idle boundary) can reclaim it instead of growing.
+    int has_dead = 0;
+    for (int i = 0; i < g_f72_npools; i++) {
+        if (g_f72_pools[i].used) continue;
+        if (!g_f72_pools[i].pending && g_f72_pools[i].nsets >= MEOW_F72_MAXSETS) { has_dead = 1; break; }
+    }
     static int nextScan = 0;
     for (int k = 0; k < g_f72_npools; k++) {
         int i = nextScan;
         nextScan = (g_f72_npools > 0) ? ((nextScan + 1) % g_f72_npools) : 0;
         if (g_f72_pools[i].used) continue;              // already part of the current frame
         if (!meow_f72_pool_free(i)) continue;
+        // F95: skip stranded full capacity (see has_dead above) -- it is reclaimed at the valve below.
+        if (!g_f72_pools[i].pending && g_f72_pools[i].nsets >= MEOW_F72_MAXSETS) { ++g_f95_dead_full_skip; continue; }
+        // F94 (B): never reuse a still-pending pool whose reset failed above -- it would carry its old
+        // `nsets` (possibly already MEOW_F72_MAXSETS) into the new frame and force a spurious grow.
+        if (g_f72_pools[i].pending && meow_f72_reset_pool(i) != 0) continue;
         if (g_f72_pools[i].pool == VK_NULL_HANDLE) {
             g_f72_pools[i].pool = meow_f72_create_pool();
             if (g_f72_pools[i].pool == VK_NULL_HANDLE) { meow_f72_warn("create-pool", (long)i, 0); return -1; }
+            // F92: a freshly created pool starts with empty ring/issue tables (no stale reuse state).
+            g_f72_pools[i].ringCount = 0;
+            g_f72_pools[i].issuedCount = 0;
+            g_f72_pools[i].fenceSignaled = 0;
             ++g_f72_grows;
+            ++g_f72_grow_streak;   // F93 (B): count grows since the last successful reclaim
         }
         g_f72_pools[i].pending = 0;
         g_f72_pools[i].used = 1;
@@ -2287,17 +2690,25 @@ static int meow_f72_ensure_active(void) {
     // F91 safety valve: no free pool. A pinned pool exists, or we are at the hard cap -> make a
     // completion boundary and reclaim, then retry the scan. Growth caused by pinning therefore never
     // costs a pool slot, so the count cannot creep to the cap.
+    // F93 (B): ALSO fire after MEOW_F72_EARLY_RECLAIM_GROWS consecutive grows with no reclaim at all,
+    // even when no pool is pinned and the cap is far away. That is what keeps the pool count bounded
+    // if fence-signal reclaim is stuck (the .70 regression): we force a real vkQueueWaitIdle boundary
+    // long before 64 and reclaim there.
     int pinned = 0;
     for (int i = 0; i < g_f72_npools; i++) {
         if (g_f72_pools[i].pending && g_f72_pools[i].fence == 0) { pinned = 1; break; }
     }
-    if ((pinned || g_f72_npools >= MEOW_F72_NPOOLS) && meow_f72_quiesce_and_reclaim()) {
+    // F95: `has_dead` forces the same proven-idle boundary for stranded (never-bound, full) pools, so
+    // a string of rejected submits can never make the pool count bound over push count.
+    if ((pinned || has_dead || g_f72_grow_streak >= MEOW_F72_EARLY_RECLAIM_GROWS ||
+         g_f72_npools >= MEOW_F72_NPOOLS) && meow_f72_quiesce_and_reclaim()) {
         for (int k = 0; k < g_f72_npools; k++) {
             int i = nextScan;
             nextScan = (g_f72_npools > 0) ? ((nextScan + 1) % g_f72_npools) : 0;
             if (g_f72_pools[i].used) continue;
             if (g_f72_pools[i].pool == VK_NULL_HANDLE) continue;
             if (!meow_f72_pool_free(i)) continue;
+            if (g_f72_pools[i].pending && meow_f72_reset_pool(i) != 0) continue;   // F94 (B)
             g_f72_pools[i].pending = 0;
             g_f72_pools[i].used = 1;
             g_f72_active = i;
@@ -2309,7 +2720,11 @@ static int meow_f72_ensure_active(void) {
         g_f72_pools[i].pool = meow_f72_create_pool();
         if (g_f72_pools[i].pool != VK_NULL_HANDLE) {
             g_f72_npools = i + 1;
+            g_f72_pools[i].ringCount = 0;
+            g_f72_pools[i].issuedCount = 0;
+            g_f72_pools[i].fenceSignaled = 0;
             ++g_f72_grows;
+            ++g_f72_grow_streak;   // F93 (B): count grows since the last successful reclaim
             g_f72_pools[i].pending = 0;
             g_f72_pools[i].used = 1;
             g_f72_active = i;
@@ -2317,6 +2732,25 @@ static int meow_f72_ensure_active(void) {
         }
         meow_f72_warn("create-pool", (long)i, 0);
         return -1;
+    }
+    // F93 (B): never route the cap case back to the real vkCmdPushDescriptorSet (the historical
+    // device-losing path). The F93 grow-streak valve above makes this unreachable in practice; if it
+    // is ever reached (e.g. every pool belongs to the frame being recorded), stall on further proven
+    // completion boundaries and retry the scan before conceding a forward.
+    for (int attempt = 0; attempt < 8; attempt++) {
+        if (!meow_f72_quiesce_and_reclaim()) break;
+        for (int k = 0; k < g_f72_npools; k++) {
+            int i = nextScan;
+            nextScan = (g_f72_npools > 0) ? ((nextScan + 1) % g_f72_npools) : 0;
+            if (g_f72_pools[i].used) continue;
+            if (g_f72_pools[i].pool == VK_NULL_HANDLE) continue;
+            if (!meow_f72_pool_free(i)) continue;
+            if (g_f72_pools[i].pending && meow_f72_reset_pool(i) != 0) continue;   // F94 (B)
+            g_f72_pools[i].pending = 0;
+            g_f72_pools[i].used = 1;
+            g_f72_active = i;
+            return i;
+        }
     }
     meow_f72_warn("no-free-pool", 0, 0);
     return -1;
@@ -2367,10 +2801,20 @@ static void meow_f72_bind_submit(VkFence submitFence, int ownsFence, int ok) {
     if (!meow_f72_on()) return;
     if (!ok) {
         if (ownsFence && submitFence != 0) meow_f69_destroyFence((uint64_t)submitFence);
+        // F95 (.73): count a rejected submit that actually had used pools. This is the W1 signature:
+        // bind_submit IS reached, but ok==0, so no pool ever becomes `pending` (proven/resets freeze)
+        // and full pools are only ever reset by the proven-idle valve (stranded_reset). If this stays 0
+        // while the three F94 counters freeze, the cause is W2 (bind_submit not reached at all).
+        for (int i = 0; i < g_f72_npools; i++) { if (g_f72_pools[i].used) { ++g_f95_bind_fail; break; } }
         // F90: the submit was rejected, so no GPU work referenced this frame's sets. Just close the
         // frame; the pool (not pending) stays selected for the next frame and is reset only after a
         // later submit's fence signals -- its nsets carries on toward the cap in the meantime.
-        for (int i = 0; i < g_f72_npools; i++) g_f72_pools[i].used = 0;
+        for (int i = 0; i < g_f72_npools; i++) {
+            // F92 (ring ON): a rejected submit is a trivially-proven completion (the GPU never saw
+            // these sets), so return them to the free table now instead of letting `issued` accumulate.
+            if (meow_f72_ring_on() && g_f72_pools[i].used) (void)meow_f72_pool_recycle(i);
+            g_f72_pools[i].used = 0;
+        }
         g_f72_active = -1;
         return;
     }
@@ -2380,9 +2824,17 @@ static void meow_f72_bind_submit(VkFence submitFence, int ownsFence, int ok) {
         g_f72_pools[i].used = 0;
         g_f72_pools[i].fence = submitFence;
         g_f72_pools[i].ownsFence = ownsFence;
+        // F94 (build .72): a new fence invalidates the one-way completion bit AT THE WRITE SITE (F92's
+        // lesson: a one-shot flag must be explicitly initialised where its owner is assigned). Without
+        // this, a pool reused by the scan while a stale bit was still set would skip its fence query
+        // for the NEW submit and could reset a pool the GPU is still using. pool_release() clears it
+        // too; both are needed because the scan can reuse a pool without going through release.
+        g_f72_pools[i].fenceSignaled = 0;
         g_f72_pools[i].pending = 1;
         if (ownsFence && submitFence != 0) ++g_f72_owned_refs;
         else if (submitFence != 0) meow_f69_borrow_ref((uint64_t)submitFence);   // F78
+        else ++g_f95_fence0_bind;   // F95: used->pending with NO fence => pinned until a proven-idle valve
+        ++g_f72_bind_pools;   // F94 (A): proves (used -> pending) actually happened
     }
     g_f72_active = -1;
 }
@@ -2420,21 +2872,33 @@ static int meow_f72_emulate_push_inner(void* cmd, uint32_t bindPoint, void* layo
         meow_f72_warn("missing-forward", 0, 0);
         return -1;
     }
-    // F90/.65: acquire a FRESH set for THIS push via vkAllocateDescriptorSets on the active pool. The
-    // pool is left ONLY when its capacity is exhausted (nsets >= MEOW_F72_MAXSETS, or the driver
-    // returns VK_ERROR_OUT_OF_POOL_MEMORY): then reclaim any signaled pool and switch/grow. Only if
-    // that also fails do we forward. Every push gets its own set, so a later push cannot overwrite an
-    // earlier bind's contents.
+    // F90/.65 acquire, F92 (.70) ring-optional. Ring OFF (default): exactly the old fresh allocation.
+    // Ring ON: first try the pool's free table for a set with the SAME mirror layout (ring_hits);
+    // otherwise a real vkAllocateDescriptorSets (ring_misses). A pool is left ONLY on capacity
+    // exhaustion / OUT_OF_POOL_MEMORY (I2) -- an empty free table never rotates a pool by itself.
     VkDescriptorSet ds = VK_NULL_HANDLE;
     int arc = 0;
-    int t = meow_f72_pool_take_set(pi, allocDsl, alloc, &ds, &arc);
-    if (t == 1 || arc == VK_ERROR_OUT_OF_POOL_MEMORY) {
-        g_f72_active = -1;
-        int npi = meow_f72_ensure_active();
-        if (npi >= 0 && npi != pi) {
-            pi = npi;
-            arc = 0;
-            t = meow_f72_pool_take_set(pi, allocDsl, alloc, &ds, &arc);
+    int t = -1;
+    if (meow_f72_ring_on() && meow_f72_ring_take(pi, allocDsl, &ds) == 0) {
+        ++g_f72_ring_hits;
+        t = 0;
+    } else {
+        if (meow_f72_ring_on()) ++g_f72_ring_misses;
+        t = meow_f72_pool_take_set(pi, allocDsl, alloc, &ds, &arc);
+        if (t == 1 || arc == VK_ERROR_OUT_OF_POOL_MEMORY) {
+            g_f72_active = -1;
+            int npi = meow_f72_ensure_active();
+            if (npi >= 0 && npi != pi) {
+                pi = npi;
+                arc = 0;
+                if (meow_f72_ring_on() && meow_f72_ring_take(pi, allocDsl, &ds) == 0) {
+                    ++g_f72_ring_hits;
+                    t = 0;
+                } else {
+                    if (meow_f72_ring_on()) ++g_f72_ring_misses;
+                    t = meow_f72_pool_take_set(pi, allocDsl, alloc, &ds, &arc);
+                }
+            }
         }
     }
     if (t != 0) {
@@ -2443,6 +2907,8 @@ static int meow_f72_emulate_push_inner(void* cmd, uint32_t bindPoint, void* layo
         meow_f72_warn("allocate-set-failed", (long)arc, (long)set);
         return -1;
     }
+    // F92 (I4): record the acquired set exactly once so meow_f72_pool_recycle() can return it.
+    if (meow_f72_ring_on()) meow_f72_ring_record_issued(pi, ds, allocDsl);
     // R1 (kept from F88): reuse the file-scope scratch; only an over-capacity call falls back to malloc. The push
     // ignores dstSet, but vkUpdateDescriptorSets requires it -> copy and point every write at the set
     // just acquired. The pointed-to image/buffer arrays are consumed synchronously by the update call,
@@ -2481,11 +2947,52 @@ static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, ui
     // steady state (the .65 log: resets=66048 over 14.52M pushes). resets stays in the printed fields
     // as information, but NEVER triggers the line. Never per push; verbose still prints every call.
     static unsigned long f86_last_fwd = 0ul, f86_last_grow = 0ul;
-    if (meow_vk_verbose() || g_f72_forwarded != f86_last_fwd || g_f72_grows != f86_last_grow) {
+    // F98 (.76): the grow/forwarded trigger goes quiet once the pools plateau, so a low-rate time-based
+    // trigger is added on top -- OPT-IN and default OFF (MEOW_VK_TOTALS_SEC=<seconds>). The condition
+    // below is byte-for-byte the old one when the env is unset; the clock is read only when the env is
+    // set, and then at most once per 256 pushes. Same MEOWLOGI line, no new print point (I2/I3).
+    int f98_print = (meow_vk_verbose() || g_f72_forwarded != f86_last_fwd || g_f72_grows != f86_last_grow);
+    if (!f98_print) {
+        static int f98_decided = 0, f98_secs = 0;
+        static long long f98_next_ns = 0;
+        if (!f98_decided) {
+            f98_decided = 1;   // read the env once (process-wide; F87/F97 idiom)
+            const char* f98_env = getenv("MEOW_VK_TOTALS_SEC");
+            f98_secs = (f98_env != NULL) ? atoi(f98_env) : 0;
+            if (f98_secs < 1) f98_secs = 0;   // absent/invalid/<=0 = OFF (default path unchanged)
+        }
+        if (f98_secs > 0 && (g_f72_emulated & 0xFFul) == 0ul) {
+            long long f98_now = wd_now_ns();
+            if (f98_next_ns == 0) {
+                f98_next_ns = f98_now + (long long)f98_secs * 1000000000LL;
+            } else if (f98_now >= f98_next_ns) {
+                f98_print = 1;
+                f98_next_ns = f98_now + (long long)f98_secs * 1000000000LL;
+            }
+        }
+    }
+    if (f98_print) {
         MEOWLOGI("meowvulkan: F72b push totals: emulated=%{public}lu forwarded=%{public}lu pools=%{public}d "
-                 "resets=%{public}lu allocs=%{public}lu grow=%{public}lu",
+                 "resets=%{public}lu allocs=%{public}lu grow=%{public}lu ring_hits=%{public}lu ring_misses=%{public}lu "
+                 "reclaim_fail_nofence=%{public}lu reclaim_fail_noquery=%{public}lu reclaim_fail_notsignaled=%{public}lu "
+                 "reclaim_status_notready=%{public}lu reclaim_status_error=%{public}lu reclaim_status_proven=%{public}lu "
+                 "bind_pools=%{public}lu "
+                 // F95 (.73) saturation/rejection counters, same line, no new print point:
+                 //   bind_fail      = rejected submits that had used pools (W1 discriminator)
+                 //   fence0_bind    = used->pending with no fence (pin event)
+                 //   dead_full_skip = stranded full non-pending pool skipped by the scan
+                 //   stranded_reset = stranded pool reclaimed at a proven queue-idle boundary
+                 //   borrow_full    = F78 borrow table (MEOW_F69_MAX_BORROWS) saturated
+                 //   f69_evict      = F69 map (MEOW_F69_MAX_ENTRIES) saturated/evicted
+                 "bind_fail=%{public}lu fence0_bind=%{public}lu dead_full_skip=%{public}lu stranded_reset=%{public}lu "
+                 "borrow_full=%{public}lu f69_evict=%{public}lu",
                  g_f72_emulated, g_f72_forwarded, g_f72_npools, g_f72_resets, g_f72_allocs,
-                 g_f72_grows);
+                 g_f72_grows, g_f72_ring_hits, g_f72_ring_misses,
+                 g_f72_reclaim_fail_nofence, g_f72_reclaim_fail_noquery, g_f72_reclaim_fail_notsignaled,
+                 g_f72_reclaim_status_notready, g_f72_reclaim_status_error, g_f72_reclaim_status_proven,
+                 g_f72_bind_pools,
+                 g_f95_bind_fail, g_f95_fence0_bind, g_f95_dead_full_skip, g_f95_stranded_reset,
+                 g_f95_borrow_full, g_f69_evicts);
         f86_last_fwd = g_f72_forwarded;
         f86_last_grow = g_f72_grows;
     }
@@ -2510,6 +3017,11 @@ static void meow_f72_shutdown(void) {
         g_f72_pools[i].pending = 0;
         g_f72_pools[i].used = 0;
         g_f72_pools[i].nsets = 0;   // F90: the pool handle is gone; drop the allocation counter
+        // F92: the pool handle is gone -> its ring/issue tables are meaningless. Clear them so a later
+        // pool in this slot can never observe stale set handles.
+        g_f72_pools[i].ringCount = 0;
+        g_f72_pools[i].issuedCount = 0;
+        g_f72_pools[i].fenceSignaled = 0;
     }
     // F72c: the shim-owned fence is shared, so destroy it exactly once.
     if (g_f72_owned_fence != VK_NULL_HANDLE) {
@@ -2567,14 +3079,12 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
         return -3;
     }
     // F49: one VkSubmitInfo + one MeowSubmit2Tr per vkQueueSubmit2 entry; N single-entry calls.
-    MeowSubmit2Tr* st = (MeowSubmit2Tr*)calloc(submitCount, sizeof(MeowSubmit2Tr));
-    VkSubmitInfoL* outs = (VkSubmitInfoL*)calloc(submitCount, sizeof(VkSubmitInfoL));
-    if (st == NULL || outs == NULL) {
-        meow_submit2_tr_free(st, submitCount);
-        free(outs);
-        MEOWLOGE("meowvulkan: SYNC2->V1: out of memory building per-entry VkSubmitInfo");
-        return -3;
-    }
+    // F97 (.75): submitCount is capped at 64 above, so both arrays come from the file-level reusable
+    // scratch; consumed by the synchronous vkQueueSubmit calls and dead afterwards (see the F97 block).
+    MeowSubmit2Tr* st = g_f97_st;
+    VkSubmitInfoL* outs = g_f97_outs;
+    memset(st, 0, (size_t)submitCount * sizeof(MeowSubmit2Tr));
+    memset(outs, 0, (size_t)submitCount * sizeof(VkSubmitInfoL));
     uint32_t totalWaits = 0, totalCmds = 0, totalSignals = 0;
     uint32_t timelineChains = 0, waitDstMask0 = 0;
     int haveMask0 = 0, lostBits = 0, ok = 1;
@@ -2588,20 +3098,37 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
         totalCmds += cc;
         totalSignals += sc;
         MeowSubmit2Tr* e = &st[i];
-        if (wc > 0) {
-            e->waitSems = (VkSemaphore*)calloc(wc, sizeof(VkSemaphore));
-            e->waitStages = (uint32_t*)calloc(wc, sizeof(uint32_t));
-            e->waitVals = (uint64_t*)calloc(wc, sizeof(uint64_t));
-            if (e->waitSems == NULL || e->waitStages == NULL || e->waitVals == NULL) ok = 0;
-        }
-        if (ok && cc > 0) {
-            e->cmdBufs = (VkCommandBuffer*)calloc(cc, sizeof(VkCommandBuffer));
-            if (e->cmdBufs == NULL) ok = 0;
-        }
-        if (ok && sc > 0) {
-            e->sigSems = (VkSemaphore*)calloc(sc, sizeof(VkSemaphore));
-            e->sigVals = (uint64_t*)calloc(sc, sizeof(uint64_t));
-            if (e->sigSems == NULL || e->sigVals == NULL) ok = 0;
+        // F97: the common case (every MC entry) fits the scratch; a larger entry falls back to the
+        // original calloc for ALL of its arrays so the free path stays all-or-nothing per entry.
+        if (wc <= MEOW_F97_CAP && cc <= MEOW_F97_CAP && sc <= MEOW_F97_CAP) {
+            e->scratch = 1;
+            if (wc > 0) {
+                e->waitSems = g_f97_e_wsems[i];
+                e->waitStages = g_f97_e_wstages[i];
+                e->waitVals = g_f97_e_wvals[i];
+            }
+            if (cc > 0) e->cmdBufs = g_f97_e_cmds[i];
+            if (sc > 0) {
+                e->sigSems = g_f97_e_ssems[i];
+                e->sigVals = g_f97_e_svals[i];
+            }
+        } else {
+            e->scratch = 0;
+            if (wc > 0) {
+                e->waitSems = (VkSemaphore*)calloc(wc, sizeof(VkSemaphore));
+                e->waitStages = (uint32_t*)calloc(wc, sizeof(uint32_t));
+                e->waitVals = (uint64_t*)calloc(wc, sizeof(uint64_t));
+                if (e->waitSems == NULL || e->waitStages == NULL || e->waitVals == NULL) ok = 0;
+            }
+            if (ok && cc > 0) {
+                e->cmdBufs = (VkCommandBuffer*)calloc(cc, sizeof(VkCommandBuffer));
+                if (e->cmdBufs == NULL) ok = 0;
+            }
+            if (ok && sc > 0) {
+                e->sigSems = (VkSemaphore*)calloc(sc, sizeof(VkSemaphore));
+                e->sigVals = (uint64_t*)calloc(sc, sizeof(uint64_t));
+                if (e->sigSems == NULL || e->sigVals == NULL) ok = 0;
+            }
         }
     }
     // Pass 2: fill each entry's own VkSubmitInfo in original entry/index order.
@@ -2684,12 +3211,15 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
         if (doMerge) {
             // F66: ONE merged v1 submit. See the meow_sync2v1_merge_decide note above for the
             // on-device evidence that this ICD rejects the second entry of a multi-entry batch.
-            VkSemaphore* mwSems = (totalWaits > 0) ? (VkSemaphore*)calloc(totalWaits, sizeof(VkSemaphore)) : NULL;
-            uint32_t* mwStages = (totalWaits > 0) ? (uint32_t*)calloc(totalWaits, sizeof(uint32_t)) : NULL;
-            uint64_t* mwVals = (totalWaits > 0) ? (uint64_t*)calloc(totalWaits, sizeof(uint64_t)) : NULL;
-            VkCommandBuffer* mCBs = (totalCmds > 0) ? (VkCommandBuffer*)calloc(totalCmds, sizeof(VkCommandBuffer)) : NULL;
-            VkSemaphore* msSems = (totalSignals > 0) ? (VkSemaphore*)calloc(totalSignals, sizeof(VkSemaphore)) : NULL;
-            uint64_t* msVals = (totalSignals > 0) ? (uint64_t*)calloc(totalSignals, sizeof(uint64_t)) : NULL;
+            // F97 (.75): totals fit the scratch -> reuse it; otherwise the original calloc, freed below.
+            const int mScratch = (totalWaits <= MEOW_F97_CAP && totalCmds <= MEOW_F97_CAP &&
+                                  totalSignals <= MEOW_F97_CAP);
+            VkSemaphore* mwSems = (totalWaits > 0) ? (mScratch ? g_f97_m_wsems : (VkSemaphore*)calloc(totalWaits, sizeof(VkSemaphore))) : NULL;
+            uint32_t* mwStages = (totalWaits > 0) ? (mScratch ? g_f97_m_wstages : (uint32_t*)calloc(totalWaits, sizeof(uint32_t))) : NULL;
+            uint64_t* mwVals = (totalWaits > 0) ? (mScratch ? g_f97_m_wvals : (uint64_t*)calloc(totalWaits, sizeof(uint64_t))) : NULL;
+            VkCommandBuffer* mCBs = (totalCmds > 0) ? (mScratch ? g_f97_m_cmds : (VkCommandBuffer*)calloc(totalCmds, sizeof(VkCommandBuffer))) : NULL;
+            VkSemaphore* msSems = (totalSignals > 0) ? (mScratch ? g_f97_m_ssems : (VkSemaphore*)calloc(totalSignals, sizeof(VkSemaphore))) : NULL;
+            uint64_t* msVals = (totalSignals > 0) ? (mScratch ? g_f97_m_svals : (uint64_t*)calloc(totalSignals, sizeof(uint64_t))) : NULL;
             const int mergeAllocOk = ((totalWaits == 0) || (mwSems != NULL && mwStages != NULL && mwVals != NULL)) &&
                                      ((totalCmds == 0) || mCBs != NULL) &&
                                      ((totalSignals == 0) || (msSems != NULL && msVals != NULL));
@@ -2755,8 +3285,17 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
                                 if (mwVals[k] != 0 && meow_f69_is_timeline(ws)) {
                                     uint64_t wf = meow_f69_wait_fence_for(ws, mwVals[k]);
                                     if (wf != 0) {
+                                        // F92 (I1): skip the real wait ONLY when an earlier query already
+                                        // proved THIS exact fence signaled. No bit -> fall through to
+                                        // today's vkWaitForFences(UINT64_MAX); the wait is never shortened
+                                        // and success is never forged.
+                                        if (meow_f69_completion_proven(ws, wf)) {
+                                            ++f69WaitN;
+                                            continue;
+                                        }
                                         int wrc = wff(g_dev_seen, 1, &wf, VK_TRUE, UINT64_MAX);
                                         if (wrc == VK_SUCCESS) {
+                                            meow_f69_mark_completion(ws, wf);
                                             ++f69WaitN;
                                             if (f69WaitN <= 8)
                                                 MEOWLOGI("meowvulkan: F69 wait->fence sem=0x%{public}llx "
@@ -2881,20 +3420,35 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
                     stoppedAt = 1;
                     // F69: register (timelineSem, value) -> the fence that just covered the submit.
                     for (uint32_t k = 0; f69OwnFence && k < f69SigN; k++) {
-                        meow_f69_add_entry(f69Pairs[k].sem, f69Pairs[k].value, f69FenceUsed);
+                        meow_f69_add_entry(f69Pairs[k].sem, f69Pairs[k].value, f69FenceUsed,
+                                           (uint64_t)(uintptr_t)queue);
                     }
                 }
                 free(f69Pairs);
             }
-            free(mwSems);
-            free(mwStages);
-            free(mwVals);
-            free(mCBs);
-            free(msSems);
-            free(msVals);
+            if (!mScratch) {
+                free(mwSems);
+                free(mwStages);
+                free(mwVals);
+                free(mCBs);
+                free(msSems);
+                free(msVals);
+            }
         } else {
+        // F96 (.74 bind-merged-submit): the F49 split is a REAL submit path (reachable with
+        // MEOW_VK_SYNC2_TO_V1_MERGE=0), so it must register the frame's pools too. The single VkFence
+        // handed to every call covers the whole frame, so one shim tracking fence (when the caller
+        // supplied none) plus one bind cover every entry regardless of submitCount. Mirrors the F66
+        // merge branch above; the registration still happens on the actual submitted fence.
+        VkFence f72SplitFence = (VkFence)(uintptr_t)fence;
+        int f72SplitOwn = 0;
+        if (meow_f72_on() && submitCount >= 1 && f72SplitFence == 0 && g_f72_owned_refs == 0 &&
+            meow_f72_used_count() > 0) {
+            f72SplitFence = meow_f72_track_fence_create();
+            f72SplitOwn = (f72SplitFence != 0);
+        }
         for (uint32_t i = 0; i < submitCount; i++) {
-            int r = realSubmit(queue, 1, &outs[i], fence);
+            int r = realSubmit(queue, 1, &outs[i], (uint64_t)(uintptr_t)f72SplitFence);
             rcSeq[i] = r;
             issued = i + 1;
             if (r != 0) {
@@ -2902,6 +3456,8 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
                 continue;   /* F51: still attempt the remaining entries */
             }
         }
+        if (meow_f72_on() && submitCount >= 1)
+            meow_f72_bind_submit(f72SplitFence, f72SplitOwn, (issued != 0 && firstErr == 0));
         }
         // F51: every entry was attempted, so `submits` (== issued) equals `submitsIn`; rc is the
         // first error (0 when every entry was accepted). `diverged` is the self-proof that a batch
@@ -2945,7 +3501,7 @@ static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const
         MEOWLOGE("meowvulkan: SYNC2->V1: translation aborted (counts/alloc); vkQueueSubmit2 NOT forwarded");
     }
     meow_submit2_tr_free(st, submitCount);
-    free(outs);
+    if (outs != g_f97_outs) free(outs);   // F97: the array itself may be the file-level scratch
     return rc;
 }
 
@@ -3073,7 +3629,21 @@ static int log_QueueSubmit2(void* queue, uint32_t submitCount, const void* submi
     if (doTranslate) {
         rc = meow_translate_queue_submit2(queue, submitCount, submits, fence);
     } else {
-        rc = ((PFN_queueSubmit2)real)(queue, submitCount, submits, fence);
+        // F96 (.74 bind-merged-submit): the raw forward is a REAL submit path (reachable with
+        // MEOW_VK_SYNC2_TO_V1=0), so register this frame's pools on the fence actually handed to the
+        // ICD. Create a shim tracking fence when the caller supplied none (MC always passes 0); one
+        // fence covers the whole sync2 batch, so one bind covers every used pool regardless of
+        // submitCount. Mirrors the F66 merge branch.
+        VkFence f72Fence = (VkFence)(uintptr_t)fence;
+        int f72OwnFence = 0;
+        if (meow_f72_on() && submitCount >= 1 && f72Fence == 0 && g_f72_owned_refs == 0 &&
+            meow_f72_used_count() > 0) {
+            f72Fence = meow_f72_track_fence_create();
+            f72OwnFence = (f72Fence != 0);
+        }
+        rc = ((PFN_queueSubmit2)real)(queue, submitCount, submits, (uint64_t)(uintptr_t)f72Fence);
+        if (meow_f72_on() && submitCount >= 1)
+            meow_f72_bind_submit(f72Fence, f72OwnFence, (rc == 0));
     }
     // F54: kept -- one line per submit, the plain device-loss / success verdict.
     // F58: gapMs = ms since the previous vkQueueSubmit2 (0 on the first submit); maxGapMs = running
@@ -3090,7 +3660,7 @@ typedef int (*PFN_waitSemaphores)(void*, const void*, uint64_t);
 typedef int (*PFN_queueWaitIdleF)(void*);   /* header :4544 VkResult (*)(VkQueue) */
 static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
     wd_note("vkWaitSemaphores");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkWaitSemaphores") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkWaitSemaphores, &meow_d_vkWaitSemaphores, "vkWaitSemaphores");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkWaitSemaphores");
         return -3;
@@ -3118,18 +3688,37 @@ static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
         MeowF69PFN_waitForFences wff = meow_f69_waitForFences();
         if (wff != NULL) {
             uint64_t ff[64];
+            uint64_t ffs[64];
             uint32_t nf = 0;
             int allMapped = 1;
+            int allProven = 1;   // F92: every fence already proven signaled by an earlier REAL query
             for (uint32_t i = 0; i < count; i++) {
                 uint64_t ss = (uint64_t)(uintptr_t)w->pSemaphores[i];
                 if (!meow_f69_is_timeline(ss)) { allMapped = 0; break; }
                 uint64_t ffence = meow_f69_wait_fence_for(ss, w->pValues[i]);
                 if (ffence == 0) { allMapped = 0; break; }
-                ff[nf++] = ffence;
+                ff[nf] = ffence;
+                ffs[nf] = ss;
+                ++nf;
+                if (!meow_f69_completion_proven(ss, ffence)) allProven = 0;
             }
             if (allMapped && nf > 0) {
+                // F92 (I1): all fences already proven signaled -> vkWaitForFences(waitAll, timeout)
+                // would return VK_SUCCESS for ANY timeout, so returning here is identical. This uses
+                // only the cached one-way bit; it never queries the driver in the not-ready case.
+                if (allProven) {
+                    g_meow_f84_wait_last_rc = VK_SUCCESS;
+                    if (meow_vk_verbose())
+                        MEOWLOGI("meowvulkan: F69 vkWaitSemaphores count=%{public}u proven-complete (no wait)", nf);
+                    return VK_SUCCESS;
+                }
                 int wrc = wff(g_dev_seen, nf, ff, VK_TRUE, timeout);
                 g_meow_f84_wait_last_rc = wrc;
+                // F92: a successful wait proves every listed fence signaled; remember it so the next
+                // poll costs zero driver calls (fences are one-way until destroyed).
+                if (wrc == VK_SUCCESS) {
+                    for (uint32_t i = 0; i < nf; i++) meow_f69_mark_completion(ffs[i], ff[i]);
+                }
                 // F85: MC polls with timeout=0; VK_TIMEOUT(2) there is the NORMAL "not done yet" answer,
                 // not a failure -- so it must never print. The line is unconditional only for a REAL
                 // error (rc < 0); everything else needs MEOW_VK_VERBOSE=1.
@@ -3155,7 +3744,7 @@ static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
     const char* qidleWhy = NULL;
     int viaQueueIdle = meow_wait_via_queue_idle_decide(&qidleWhy);
     if (viaQueueIdle && g_meow_last_queue != NULL) {
-        PFN_vkVoidFunctionLocal idle = g_gdpa ? g_gdpa(g_dev_seen, "vkQueueWaitIdle") : NULL;
+        PFN_vkVoidFunctionLocal idle = meow_cached_proc(&meow_p_vkQueueWaitIdle, &meow_d_vkQueueWaitIdle, "vkQueueWaitIdle");
         if (idle != NULL) {
             int qrc = ((PFN_queueWaitIdleF)idle)(g_meow_last_queue);
             unsigned long n = ++g_meow_wait_qidle;
@@ -3169,6 +3758,17 @@ static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
                 if (meow_vk_verbose())
                     MEOWLOGI("meowvulkan: vkWaitSemaphores returned rc=0 (-4 = VK_ERROR_DEVICE_LOST)");
                 g_meow_f84_wait_last_rc = VK_SUCCESS;
+                // F97 (.75, residual-percall-2): A1 -- this same proven-idle boundary completes every
+                // F69 fence previously submitted to this queue, so record their one-way signaled bit
+                // now. The following vkGetSemaphoreCounterValue polls then answer without re-issuing a
+                // per-fence vkGetFenceStatus; the reported value is unchanged (at this instant those
+                // very queries would return VK_SUCCESS). See meow_f69_mark_queue_idle.
+                meow_f69_mark_queue_idle((uint64_t)(uintptr_t)g_meow_last_queue);
+                // F94 (B, build .72): the queue is provably idle here, so every pool submitted by a
+                // PREVIOUS frame is complete. Reclaim it NOW on this stronger-than-a-fence boundary.
+                // This is what bounds the F72 descriptor pools even when the per-pool completion fence
+                // is never observed SIGNALED; MC already drains the queue once per frame.
+                meow_f72_reclaim_pending_now();
                 return VK_SUCCESS;
             }
             if (meow_vk_verbose() || n <= 4ul || (n % 20000ul) == 0ul)
@@ -3194,7 +3794,7 @@ static int log_WaitSemaphores(void* dev, const void* wi, uint64_t timeout) {
 typedef int (*PFN_getSemaphoreCounterValue)(void*, uint64_t, uint64_t*);
 static int log_GetSemaphoreCounterValue(void* dev, uint64_t sem, uint64_t* pValue) {
     wd_note("vkGetSemaphoreCounterValue");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkGetSemaphoreCounterValue") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkGetSemaphoreCounterValue, &meow_d_vkGetSemaphoreCounterValue, "vkGetSemaphoreCounterValue");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkGetSemaphoreCounterValue");
         return -3;
@@ -3223,7 +3823,7 @@ static int log_GetSemaphoreCounterValue(void* dev, uint64_t sem, uint64_t* pValu
 typedef int (*PFN_devIdle)(void*);
 static int log_DeviceWaitIdle(void* dev) {
     wd_note("vkDeviceWaitIdle");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkDeviceWaitIdle") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkDeviceWaitIdle, &meow_d_vkDeviceWaitIdle, "vkDeviceWaitIdle");
     if (real == NULL) return -3;
     int rc = ((PFN_devIdle)real)(dev);
     // F85: wait result -> verbose; real error always visible.
@@ -3402,8 +4002,13 @@ typedef VkCommandBufferAllocateInfo VkCommandBufferAllocateInfoL;
 typedef int (*PFN_allocateCommandBuffers)(void*, const void*, void*);
 static int log_AllocateCommandBuffers(void* dev, const void* ai, void* cbs) {
     wd_note("vkAllocateCommandBuffers");
-    PFN_allocateCommandBuffers real = (PFN_allocateCommandBuffers)meow_resolve_device_fn("vkAllocateCommandBuffers");
-    if (real == NULL) return -3;
+    // F92 (.70): F85 measured this as a per-frame hot path -> F87 cache.
+    PFN_allocateCommandBuffers real = (PFN_allocateCommandBuffers)
+        meow_cached_proc(&meow_p_vkAllocateCommandBuffers, &meow_d_vkAllocateCommandBuffers, "vkAllocateCommandBuffers");
+    if (real == NULL) {
+        MEOWLOGE("meowvulkan: cannot resolve the real vkAllocateCommandBuffers");
+        return -3;
+    }
     const VkCommandBufferAllocateInfoL* a = (const VkCommandBufferAllocateInfoL*)ai;
     uint32_t count = (a != NULL) ? a->commandBufferCount : 0u;
     // F85: command-buffer allocation is a per-frame hot path -> verbose (real errors stay visible).
@@ -3442,8 +4047,13 @@ static void log_GetDeviceQueue(void* dev, uint32_t family, uint32_t index, void*
 typedef int (*PFN_beginCommandBuffer)(void*, const void*);
 static int log_BeginCommandBuffer(void* cmd, const void* bi) {
     wd_note("vkBeginCommandBuffer");
-    PFN_beginCommandBuffer real = (PFN_beginCommandBuffer)meow_resolve_device_fn("vkBeginCommandBuffer");
-    if (real == NULL) return -3;
+    // F92 (.70): per-frame call -> F87 cache instead of one g_gdpa() lookup per frame.
+    PFN_beginCommandBuffer real = (PFN_beginCommandBuffer)
+        meow_cached_proc(&meow_p_vkBeginCommandBuffer, &meow_d_vkBeginCommandBuffer, "vkBeginCommandBuffer");
+    if (real == NULL) {
+        MEOWLOGE("meowvulkan: cannot resolve the real vkBeginCommandBuffer");
+        return -3;
+    }
     // F15 (.14): command-buffer ownership tagging -- cmd IS the first parameter, printed verbatim.
     if (meow_vk_verbose())
         MEOWLOGI("meowvulkan: vkBeginCommandBuffer CALLED cmdBuf=%{public}p -- forwarding", cmd);
@@ -3507,7 +4117,7 @@ typedef int (*PFN_acquireNextImageKHR)(void*, void*, uint64_t, void*, void*, uin
 static int log_AcquireNextImageKHR(void* dev, void* swapchain, uint64_t timeout,
                                    void* semaphore, void* fence, uint32_t* pImageIndex) {
     wd_note("vkAcquireNextImageKHR");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkAcquireNextImageKHR") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkAcquireNextImageKHR, &meow_d_vkAcquireNextImageKHR, "vkAcquireNextImageKHR");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkAcquireNextImageKHR");
         return -3;   // VK_ERROR_INITIALIZATION_FAILED
@@ -3542,7 +4152,7 @@ typedef int (*PFN_queuePresentKHR)(void*, const void*);
 static int log_QueuePresentKHR(void* queue, const void* pi) {
     wd_note("vkQueuePresentKHR");
     g_meow_last_queue = queue;   /* F60: fallback source for the cached queue (same render thread) */
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkQueuePresentKHR") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkQueuePresentKHR, &meow_d_vkQueuePresentKHR, "vkQueuePresentKHR");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkQueuePresentKHR");
         return -3;
@@ -4176,17 +4786,19 @@ static int meow_translate_cmd_pipeline_barrier2(void* cmd, const void* di) {
     VkMemBarrierL* mb = NULL;
     VkBufBarrierL* bb = NULL;
     VkImgBarrierL* ib = NULL;
+    // F97 (.75): common-case barrier counts reuse the file-level scratch (consumed by the synchronous
+    // vkCmdPipelineBarrier below); a count over MEOW_F97_CAP keeps the original calloc. See the F97 block.
     if (mc > 0) {
-        mb = (VkMemBarrierL*)calloc(mc, sizeof(VkMemBarrierL));
+        mb = (mc <= MEOW_F97_CAP) ? g_f97_b_mem : (VkMemBarrierL*)calloc(mc, sizeof(VkMemBarrierL));
         if (mb == NULL) { MEOWLOGE("meowvulkan: SYNC2->V1: OOM (memory barriers)"); return -3; }
     }
     if (bc > 0) {
-        bb = (VkBufBarrierL*)calloc(bc, sizeof(VkBufBarrierL));
-        if (bb == NULL) { free(mb); MEOWLOGE("meowvulkan: SYNC2->V1: OOM (buffer barriers)"); return -3; }
+        bb = (bc <= MEOW_F97_CAP) ? g_f97_b_buf : (VkBufBarrierL*)calloc(bc, sizeof(VkBufBarrierL));
+        if (bb == NULL) { if (mb != g_f97_b_mem) free(mb); MEOWLOGE("meowvulkan: SYNC2->V1: OOM (buffer barriers)"); return -3; }
     }
     if (ic > 0) {
-        ib = (VkImgBarrierL*)calloc(ic, sizeof(VkImgBarrierL));
-        if (ib == NULL) { free(mb); free(bb); MEOWLOGE("meowvulkan: SYNC2->V1: OOM (image barriers)"); return -3; }
+        ib = (ic <= MEOW_F97_CAP) ? g_f97_b_img : (VkImgBarrierL*)calloc(ic, sizeof(VkImgBarrierL));
+        if (ib == NULL) { if (mb != g_f97_b_mem) free(mb); if (bb != g_f97_b_buf) free(bb); MEOWLOGE("meowvulkan: SYNC2->V1: OOM (image barriers)"); return -3; }
     }
     int lostBits = 0;
     uint32_t srcStage = 0, dstStage = 0;
@@ -4265,9 +4877,9 @@ static int meow_translate_cmd_pipeline_barrier2(void* cmd, const void* di) {
         MEOWLOGI("meowvulkan: translated barrier: mem=%{public}u buf=%{public}u img=%{public}u "
                  "srcStage=0x%{public}x dstStage=0x%{public}x",
                  mc, bc, ic, srcStage, dstStage);
-    free(mb);
-    free(bb);
-    free(ib);
+    if (mb != g_f97_b_mem) free(mb);
+    if (bb != g_f97_b_buf) free(bb);
+    if (ib != g_f97_b_img) free(ib);
     return 0;
 }
 
@@ -4387,16 +4999,29 @@ static void log_CmdExecuteCommands(void* cmd, uint32_t commandBufferCount, const
 // VkDebugUtilsLabelEXT -- official SDK type (vulkan_core.h:14153).
 typedef VkDebugUtilsLabelEXT VkDebugUtilsLabelL;
 
-static PFN_vkVoidFunctionLocal resolve_debug_label(const char* name) {
-    PFN_vkVoidFunctionLocal p = g_gdpa ? g_gdpa(g_dev_seen, name) : NULL;
-    if (p == NULL) p = real_proc(name);   // instance-path resolution (how MC asked for these)
+// F92 (.70): the DebugUtils labels are recorded every frame (F15/F18), so the g_gdpa-first,
+// instance-fallback resolution is now cached per wrapper (same F87 pair/atomic contract). Once
+// resolved the cost is one pointer compare; if BOTH paths return NULL the slot stays NULL and the
+// lookup is retried unchanged.
+static PFN_vkVoidFunctionLocal resolve_debug_label(PFN_vkVoidFunctionLocal* slot, void** devSlot,
+                                                   const char* name) {
+    void* dev = (void*)g_dev_seen;
+    void* cachedDev = __atomic_load_n(devSlot, __ATOMIC_ACQUIRE);
+    PFN_vkVoidFunctionLocal p = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+    if (p == NULL || cachedDev != dev) {
+        p = g_gdpa ? g_gdpa(g_dev_seen, name) : NULL;
+        if (p == NULL) p = real_proc(name);   // instance-path resolution (how MC asked for these)
+        __atomic_store_n(devSlot, dev, __ATOMIC_RELAXED);
+        __atomic_store_n(slot, p, __ATOMIC_RELEASE);
+    }
     return p;
 }
 
 typedef void (*PFN_cmdBeginDebugUtilsLabelEXT)(void*, const void*);
 static void log_CmdBeginDebugUtilsLabelEXT(void* cmd, const void* pLabelInfo) {
     wd_note("vkCmdBeginDebugUtilsLabelEXT");
-    PFN_vkVoidFunctionLocal real = resolve_debug_label("vkCmdBeginDebugUtilsLabelEXT");
+    PFN_vkVoidFunctionLocal real = resolve_debug_label(&meow_p_vkCmdBeginDebugUtilsLabelEXT,
+        &meow_d_vkCmdBeginDebugUtilsLabelEXT, "vkCmdBeginDebugUtilsLabelEXT");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdBeginDebugUtilsLabelEXT");
         return;
@@ -4412,7 +5037,8 @@ static void log_CmdBeginDebugUtilsLabelEXT(void* cmd, const void* pLabelInfo) {
 typedef void (*PFN_cmdEndDebugUtilsLabelEXT)(void*);
 static void log_CmdEndDebugUtilsLabelEXT(void* cmd) {
     wd_note("vkCmdEndDebugUtilsLabelEXT");
-    PFN_vkVoidFunctionLocal real = resolve_debug_label("vkCmdEndDebugUtilsLabelEXT");
+    PFN_vkVoidFunctionLocal real = resolve_debug_label(&meow_p_vkCmdEndDebugUtilsLabelEXT,
+        &meow_d_vkCmdEndDebugUtilsLabelEXT, "vkCmdEndDebugUtilsLabelEXT");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdEndDebugUtilsLabelEXT");
         return;
@@ -4425,7 +5051,8 @@ static void log_CmdEndDebugUtilsLabelEXT(void* cmd) {
 typedef void (*PFN_cmdInsertDebugUtilsLabelEXT)(void*, const void*);
 static void log_CmdInsertDebugUtilsLabelEXT(void* cmd, const void* pLabelInfo) {
     wd_note("vkCmdInsertDebugUtilsLabelEXT");
-    PFN_vkVoidFunctionLocal real = resolve_debug_label("vkCmdInsertDebugUtilsLabelEXT");
+    PFN_vkVoidFunctionLocal real = resolve_debug_label(&meow_p_vkCmdInsertDebugUtilsLabelEXT,
+        &meow_d_vkCmdInsertDebugUtilsLabelEXT, "vkCmdInsertDebugUtilsLabelEXT");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdInsertDebugUtilsLabelEXT");
         return;
@@ -5538,7 +6165,7 @@ static void init_once(void) {
     // Deployment self-certification: this campaign lost a run to "the fix was in the tree but not on
     // the device", so every shim build now names itself. Bump the tag whenever the shim changes.
     // F74 env switch tiers (A/B) are documented in the header comment at the top of this file.
-    MEOWLOGI("meowvulkan: shim build 2026-09-19.69 review-fixes");
+    MEOWLOGI("meowvulkan: shim build 2026-09-19.76 steady-state-totals");
     // Crash backtraces for the Vulkan path are handled by meowbt, which the bridge now installs from
     // meowSetSurfaceId (see egl_gl.c) -- reachable on this path, unlike the GL-only install sites.
     // Enable with the documented envs: MEOW_BT=1 (and optionally MEOW_BT_FILE=<path>).
