@@ -55,9 +55,11 @@
 //   MEOW_VK_NO_DIVISOR_FEATURE=1       skip the divisor feature lie (would make MC refuse Vulkan).
 //   MEOW_VK_DROP_DRAW=1                drop all draws, to bisect a failing frame.
 //   MEOW_VK_DROP_PUSH_DESCRIPTOR=1     drop all push descriptors, to bisect a failing frame.
-//   MEOW_VK_F72_RING=1                 F92: reuse descriptor sets from a per-pool free table instead of
-//                                      a fresh vkAllocateDescriptorSets per push (default OFF; the
-//                                      default path is unchanged, the env is the escape hatch).
+//   MEOW_VK_F72_RING=1                 F92/F99 descriptor-set reuse -- STUDY ONLY, default OFF (F100).
+//                                      Reuse REPLACES vkResetDescriptorPool, so a pool's maxSets budget
+//                                      is never returned: allocs reach pools*maxSets, then
+//                                      OUT_OF_POOL_MEMORY -> native push fallback -> DEVICE_LOST.
+//                                      F99's coverage gate (I5) is kept; reuse is not a default.
 //   MEOW_VK_TOTALS_SEC=<seconds>       F98: print the F72b push totals line every N seconds even when
 //                                      pools/forwarded are stable (steady-state visibility). Default
 //                                      OFF; the default trigger (forwarded/grow change) is unchanged.
@@ -2079,8 +2081,10 @@ static int meow_f72_on(void) { return meow_f72_decide(NULL); }
 //       complete.
 //   I4  a set is in `ring` XOR `issued`, never both; it is issued at most once between recycle
 //       boundaries, and every reissue is separated from its previous use by a proven completion.
-// Default path: meow_f72_ring_on()==0 makes every branch below a no-op, so the control flow and the
-// bytes executed are identical to `.69` when the env is unset.
+//   I5  (F99, .77) a set is only ever REUSED after a push that provably overwrote EVERY binding of its
+//       layout (meow_f72_push_covers); a layout that cannot be verified is never reused.
+// Default: the ring is OFF again since F100 (.78). F99's gate fixes set content, but reuse also
+// replaces the pool reset that returns descriptor memory -> pools saturate -> DEVICE_LOST; see F100.
 // =====================================================================================
 typedef struct { VkDescriptorSet set; VkDescriptorSetLayout layout; } MeowF72SetRef;
 
@@ -2089,12 +2093,18 @@ static int meow_f72_ring_decide(const char** why) {
     static const char* s_why = NULL;
     if (s_decided < 0) {
         const char* s = getenv("MEOW_VK_F72_RING");
+        // F100 (.78): BACK TO OPT-IN. F99's coverage gate fixed set CONTENT, but reuse also REPLACES
+        // vkResetDescriptorPool -- and a pool's maxSets is the allocation budget BETWEEN resets, so
+        // without a reset the descriptor memory is never returned: allocs reach pools*maxSets, then
+        // vkAllocateDescriptorSets returns OUT_OF_POOL_MEMORY, the push falls back to the native
+        // vkCmdPushDescriptorSet (broken here) and the ICD loses the device (flicker + very low FPS).
+        // Reuse must not be the default. =1 re-enables the (gate-protected) path for study only.
         if (s != NULL && s[0] == '1') {
             s_decided = 1;
-            s_why = "explicit ON (MEOW_VK_F72_RING=1)";
+            s_why = "explicit ON (MEOW_VK_F72_RING=1; study only, NOT a supported default -- see F100)";
         } else {
             s_decided = 0;
-            s_why = "default OFF (MEOW_VK_F72_RING=1 to enable)";
+            s_why = "default OFF (F100; MEOW_VK_F72_RING=1 to enable, study only)";
         }
     }
     if (why != NULL) *why = s_why;
@@ -2208,6 +2218,8 @@ static VkDescriptorSetLayout meow_f72_lookup_dsl(void* layout, uint32_t set) {
 // set-layout compatibility). Mirror creation failure => that layout is not simulatable => push
 // forwards. Mirrors are destroyed on vkDestroyDescriptorSetLayout / vkDestroyDevice.
 #define MEOW_F72_DSL_MAX 256
+// F99 (.77): the largest binding number a layout may use and still be verifiable for safe set reuse.
+#define MEOW_F72_MAX_BINDINGS 64
 typedef struct {
     uint64_t orig;
     VkDescriptorSetLayout mirror;   // == orig when the push bit is absent; 0 = not simulatable
@@ -2215,6 +2227,12 @@ typedef struct {
     uint32_t bindings;
     int ownsMirror;
     int pushBit;
+    // F99 (.77): the layout's binding set, captured so a push can be PROVEN to overwrite all of it
+    // before its set is ever reused (see meow_f72_push_covers). covmask = bitmask of binding numbers;
+    // bdesc[b] = that binding's descriptorCount (0 = binding absent); unverifiable = never reuse.
+    uint64_t covmask;
+    int unverifiable;
+    uint16_t bdesc[MEOW_F72_MAX_BINDINGS];
 } MeowF72DslSlot;
 static MeowF72DslSlot g_f72_dsl[MEOW_F72_DSL_MAX];
 static unsigned long g_f72_dsl_evicts, g_f72_dsl_logged;
@@ -2277,6 +2295,25 @@ static void meow_f72_capture_dsl(const void* ci, void* orig) {
     s->orig = key;
     s->flags = pci->flags;
     s->bindings = pci->bindingCount;
+    // F99 (.77): capture the binding set (numbers + per-binding descriptorCount) so a push can be
+    // PROVEN to overwrite the whole layout before its set is ever reused. Anything unverifiable
+    // (binding >= MEOW_F72_MAX_BINDINGS, descriptorCount 0, empty set) is marked and never reused.
+    s->covmask = 0;
+    s->unverifiable = 0;
+    memset(s->bdesc, 0, sizeof(s->bdesc));
+    if (pci->pBindings != NULL) {
+        for (uint32_t j = 0; j < pci->bindingCount; j++) {
+            uint32_t b = pci->pBindings[j].binding;
+            uint32_t dc = pci->pBindings[j].descriptorCount;
+            if (b >= MEOW_F72_MAX_BINDINGS || dc == 0 || dc > 0xffffu) {
+                s->unverifiable = 1;
+                continue;
+            }
+            s->covmask |= (1ull << b);
+            s->bdesc[b] = (uint16_t)dc;
+        }
+    }
+    if (s->covmask == 0) s->unverifiable = 1;
     s->pushBit = (pci->flags & (uint32_t)VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR) ? 1 : 0;
     s->mirror = 0;
     s->ownsMirror = 0;
@@ -2319,6 +2356,26 @@ static void meow_f72_forget_dsl(uint64_t key) {
         if (dl != NULL) dl(g_dev_seen, s->mirror, NULL);
     }
     memset(s, 0, sizeof(*s));
+}
+
+// F99 (.77, invariant I5): may a set carrying this layout be REUSED for the given push? A reused set
+// must be fully overwritten by the push that takes it, otherwise the bindings it does NOT write would
+// still point at the previous generation's (possibly destroyed) buffers/images. Requires every layout
+// binding to appear exactly once, at array element 0, with the layout's descriptorCount. Returns 0
+// (= do not reuse; caller allocates fresh, exactly like the ring-off path) whenever it cannot verify.
+static int meow_f72_push_covers(const MeowF72DslSlot* s, uint32_t n, const void* writes) {
+    if (s == NULL || s->unverifiable || s->covmask == 0) return 0;
+    const VkWriteDescriptorSet* w = (const VkWriteDescriptorSet*)writes;
+    uint64_t seen = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t b = w[i].dstBinding;
+        if (b >= MEOW_F72_MAX_BINDINGS) return 0;
+        if (s->bdesc[b] == 0) return 0;                              // binding not in this layout
+        if (w[i].dstArrayElement != 0) return 0;                     // partial array write
+        if (w[i].descriptorCount != (uint32_t)s->bdesc[b]) return 0;  // count must match the layout
+        seen |= (1ull << b);
+    }
+    return (seen == s->covmask) ? 1 : 0;
 }
 
 // ------------------------------------------------------------------ rotating descriptor pools
@@ -2364,6 +2421,9 @@ static unsigned long g_f72_allocs;
 // MEOW_VK_F72_RING=1. ring_misses counts a real vkAllocateDescriptorSets caused by an empty/mismatched
 // free table (I2: that alone never rotates the pool).
 static unsigned long g_f72_ring_hits, g_f72_ring_misses;
+// F99 (.77): pushes whose writes did NOT provably cover their layout -> reuse refused (the set is
+// allocated fresh and never recorded as reusable). Stays 0 for a well-behaved caller.
+static unsigned long g_f72_ring_gate_reject;
 // F93 (.71 fix-pool-reclaim): why meow_f72_pool_free() refused a pending pool, tallied on the SAME
 // F72b totals line (no new print point). Healthy default path => all three stay ~0; if a regression
 // returns, exactly one of them grows and names the cause in the log itself:
@@ -2872,18 +2932,24 @@ static int meow_f72_emulate_push_inner(void* cmd, uint32_t bindPoint, void* layo
         meow_f72_warn("missing-forward", 0, 0);
         return -1;
     }
-    // F90/.65 acquire, F92 (.70) ring-optional. Ring OFF (default): exactly the old fresh allocation.
-    // Ring ON: first try the pool's free table for a set with the SAME mirror layout (ring_hits);
-    // otherwise a real vkAllocateDescriptorSets (ring_misses). A pool is left ONLY on capacity
-    // exhaustion / OUT_OF_POOL_MEMORY (I2) -- an empty free table never rotates a pool by itself.
+    // F90/.65 acquire, F92 (.70) ring, F99 (.77) default ON + coverage gate. I5: a set may only be
+    // reused when THIS push provably overwrites the whole layout (meow_f72_push_covers); otherwise
+    // reuse is refused and the code below is exactly the ring-off (fresh allocation) path.
+    MeowF72DslSlot* covslot = meow_f72_dsl_find((uint64_t)(uintptr_t)dsl);
+    int covered = meow_f72_push_covers(covslot, n, writes);
+    int reuse_ok = meow_f72_ring_on() && covered;
+    if (meow_f72_ring_on() && !covered) ++g_f72_ring_gate_reject;
+    // Reuse (reuse_ok): first try the pool's free table for a set with the SAME mirror layout
+    // (ring_hits); otherwise a real vkAllocateDescriptorSets (ring_misses). A pool is left ONLY on
+    // capacity exhaustion / OUT_OF_POOL_MEMORY (I2) -- an empty free table never rotates a pool.
     VkDescriptorSet ds = VK_NULL_HANDLE;
     int arc = 0;
     int t = -1;
-    if (meow_f72_ring_on() && meow_f72_ring_take(pi, allocDsl, &ds) == 0) {
+    if (reuse_ok && meow_f72_ring_take(pi, allocDsl, &ds) == 0) {
         ++g_f72_ring_hits;
         t = 0;
     } else {
-        if (meow_f72_ring_on()) ++g_f72_ring_misses;
+        if (reuse_ok) ++g_f72_ring_misses;
         t = meow_f72_pool_take_set(pi, allocDsl, alloc, &ds, &arc);
         if (t == 1 || arc == VK_ERROR_OUT_OF_POOL_MEMORY) {
             g_f72_active = -1;
@@ -2891,11 +2957,11 @@ static int meow_f72_emulate_push_inner(void* cmd, uint32_t bindPoint, void* layo
             if (npi >= 0 && npi != pi) {
                 pi = npi;
                 arc = 0;
-                if (meow_f72_ring_on() && meow_f72_ring_take(pi, allocDsl, &ds) == 0) {
+                if (reuse_ok && meow_f72_ring_take(pi, allocDsl, &ds) == 0) {
                     ++g_f72_ring_hits;
                     t = 0;
                 } else {
-                    if (meow_f72_ring_on()) ++g_f72_ring_misses;
+                    if (reuse_ok) ++g_f72_ring_misses;
                     t = meow_f72_pool_take_set(pi, allocDsl, alloc, &ds, &arc);
                 }
             }
@@ -2907,8 +2973,9 @@ static int meow_f72_emulate_push_inner(void* cmd, uint32_t bindPoint, void* layo
         meow_f72_warn("allocate-set-failed", (long)arc, (long)set);
         return -1;
     }
-    // F92 (I4): record the acquired set exactly once so meow_f72_pool_recycle() can return it.
-    if (meow_f72_ring_on()) meow_f72_ring_record_issued(pi, ds, allocDsl);
+    // F92 (I4) + F99 (I5): record the acquired set exactly once so meow_f72_pool_recycle() can return
+    // it -- but ONLY when this push proved full coverage, so an unverified set is never handed back.
+    if (reuse_ok) meow_f72_ring_record_issued(pi, ds, allocDsl);
     // R1 (kept from F88): reuse the file-scope scratch; only an over-capacity call falls back to malloc. The push
     // ignores dstSet, but vkUpdateDescriptorSets requires it -> copy and point every write at the set
     // just acquired. The pointed-to image/buffer arrays are consumed synchronously by the update call,
@@ -2974,6 +3041,7 @@ static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, ui
     if (f98_print) {
         MEOWLOGI("meowvulkan: F72b push totals: emulated=%{public}lu forwarded=%{public}lu pools=%{public}d "
                  "resets=%{public}lu allocs=%{public}lu grow=%{public}lu ring_hits=%{public}lu ring_misses=%{public}lu "
+                 "ring_gate_reject=%{public}lu "
                  "reclaim_fail_nofence=%{public}lu reclaim_fail_noquery=%{public}lu reclaim_fail_notsignaled=%{public}lu "
                  "reclaim_status_notready=%{public}lu reclaim_status_error=%{public}lu reclaim_status_proven=%{public}lu "
                  "bind_pools=%{public}lu "
@@ -2987,7 +3055,7 @@ static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, ui
                  "bind_fail=%{public}lu fence0_bind=%{public}lu dead_full_skip=%{public}lu stranded_reset=%{public}lu "
                  "borrow_full=%{public}lu f69_evict=%{public}lu",
                  g_f72_emulated, g_f72_forwarded, g_f72_npools, g_f72_resets, g_f72_allocs,
-                 g_f72_grows, g_f72_ring_hits, g_f72_ring_misses,
+                 g_f72_grows, g_f72_ring_hits, g_f72_ring_misses, g_f72_ring_gate_reject,
                  g_f72_reclaim_fail_nofence, g_f72_reclaim_fail_noquery, g_f72_reclaim_fail_notsignaled,
                  g_f72_reclaim_status_notready, g_f72_reclaim_status_error, g_f72_reclaim_status_proven,
                  g_f72_bind_pools,
@@ -6165,7 +6233,7 @@ static void init_once(void) {
     // Deployment self-certification: this campaign lost a run to "the fix was in the tree but not on
     // the device", so every shim build now names itself. Bump the tag whenever the shim changes.
     // F74 env switch tiers (A/B) are documented in the header comment at the top of this file.
-    MEOWLOGI("meowvulkan: shim build 2026-09-19.76 steady-state-totals");
+    MEOWLOGI("meowvulkan: shim build 2026-09-19.78 ring-optin-revert");
     // Crash backtraces for the Vulkan path are handled by meowbt, which the bridge now installs from
     // meowSetSurfaceId (see egl_gl.c) -- reachable on this path, unlike the GL-only install sites.
     // Enable with the documented envs: MEOW_BT=1 (and optionally MEOW_BT_FILE=<path>).
