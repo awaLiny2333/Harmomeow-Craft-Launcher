@@ -137,6 +137,68 @@ static VkInstance g_inst_seen;
 // Same idea for the device: device-level commands (vkCmd*) must be resolved through the device.
 static VkDevice g_dev_seen;
 
+// F87 (.65): per-wrapper cache for resolved device-function pointers. Each hot wrapper owns its own
+// static slot (declared just below), so a call costs one pointer compare plus - only when the device
+// changed or the slot is still unresolved - one g_gdpa() lookup. It is never a per-call table lookup.
+// g_gdpa == NULL keeps the original "resolution failed" behaviour (slot stays NULL and is retried).
+// CONTRACT: single render thread (A10 G5; the same lock-free assumption g_dev_seen already makes).
+//
+// F91 (M1 race, review A39 F1): the two fields are a (device tag, pointer) pair. To keep them from
+// being observed crossed under a contract violation, WRITE the device tag first, then release-publish
+// the pointer; READ the device tag first, then the pointer. Under the single render thread this is
+// strictly equivalent to the old body (same condition, same g_gdpa call, same returned value).
+static PFN_vkVoidFunctionLocal meow_cached_proc(PFN_vkVoidFunctionLocal* slot, void** devSlot,
+                                                const char* name) {
+    void* dev = (void*)g_dev_seen;
+    void* cachedDev = __atomic_load_n(devSlot, __ATOMIC_ACQUIRE);        // (1) device tag first
+    PFN_vkVoidFunctionLocal p = __atomic_load_n(slot, __ATOMIC_ACQUIRE); // (2) then the pointer
+    if (p == NULL || cachedDev != dev) {
+        p = g_gdpa ? g_gdpa(g_dev_seen, name) : NULL;
+        __atomic_store_n(devSlot, dev, __ATOMIC_RELAXED);               // publish the tag first
+        __atomic_store_n(slot, p, __ATOMIC_RELEASE);                    // then the pointer (release)
+    }
+    return p;
+}
+#define MEOW_F87_SLOT(N) static PFN_vkVoidFunctionLocal meow_p_##N; static void* meow_d_##N;
+MEOW_F87_SLOT(vkCmdCopyBufferToImage)
+MEOW_F87_SLOT(vkCmdPushDescriptorSet)
+MEOW_F87_SLOT(vkQueueSubmit)
+MEOW_F87_SLOT(vkQueueSubmit2)
+MEOW_F87_SLOT(vkCmdPipelineBarrier)
+MEOW_F87_SLOT(vkCmdPipelineBarrier2)
+MEOW_F87_SLOT(vkCmdBeginRendering)
+MEOW_F87_SLOT(vkCmdEndRendering)
+MEOW_F87_SLOT(vkCmdBindPipeline)
+MEOW_F87_SLOT(vkCmdBindDescriptorSets)
+MEOW_F87_SLOT(vkCmdBindVertexBuffers)
+MEOW_F87_SLOT(vkCmdBindIndexBuffer)
+MEOW_F87_SLOT(vkCmdDraw)
+MEOW_F87_SLOT(vkCmdDrawIndexed)
+MEOW_F87_SLOT(vkCmdDrawIndirect)
+MEOW_F87_SLOT(vkCmdDrawIndexedIndirect)
+MEOW_F87_SLOT(vkCmdCopyBuffer)
+MEOW_F87_SLOT(vkCmdCopyImage)
+MEOW_F87_SLOT(vkCmdBlitImage)
+MEOW_F87_SLOT(vkCmdClearColorImage)
+MEOW_F87_SLOT(vkCmdClearAttachments)
+MEOW_F87_SLOT(vkCmdSetViewport)
+MEOW_F87_SLOT(vkCmdSetScissor)
+MEOW_F87_SLOT(vkCmdPushConstants)
+MEOW_F87_SLOT(vkCmdUpdateBuffer)
+MEOW_F87_SLOT(vkCmdFillBuffer)
+MEOW_F87_SLOT(vkCmdExecuteCommands)
+MEOW_F87_SLOT(vkCmdPushDescriptorSetWithTemplate)
+MEOW_F87_SLOT(vkCmdSetEvent)
+MEOW_F87_SLOT(vkCmdResetEvent)
+MEOW_F87_SLOT(vkCmdWaitEvents)
+MEOW_F87_SLOT(vkCmdSetEvent2)
+MEOW_F87_SLOT(vkCmdResetEvent2)
+MEOW_F87_SLOT(vkCmdWaitEvents2)
+MEOW_F87_SLOT(vkCmdWriteTimestamp)
+MEOW_F87_SLOT(vkCmdWriteTimestamp2)
+MEOW_F87_SLOT(vkAllocateDescriptorSets)
+MEOW_F87_SLOT(vkUpdateDescriptorSets)
+
 // F60 (shim build .40): the queue used by the most recent submit/present, so the vkWaitSemaphores
 // wrapper can perform a REAL wait (vkQueueWaitIdle) instead of trusting this ICD's broken timeline
 // completion signal. The submit wrappers (v1/v2) and vkQueuePresentKHR only WRITE it here; the sole
@@ -835,7 +897,7 @@ static void log_CmdCopyBufferToImage(void* cmd, void* src, void* dst, uint32_t d
             MEOWLOGI("meowvulkan: vkCmdCopyBufferToImage NOT recorded (F53 redirect active)");
         return;
     }
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdCopyBufferToImage") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdCopyBufferToImage, &meow_d_vkCmdCopyBufferToImage, "vkCmdCopyBufferToImage");
     if (real != NULL) {
         ((PFN_cmdCopyBufferToImage)real)(cmd, src, dst, dstLayout, regionCount, pRegions);
         if (meow_vk_verbose())
@@ -857,6 +919,9 @@ static int meow_f72_on(void);
 static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, uint32_t set,
                                  uint32_t n, const void* writes);
 static void meow_f72_bind_submit(VkFence submitFence, int ownsFence, int ok);
+// F91: returns the fence to hand to this submit and sets *ownsFence when the shim had to create it
+// (no caller fence and no F69 fence) so the frame's pools can be reclaimed. Defined with the pool code.
+static VkFence meow_f72_fence_for_submit(VkFence submitFence, int* ownsFence);
 // F68 (shim build .44): causal test switch for the push-descriptor defect.
 // WHY: the first successful MC Vulkan frame (shim .43, F66 merge) had its ONE merged submit accepted
 // (submitsIn=3 -> submits=1, cmdBufs=4, rc=0) and then the driver's queue recovery fired
@@ -869,9 +934,15 @@ static void meow_f72_bind_submit(VkFence submitFence, int ownsFence, int ok);
 // wrong but removes the suspect: if the device NO LONGER gets lost, the push path is confirmed as the
 // trigger and the designed remedy (emulate the push with an ordinary descriptor set) is the fix.
 // MEOW_VK_DROP_PUSH_DESCRIPTOR=1 opts in; unset = forward exactly as before.
+// F87 (.65): the env is read lazily ONCE and cached (same policy as g_hooks: first use wins). The
+// decision itself is unchanged; only the number of getenv() calls changed (was once per push).
 static int meow_vk_drop_push(void) {
-    const char* s = getenv("MEOW_VK_DROP_PUSH_DESCRIPTOR");
-    return (s != NULL && s[0] == '1') ? 1 : 0;
+    static int s_drop = -1;
+    if (s_drop < 0) {
+        const char* s = getenv("MEOW_VK_DROP_PUSH_DESCRIPTOR");
+        s_drop = (s != NULL && s[0] == '1') ? 1 : 0;
+    }
+    return s_drop;
 }
 
 // F70 (shim build .46): causal test switch for the REAL graphics-pipeline path.
@@ -909,8 +980,22 @@ static void meow_log_drop(const char* what) {
     }
 }
 
+// F91 (.69): thread-identity proof, reusing the EXISTING MEOW_VK_VERBOSE gate (no new env). Each
+// selected hot wrapper calls this with its own one-shot flag on its FIRST invocation; under verbose it
+// prints gettid() exactly once per wrapper (a handful of lines in total, never per call). If a single
+// run shows one tid for all wrappers, the shim's "single render thread" contract (A10 G5) holds and
+// the F87/M1 races are theoretical; more than one tid promotes them. `seen` is the caller's static.
+static void meow_log_thread_once(unsigned char* seen, const char* what) {
+    if (*seen || !meow_vk_verbose()) return;
+    *seen = 1;
+    MEOWLOGI("meowvulkan: F91 thread probe %{public}s gettid=%{public}ld (first call; one line per wrapper)",
+             what, (long)gettid());
+}
+
 static void log_CmdPushDescriptorSet(void* cmd, uint32_t bindPoint, void* layout, uint32_t set,
                                      uint32_t n, const void* writes) {
+    static unsigned char s_tp_push;
+    meow_log_thread_once(&s_tp_push, "vkCmdPushDescriptorSet");
     if (meow_vk_drop_push()) {
         // F68: never forwarded -- the causal test. Logged once per call (bounded: the causal run is short).
         meow_log_drop("vkCmdPushDescriptorSet");   // F71b: rate-limited
@@ -926,7 +1011,7 @@ static void log_CmdPushDescriptorSet(void* cmd, uint32_t bindPoint, void* layout
     }
     if (meow_vk_verbose())
         MEOWLOGI("meowvulkan: vkCmdPushDescriptorSet CALLED (writes=%{public}u) -- forwarding", n);
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdPushDescriptorSet") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdPushDescriptorSet, &meow_d_vkCmdPushDescriptorSet, "vkCmdPushDescriptorSet");
     if (real != NULL) {
         ((PFN_cmdPush)real)(cmd, bindPoint, layout, set, n, writes);
         if (meow_vk_verbose())
@@ -969,6 +1054,10 @@ static int log_CreateShaderModule(void* dev, const void* ci, const void* alloc, 
 // fires at most 3 times.
 static volatile long long g_wd_last_ns;
 static int  g_wd_armed, g_wd_dumps;
+// F87 (.65): g_wd_armed means "wd_maybe_start() already ran" (it is set BEFORE the env check), NOT
+// "the watchdog thread is running". g_wd_on is the independent flag that actually means the thread
+// started; only wd_maybe_start() sets it, and only after pthread_create succeeds.
+static int  g_wd_on;
 static char g_wd_last_name[128];
 
 static long long wd_now_ns(void) {
@@ -977,11 +1066,14 @@ static long long wd_now_ns(void) {
     return (long long)ts.tv_sec * 1000000000LL + (long long)ts.tv_nsec;
 }
 static void wd_note(const char* name) {
+    if (!g_wd_on) return;   // F87: watchdog off (the default) -> no clock_gettime/snprintf per call
     g_wd_last_ns = wd_now_ns();
     if (name != NULL) {
         snprintf(g_wd_last_name, sizeof(g_wd_last_name), "%s", name);
     }
 }
+// wd_touch() is only called from wd_maybe_start() (before the thread starts, so it must write) and
+// from vkGetInstanceProcAddr (init only), never from a hot per-call path -> left ungated.
 static void wd_touch(void) { g_wd_last_ns = wd_now_ns(); }
 
 static void* wd_thread(void* arg) {
@@ -1011,6 +1103,7 @@ static void wd_maybe_start(void) {
     pthread_t t;
     if (pthread_create(&t, NULL, wd_thread, (void*)(intptr_t)((long long)secs * 1000000000LL)) == 0) {
         pthread_detach(t);
+        g_wd_on = 1;   // F87: the thread exists only from here; wd_note() may now write
         MEOWLOGI("meowvulkan: watchdog armed: %{public}d s without any Vulkan activity -> SIGQUIT + thread dump", secs);
     } else {
         MEOWLOGE("meowvulkan: watchdog could not start (pthread_create failed)");
@@ -1149,14 +1242,21 @@ static int log_FlushMappedMemoryRanges(void* dev, uint32_t count, const void* ra
 
 typedef int (*PFN_queueSubmit)(void*, uint32_t, const void*, void*);
 static int log_QueueSubmit(void* queue, uint32_t count, const void* submits, void* fence) {
+    static unsigned char s_tp_submit;
+    meow_log_thread_once(&s_tp_submit, "vkQueueSubmit");
     wd_note("vkQueueSubmit");
     g_meow_last_queue = queue;   /* F60: write-only cache for the real wait */
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkQueueSubmit") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkQueueSubmit, &meow_d_vkQueueSubmit, "vkQueueSubmit");
     if (real == NULL) return -3;
-    int rc = ((PFN_queueSubmit)real)(queue, count, submits, fence);
-    // F72 (build .49): the v1 path is not the F66 merge path, but if MC ever uses it the pool that
-    // recorded the frame must still be covered by this submit's fence. Only count==1 has one fence.
-    if (meow_f72_on() && count == 1) meow_f72_bind_submit((VkFence)(uintptr_t)fence, 0, (rc == 0));
+    // F72 (build .49) / F91: cover the pool that recorded the frame with this submit's fence. If MC
+    // handed no fence, create a shim-owned tracking fence FIRST and hand it to the submit (review A40
+    // F-02/F-08: the old code bound ownsFence=0, so a fence==0 submit pinned its pools forever and the
+    // cap path degraded to the real push). Only count==1 has a single fence to cover the frame.
+    VkFence sf = (VkFence)(uintptr_t)fence;
+    int ownsFence = 0;
+    if (meow_f72_on() && count == 1) sf = meow_f72_fence_for_submit(sf, &ownsFence);
+    int rc = ((PFN_queueSubmit)real)(queue, count, submits, (void*)sf);
+    if (meow_f72_on() && count == 1) meow_f72_bind_submit(sf, ownsFence, (rc == 0));
     // Tier B: per-call result line -> verbose gate (default OFF).
     if (meow_vk_verbose())
         MEOWLOGI("meowvulkan: vkQueueSubmit rc=%{public}d count=%{public}u", rc, (unsigned)count);
@@ -1745,17 +1845,26 @@ static int meow_f69_createinfo_is_timeline(const void* ci) {
 #define MEOW_F72_LAYOUTS  256
 
 static int meow_f72_decide(const char** why) {
-    const char* s = getenv("MEOW_VK_PUSH_AS_SET");
-    if (s != NULL && strcmp(s, "0") == 0) {
-        if (why != NULL) *why = "explicit OFF (env=0)";
-        return 0;
+    // F87 (.65): env read lazily ONCE and cached (same policy as g_hooks: first use wins); the
+    // decision logic and every `why` string are unchanged, only the getenv() count dropped from one
+    // per call to one per process. g_hooks is itself resolved once by init_once() before any wrapper.
+    static int s_decided = -1;
+    static const char* s_why = NULL;
+    if (s_decided < 0) {
+        const char* s = getenv("MEOW_VK_PUSH_AS_SET");
+        if (s != NULL && strcmp(s, "0") == 0) {
+            s_decided = 0;
+            s_why = "explicit OFF (env=0)";
+        } else if (s != NULL && s[0] == '1') {
+            s_decided = 1;
+            s_why = "explicit ON (env=1)";
+        } else {
+            s_decided = g_hooks ? 1 : 0;
+            s_why = g_hooks ? "default ON (hooks on, env unset)" : "default OFF (hooks off, env unset)";
+        }
     }
-    if (s != NULL && s[0] == '1') {
-        if (why != NULL) *why = "explicit ON (env=1)";
-        return 1;
-    }
-    if (why != NULL) *why = g_hooks ? "default ON (hooks on, env unset)" : "default OFF (hooks off, env unset)";
-    return g_hooks ? 1 : 0;
+    if (why != NULL) *why = s_why;
+    return s_decided;
 }
 static int meow_f72_on(void) { return meow_f72_decide(NULL); }
 
@@ -1827,8 +1936,26 @@ static void meow_f72_capture_layout(const void* ci, void* layout) {
 
 static VkDescriptorSetLayout meow_f72_lookup_dsl(void* layout, uint32_t set) {
     uint64_t key = (uint64_t)(uintptr_t)layout;
+    // F87 (.65): last-hit cache for the per-push lookup. The cache is only trusted after re-checking
+    // that the remembered slot still holds this exact key, so an eviction/memmove can never make it
+    // return another layout's sets. Misses fall back to the unchanged full scan -> same result.
+    static int s_last = -1;
+    static uint64_t s_last_key = 0;
+    // F91 (M1 race, review A39 F2): snapshot the remembered index/key into locals and use ONLY them.
+    // The remembered entry is still re-checked against its OWN key (`g_f72_layouts[i].layout == key`),
+    // so under the single render thread the result is byte-for-byte the old one, and a concurrent
+    // rewrite of s_last can no longer make this branch return another layout's set.
+    int li = s_last;
+    uint64_t lk = s_last_key;
+    if (li >= 0 && lk == key && g_f72_layouts[li].layout == key) {
+        if (set < g_f72_layouts[li].count && g_f72_layouts[li].sets != NULL)
+            return g_f72_layouts[li].sets[set];
+        return VK_NULL_HANDLE;
+    }
     for (int i = 0; i < MEOW_F72_LAYOUTS; i++) {
         if (g_f72_layouts[i].layout == key) {
+            s_last = i;
+            s_last_key = key;
             if (set < g_f72_layouts[i].count && g_f72_layouts[i].sets != NULL)
                 return g_f72_layouts[i].sets[set];
             return VK_NULL_HANDLE;
@@ -1859,8 +1986,22 @@ static MeowF72DslSlot g_f72_dsl[MEOW_F72_DSL_MAX];
 static unsigned long g_f72_dsl_evicts, g_f72_dsl_logged;
 
 static MeowF72DslSlot* meow_f72_dsl_find(uint64_t key) {
+    // F87 (.65): last-hit cache, validated against the table before use. forget/evict memsets or
+    // memmoves slots, but the remembered index must still carry `key` or the unchanged full scan runs.
+    static int s_last = -1;
+    static uint64_t s_last_key = 0;
+    // F91 (M1 race, review A39 F2): snapshot into locals, then re-check the entry's OWN key before
+    // using it. Single-thread result is unchanged; a concurrent s_last rewrite cannot misdirect it.
+    int li = s_last;
+    uint64_t lk = s_last_key;
+    if (li >= 0 && lk == key && g_f72_dsl[li].orig == key)
+        return &g_f72_dsl[li];
     for (int i = 0; i < MEOW_F72_DSL_MAX; i++) {
-        if (g_f72_dsl[i].orig == key) return &g_f72_dsl[i];
+        if (g_f72_dsl[i].orig == key) {
+            s_last = i;
+            s_last_key = key;
+            return &g_f72_dsl[i];
+        }
     }
     return NULL;
 }
@@ -1947,17 +2088,44 @@ static void meow_f72_forget_dsl(uint64_t key) {
 }
 
 // ------------------------------------------------------------------ rotating descriptor pools
+// F90 (.68 f72-drop-reuse): the F89 free-list layer is REMOVED. This is the `.65` acquire path again,
+// which the device proved bounded (14.52M pushes -> pools=27, resets=66048):
+//   * every push does a real vkAllocateDescriptorSets from the current pool;
+//   * a pool is left for another one ONLY when its capacity is exhausted
+//     (nsets >= MEOW_F72_MAXSETS, or the driver returns VK_ERROR_OUT_OF_POOL_MEMORY);
+//   * a pending pool is reusable only after the fence of the submit that used it has SIGNALED, and
+//     reuse is then a WHOLE-POOL vkResetDescriptorPool (meow_f72_reset_pool) -- the pool reset, not a
+//     free list, is what bounds the pool count.
+// No per-pool set table / free list exists any more, so there is no reclaim/reuse counter to report
+// either: the whole-pool reset (`resets`) is the only reclaim signal (F91 removed the two dead fields).
 typedef struct {
     VkDescriptorPool pool;
     VkFence fence;     // fence covering the submit that last used this pool (0 = unknown)
     int ownsFence;     // 1 = the shim created it (shared; ref-counted via g_f72_owned_refs)
     int pending;       // 1 = a submit using this pool has not been confirmed complete
     int used;          // 1 = already used for the frame currently being recorded
+    int nsets;         // sets allocated since this pool's last reset (0 .. MEOW_F72_MAXSETS)
 } MeowF72Pool;
 static MeowF72Pool g_f72_pools[MEOW_F72_NPOOLS];   // MEOW_F72_NPOOLS == hard cap
 static int g_f72_npools;                           // pools created so far (grow-on-demand)
 static int g_f72_active = -1;                 // pool used for the frame being recorded; -1 = none
+// F90 counters (totals line): emulated/forwarded = outcome of every push; pools = created pools;
+// resets = whole-pool vkResetDescriptorPool calls (the .65 reclaim path, ~once per frame); grow = new
+// pools created; allocs = every real vkAllocateDescriptorSets success (expected ~= emulated).
+// F91: the two always-0 status fields were removed -- they had no producer and reading them against
+// the old F89 acceptance table invited misreads.
 static unsigned long g_f72_emulated, g_f72_forwarded, g_f72_resets, g_f72_grows;
+static unsigned long g_f72_allocs;
+
+// R1 (kept from F88): per-push scratch for the VkWriteDescriptorSet copy. vkUpdateDescriptorSets is a host-side
+// device command: it consumes pDescriptorWrites (and the image/buffer arrays it points to) DURING the
+// call and must not dereference it afterwards (Vulkan parameter-lifetime rules for a non-queue
+// command), so this buffer is reusable as soon as the call returns. 64 entries cover the whole
+// session (every logged push is n=6); anything larger keeps the original malloc fallback -- the
+// buffer is never a truncation point. Same single-render-thread assumption as every other F72 global.
+#define MEOW_F72_WRITES_SCRATCH 64
+static VkWriteDescriptorSet g_f72_writes[MEOW_F72_WRITES_SCRATCH];
+
 // F72c: at most ONE shim-owned tracking fence may be outstanding (created only when no F69/caller
 // fence exists); g_f72_owned_refs counts the pending pools still referencing it.
 static VkFence g_f72_owned_fence = VK_NULL_HANDLE;
@@ -2011,15 +2179,11 @@ static VkFence meow_f72_track_fence_create(void) {
     return f;
 }
 
-static int meow_f72_reset_pool(int i) {
-    int (*reset)(void*, void*, uint32_t) =
-        (int (*)(void*, void*, uint32_t))meow_f72_real("vkResetDescriptorPool");
-    if (reset == NULL) { meow_f72_warn("no-vkResetDescriptorPool", (long)i, 0); return -1; }
-    int rc = reset(g_dev_seen, g_f72_pools[i].pool, 0);
-    if (rc != 0) { meow_f72_warn("reset-pool-rc", (long)rc, (long)i); return -1; }
+// F72c: tail of the reset path -- release the tracking-fence reference and clear the lifecycle flags.
+static void meow_f72_pool_release(int i) {
     MeowF72Pool* p = &g_f72_pools[i];
     // F72c: a shim-owned fence is shared by every pool used in the frame; destroy it only when the
-    // last referencing pool has been reset (no pool may call vkGetFenceStatus on a dead handle).
+    // last referencing pool has been released (no pool may call vkGetFenceStatus on a dead handle).
     if (p->ownsFence && p->fence != 0) {
         if (g_f72_owned_refs > 0) --g_f72_owned_refs;
         if (g_f72_owned_refs == 0 && g_f72_owned_fence == p->fence) {
@@ -2034,6 +2198,21 @@ static int meow_f72_reset_pool(int i) {
     p->fence = 0;
     p->ownsFence = 0;
     p->pending = 0;
+}
+
+// .65 reset path (F90: this IS the reclaim path again). A whole-pool vkResetDescriptorPool invalidates
+// every set allocated from the pool, so it may only run once the fence of the pool's last submit has
+// SIGNALED -- exactly the guard in meow_f72_pool_free(). `resets` counts these; it is the cadence the
+// `.65` device run showed bounded (resets=66048 over 14.52M pushes, ~1 per frame).
+static int meow_f72_reset_pool(int i) {
+    int (*reset)(void*, void*, uint32_t) =
+        (int (*)(void*, void*, uint32_t))meow_f72_real("vkResetDescriptorPool");
+    if (reset == NULL) { meow_f72_warn("no-vkResetDescriptorPool", (long)i, 0); return -1; }
+    int rc = reset(g_dev_seen, g_f72_pools[i].pool, 0);
+    if (rc != 0) { meow_f72_warn("reset-pool-rc", (long)rc, (long)i); return -1; }
+    // The reset implicitly frees every set -> the pool's allocation counter starts over.
+    g_f72_pools[i].nsets = 0;
+    meow_f72_pool_release(i);
     ++g_f72_resets;
     return 0;
 }
@@ -2057,9 +2236,31 @@ static int meow_f72_used_count(void) {
     return c;
 }
 
-// F72c: pick the pool for the next allocation. (1) first RECLAIM every pending pool whose fence has
-// signaled (reset -> reusable); (2) pick a free pool not already used by this frame; (3) if none is
-// free, GROW by one pool (hard cap MEOW_F72_NPOOLS). Only a failed grow makes the push forward.
+// F91 (.69): the pool-cap safety valve. Called by meow_f72_ensure_active() only when the scan found
+// no free pool and pools are pinned (a pending pool with no fence) or the hard cap has been reached.
+// It manufactures a PROVABLE completion boundary -- a real vkQueueWaitIdle on the same cached queue
+// F60 already trusts -- and only then whole-pool-resets every pending pool. Rationale (invariant I2):
+// a vkResetDescriptorPool invalidates the pool's sets, so it is legal only once the GPU no longer
+// references them; queue-idle after all submits proves exactly that, without trusting a fence we do
+// not have (the fence==0 pinning, review A40 F-02). Never routes the pool-cap case to the real
+// vkCmdPushDescriptorSet (the historical device-losing path): we would rather stall once.
+static int meow_f72_quiesce_and_reclaim(void) {
+    if (g_meow_last_queue == NULL) return 0;
+    int (*idle)(void*) = (int (*)(void*))(g_gdpa ? g_gdpa(g_dev_seen, "vkQueueWaitIdle") : NULL);
+    if (idle == NULL) return 0;
+    if (idle(g_meow_last_queue) != VK_SUCCESS) return 0;   // cannot prove completion -> touch nothing
+    for (int i = 0; i < g_f72_npools; i++) {
+        if (!g_f72_pools[i].pending) continue;
+        (void)meow_f72_reset_pool(i);   // logs+skips a failure; the queue is idle so this is legal
+    }
+    return 1;
+}
+
+// F72c/.65: pick the pool for the next allocation. (1) first RECLAIM (whole-pool reset) every pending
+// pool whose fence has signaled; (2) pick a free pool not already used by this frame; (3) if none is
+// free, GROW by one pool (hard cap MEOW_F72_NPOOLS); (4) F91 safety valve: if growing is blocked by
+// pinned (fence==0) pools or the cap is reached, quiesce+reclaim first. Only a genuinely unavailable
+// pool makes the push forward.
 static int meow_f72_ensure_active(void) {
     if (g_f72_active >= 0 && g_f72_pools[g_f72_active].pool != VK_NULL_HANDLE) return g_f72_active;
     for (int i = 0; i < g_f72_npools; i++) {
@@ -2083,6 +2284,26 @@ static int meow_f72_ensure_active(void) {
         g_f72_active = i;
         return i;
     }
+    // F91 safety valve: no free pool. A pinned pool exists, or we are at the hard cap -> make a
+    // completion boundary and reclaim, then retry the scan. Growth caused by pinning therefore never
+    // costs a pool slot, so the count cannot creep to the cap.
+    int pinned = 0;
+    for (int i = 0; i < g_f72_npools; i++) {
+        if (g_f72_pools[i].pending && g_f72_pools[i].fence == 0) { pinned = 1; break; }
+    }
+    if ((pinned || g_f72_npools >= MEOW_F72_NPOOLS) && meow_f72_quiesce_and_reclaim()) {
+        for (int k = 0; k < g_f72_npools; k++) {
+            int i = nextScan;
+            nextScan = (g_f72_npools > 0) ? ((nextScan + 1) % g_f72_npools) : 0;
+            if (g_f72_pools[i].used) continue;
+            if (g_f72_pools[i].pool == VK_NULL_HANDLE) continue;
+            if (!meow_f72_pool_free(i)) continue;
+            g_f72_pools[i].pending = 0;
+            g_f72_pools[i].used = 1;
+            g_f72_active = i;
+            return i;
+        }
+    }
     if (g_f72_npools < MEOW_F72_NPOOLS) {
         int i = g_f72_npools;
         g_f72_pools[i].pool = meow_f72_create_pool();
@@ -2101,12 +2322,54 @@ static int meow_f72_ensure_active(void) {
     return -1;
 }
 
+// .65 acquire (F90): allocate a FRESH set from pool `i` for the current push. Returns 0 on success
+// (++allocs), 1 when the pool's allocation capacity is exhausted (caller must rotate/grow), -1 on a
+// real allocation failure (*allocRc holds the VkResult). There is no free list any more: the only
+// lifetime end is the whole-pool reset in meow_f72_reset_pool, run once the pool's fence has signaled.
+static int meow_f72_pool_take_set(int i, VkDescriptorSetLayout dsl,
+                                  int (*alloc)(void*, const void*, void**),
+                                  VkDescriptorSet* out, int* allocRc) {
+    MeowF72Pool* p = &g_f72_pools[i];
+    *allocRc = 0;
+    if (p->nsets >= MEOW_F72_MAXSETS) return 1;   // capacity exhausted -> caller rotates to another pool
+    VkDescriptorSetAllocateInfo ai;
+    memset(&ai, 0, sizeof(ai));
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.pNext = NULL;
+    ai.descriptorPool = p->pool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &dsl;
+    VkDescriptorSet ds = VK_NULL_HANDLE;
+    int rc = alloc(g_dev_seen, &ai, (void**)&ds);
+    if (rc != 0 || ds == VK_NULL_HANDLE) { *allocRc = rc; return -1; }
+    ++p->nsets;
+    ++g_f72_allocs;
+    *out = ds;
+    return 0;
+}
+
+// F91 (.69): cover a submit that has no fence. Mirrors the F66 merged path's tracking-fence rule so
+// the v1 vkQueueSubmit path is not asymmetric (review A40 F-02/F-08): if MC handed no fence and F69
+// did not create one, make one shim-owned tracking fence (at most one outstanding, same throttle) so
+// the pools used by this submit still become reclaimable. Returns the fence to hand to the submit.
+static VkFence meow_f72_fence_for_submit(VkFence submitFence, int* ownsFence) {
+    *ownsFence = 0;
+    if (!meow_f72_on() || submitFence != 0) return submitFence;
+    if (meow_f72_used_count() <= 0 || g_f72_owned_refs != 0) return submitFence;
+    VkFence f = meow_f72_track_fence_create();
+    if (f != 0) *ownsFence = 1;
+    return f;
+}
+
 // Called at the submit point (F66 merged path, and the v1 wrapper for completeness). Associates EVERY
 // pool used while recording this frame with the fence that covers the submit, then closes the frame.
 static void meow_f72_bind_submit(VkFence submitFence, int ownsFence, int ok) {
     if (!meow_f72_on()) return;
     if (!ok) {
         if (ownsFence && submitFence != 0) meow_f69_destroyFence((uint64_t)submitFence);
+        // F90: the submit was rejected, so no GPU work referenced this frame's sets. Just close the
+        // frame; the pool (not pending) stays selected for the next frame and is reset only after a
+        // later submit's fence signals -- its nsets carries on toward the cap in the meantime.
         for (int i = 0; i < g_f72_npools; i++) g_f72_pools[i].used = 0;
         g_f72_active = -1;
         return;
@@ -2144,59 +2407,65 @@ static int meow_f72_emulate_push_inner(void* cmd, uint32_t bindPoint, void* layo
     int pi = meow_f72_ensure_active();
     if (pi < 0) return -1;
     int (*alloc)(void*, const void*, void**) =
-        (int (*)(void*, const void*, void**))meow_f72_real("vkAllocateDescriptorSets");
+        (int (*)(void*, const void*, void**))meow_cached_proc(
+            &meow_p_vkAllocateDescriptorSets, &meow_d_vkAllocateDescriptorSets, "vkAllocateDescriptorSets");
     void (*update)(void*, uint32_t, const void*, uint32_t, const void*) =
-        (void (*)(void*, uint32_t, const void*, uint32_t, const void*))meow_f72_real("vkUpdateDescriptorSets");
+        (void (*)(void*, uint32_t, const void*, uint32_t, const void*))meow_cached_proc(
+            &meow_p_vkUpdateDescriptorSets, &meow_d_vkUpdateDescriptorSets, "vkUpdateDescriptorSets");
     void (*bind)(void*, uint32_t, void*, uint32_t, uint32_t, const void*, uint32_t, const void*) =
         (void (*)(void*, uint32_t, void*, uint32_t, uint32_t, const void*, uint32_t, const void*))
-            meow_f72_real("vkCmdBindDescriptorSets");
+            meow_cached_proc(&meow_p_vkCmdBindDescriptorSets, &meow_d_vkCmdBindDescriptorSets,
+                             "vkCmdBindDescriptorSets");
     if (alloc == NULL || update == NULL || bind == NULL) {
         meow_f72_warn("missing-forward", 0, 0);
         return -1;
     }
-    VkDescriptorSetAllocateInfo ai;
-    memset(&ai, 0, sizeof(ai));
-    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ai.pNext = NULL;
-    ai.descriptorPool = g_f72_pools[pi].pool;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &allocDsl;
+    // F90/.65: acquire a FRESH set for THIS push via vkAllocateDescriptorSets on the active pool. The
+    // pool is left ONLY when its capacity is exhausted (nsets >= MEOW_F72_MAXSETS, or the driver
+    // returns VK_ERROR_OUT_OF_POOL_MEMORY): then reclaim any signaled pool and switch/grow. Only if
+    // that also fails do we forward. Every push gets its own set, so a later push cannot overwrite an
+    // earlier bind's contents.
     VkDescriptorSet ds = VK_NULL_HANDLE;
-    int arc = alloc(g_dev_seen, &ai, (void**)&ds);
-    if (arc != 0) {
-        // F72c: a pool can fill mid-frame (>MEOW_F72_MAXSETS pushes before the submit). Reclaim any
-        // signaled pool and switch to a fresh one; only if that also fails do we forward.
-        if (arc == VK_ERROR_OUT_OF_POOL_MEMORY) {
-            g_f72_active = -1;
-            int npi = meow_f72_ensure_active();
-            if (npi >= 0 && npi != pi) {
-                pi = npi;
-                ai.descriptorPool = g_f72_pools[pi].pool;
-                ds = VK_NULL_HANDLE;
-                arc = alloc(g_dev_seen, &ai, (void**)&ds);
-            }
+    int arc = 0;
+    int t = meow_f72_pool_take_set(pi, allocDsl, alloc, &ds, &arc);
+    if (t == 1 || arc == VK_ERROR_OUT_OF_POOL_MEMORY) {
+        g_f72_active = -1;
+        int npi = meow_f72_ensure_active();
+        if (npi >= 0 && npi != pi) {
+            pi = npi;
+            arc = 0;
+            t = meow_f72_pool_take_set(pi, allocDsl, alloc, &ds, &arc);
         }
     }
-    if (arc != 0 || ds == VK_NULL_HANDLE) {
+    if (t != 0) {
         // F72c: VkResult printed SIGNED (see the code table at meow_f72_warn).
+        if (arc == 0) arc = VK_ERROR_OUT_OF_POOL_MEMORY;
         meow_f72_warn("allocate-set-failed", (long)arc, (long)set);
         return -1;
     }
-    VkWriteDescriptorSet* w = (VkWriteDescriptorSet*)malloc((size_t)n * sizeof(VkWriteDescriptorSet));
-    if (w == NULL) { meow_f72_warn("oom-writes", (long)n, 0); return -1; }
-    // The push ignores dstSet, but vkUpdateDescriptorSets requires it -> copy and point every write
-    // at the set just allocated. The pointed-to image/buffer arrays are used synchronously by the
-    // update call, so no deep copy of those is needed.
+    // R1 (kept from F88): reuse the file-scope scratch; only an over-capacity call falls back to malloc. The push
+    // ignores dstSet, but vkUpdateDescriptorSets requires it -> copy and point every write at the set
+    // just acquired. The pointed-to image/buffer arrays are consumed synchronously by the update call,
+    // so no deep copy of those is needed.
+    VkWriteDescriptorSet* wheap = NULL;
+    VkWriteDescriptorSet* w;
+    if (n <= (uint32_t)MEOW_F72_WRITES_SCRATCH) {
+        w = g_f72_writes;
+    } else {
+        wheap = (VkWriteDescriptorSet*)malloc((size_t)n * sizeof(VkWriteDescriptorSet));
+        if (wheap == NULL) { meow_f72_warn("oom-writes", (long)n, 0); return -1; }
+        w = wheap;
+    }
     memcpy(w, writes, (size_t)n * sizeof(VkWriteDescriptorSet));
     for (uint32_t i = 0; i < n; i++) w[i].dstSet = ds;
     update(g_dev_seen, n, w, 0, NULL);
     // Push descriptors carry no dynamic offsets (pDynamicOffsets is NULL / count 0).
     bind(cmd, bindPoint, layout, set, 1, &ds, 0, NULL);
-    free(w);
+    free(wheap);
     return 1;
 }
 
-// Public entry: counts the outcome and emits the F72c totals line on meaningful change.
+// Public entry: counts the outcome and emits the F72c/F90 totals line on meaningful change.
 static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, uint32_t set,
                                  uint32_t n, const void* writes) {
     int r = meow_f72_emulate_push_inner(cmd, bindPoint, layout, set, n, writes);
@@ -2206,14 +2475,17 @@ static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, ui
     } else {
         ++g_f72_forwarded;   // r == 0 (no writes) or -1 (failure): the original push is forwarded
     }
-    // F86: emit the totals line only when something a human must see changed: a new forward (emulation
-    // fell back to the real push) or a pool grow. Otherwise stay silent -- no periodic heartbeat at
-    // all. verbose still prints every call for debugging.
+    // F86/F91: emit the totals line ONLY when a new forward or a pool grow happened -- both are
+    // "something abnormal" signals. The F89 per-256-emulated bucket is gone, and F91 also removed the
+    // `resets` term: `resets` increments ~once per frame, so including it printed ~1 line/frame in
+    // steady state (the .65 log: resets=66048 over 14.52M pushes). resets stays in the printed fields
+    // as information, but NEVER triggers the line. Never per push; verbose still prints every call.
     static unsigned long f86_last_fwd = 0ul, f86_last_grow = 0ul;
     if (meow_vk_verbose() || g_f72_forwarded != f86_last_fwd || g_f72_grows != f86_last_grow) {
         MEOWLOGI("meowvulkan: F72b push totals: emulated=%{public}lu forwarded=%{public}lu pools=%{public}d "
-                 "resets=%{public}lu grow=%{public}lu",
-                 g_f72_emulated, g_f72_forwarded, g_f72_npools, g_f72_resets, g_f72_grows);
+                 "resets=%{public}lu allocs=%{public}lu grow=%{public}lu",
+                 g_f72_emulated, g_f72_forwarded, g_f72_npools, g_f72_resets, g_f72_allocs,
+                 g_f72_grows);
         f86_last_fwd = g_f72_forwarded;
         f86_last_grow = g_f72_grows;
     }
@@ -2237,6 +2509,7 @@ static void meow_f72_shutdown(void) {
         g_f72_pools[i].ownsFence = 0;
         g_f72_pools[i].pending = 0;
         g_f72_pools[i].used = 0;
+        g_f72_pools[i].nsets = 0;   // F90: the pool handle is gone; drop the allocation counter
     }
     // F72c: the shim-owned fence is shared, so destroy it exactly once.
     if (g_f72_owned_fence != VK_NULL_HANDLE) {
@@ -2266,7 +2539,7 @@ static void meow_f72_shutdown(void) {
 static int meow_translate_queue_submit2(void* queue, uint32_t submitCount, const void* submits,
                                         uint64_t fence) {
     int (*realSubmit)(void*, uint32_t, const void*, uint64_t) =
-        (int (*)(void*, uint32_t, const void*, uint64_t))(g_gdpa ? g_gdpa(g_dev_seen, "vkQueueSubmit") : NULL);
+        (int (*)(void*, uint32_t, const void*, uint64_t))(meow_cached_proc(&meow_p_vkQueueSubmit, &meow_d_vkQueueSubmit, "vkQueueSubmit"));
     if (realSubmit == NULL) {
         MEOWLOGE("meowvulkan: SYNC2->V1: cannot resolve the real vkQueueSubmit");
         return -3;
@@ -2728,7 +3001,7 @@ static int log_QueueSubmit2(void* queue, uint32_t submitCount, const void* submi
     int doTranslate = meow_sync2_to_v1_decide(&why);
     PFN_vkVoidFunctionLocal real = NULL;
     if (!doTranslate) {
-        real = g_gdpa ? g_gdpa(g_dev_seen, "vkQueueSubmit2") : NULL;
+        real = meow_cached_proc(&meow_p_vkQueueSubmit2, &meow_d_vkQueueSubmit2, "vkQueueSubmit2");
         if (real == NULL) {
             MEOWLOGE("meowvulkan: cannot resolve the real vkQueueSubmit2");
             return -3;
@@ -3181,7 +3454,8 @@ static int log_BeginCommandBuffer(void* cmd, const void* bi) {
 typedef void (*PFN_cmdBeginRendering)(void*, const void*);
 static void log_CmdBeginRendering(void* cmd, const void* ri) {
     wd_note("vkCmdBeginRendering");
-    PFN_cmdBeginRendering real = (PFN_cmdBeginRendering)meow_resolve_device_fn("vkCmdBeginRendering");
+    PFN_cmdBeginRendering real = (PFN_cmdBeginRendering)meow_cached_proc(
+        &meow_p_vkCmdBeginRendering, &meow_d_vkCmdBeginRendering, "vkCmdBeginRendering");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdBeginRendering");
         return;
@@ -3319,7 +3593,7 @@ static void log_CmdPipelineBarrier2(void* cmd, const void* di) {
     int doTranslate = meow_sync2_to_v1_decide(&why);
     PFN_vkVoidFunctionLocal real = NULL;
     if (!doTranslate) {
-        real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdPipelineBarrier2") : NULL;
+        real = meow_cached_proc(&meow_p_vkCmdPipelineBarrier2, &meow_d_vkCmdPipelineBarrier2, "vkCmdPipelineBarrier2");
         if (real == NULL) {
             MEOWLOGE("meowvulkan: cannot resolve the real vkCmdPipelineBarrier2");
             return;
@@ -3373,7 +3647,7 @@ static void log_CmdPipelineBarrier2(void* cmd, const void* di) {
 typedef void (*PFN_cmdBindPipeline)(void*, uint32_t, void*);
 static void log_CmdBindPipeline(void* cmd, uint32_t bindPoint, void* pipeline) {
     wd_note("vkCmdBindPipeline");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdBindPipeline") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdBindPipeline, &meow_d_vkCmdBindPipeline, "vkCmdBindPipeline");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdBindPipeline");
         return;
@@ -3393,7 +3667,7 @@ static void log_CmdDraw(void* cmd, uint32_t vertexCount, uint32_t instanceCount,
         meow_log_drop("vkCmdDraw");   // F71b: rate-limited
         return;
     }
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdDraw") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdDraw, &meow_d_vkCmdDraw, "vkCmdDraw");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdDraw");
         return;
@@ -3409,12 +3683,14 @@ static void log_CmdDraw(void* cmd, uint32_t vertexCount, uint32_t instanceCount,
 typedef void (*PFN_cmdDrawIndexed)(void*, uint32_t, uint32_t, uint32_t, int32_t, uint32_t);
 static void log_CmdDrawIndexed(void* cmd, uint32_t indexCount, uint32_t instanceCount,
                                uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) {
+    static unsigned char s_tp_drawidx;
+    meow_log_thread_once(&s_tp_drawidx, "vkCmdDrawIndexed");
     wd_note("vkCmdDrawIndexed");
     if (meow_vk_drop_draw()) {   // F70: causal test, see meow_vk_drop_draw
         meow_log_drop("vkCmdDrawIndexed");   // F71b: rate-limited
         return;
     }
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdDrawIndexed") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdDrawIndexed, &meow_d_vkCmdDrawIndexed, "vkCmdDrawIndexed");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdDrawIndexed");
         return;
@@ -3437,7 +3713,7 @@ static void log_CmdDrawIndirect(void* cmd, void* buffer, uint64_t offset, uint32
         meow_log_drop("vkCmdDrawIndirect");   // F71b: rate-limited
         return;
     }
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdDrawIndirect") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdDrawIndirect, &meow_d_vkCmdDrawIndirect, "vkCmdDrawIndirect");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdDrawIndirect");
         return;
@@ -3456,7 +3732,7 @@ static void log_CmdDrawIndexedIndirect(void* cmd, void* buffer, uint64_t offset,
         meow_log_drop("vkCmdDrawIndexedIndirect");   // F71b: rate-limited
         return;
     }
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdDrawIndexedIndirect") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdDrawIndexedIndirect, &meow_d_vkCmdDrawIndexedIndirect, "vkCmdDrawIndexedIndirect");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdDrawIndexedIndirect");
         return;
@@ -3472,7 +3748,7 @@ static void log_CmdDrawIndexedIndirect(void* cmd, void* buffer, uint64_t offset,
 typedef void (*PFN_cmdEndRendering)(void*);
 static void log_CmdEndRendering(void* cmd) {
     wd_note("vkCmdEndRendering");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdEndRendering") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdEndRendering, &meow_d_vkCmdEndRendering, "vkCmdEndRendering");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdEndRendering");
         return;
@@ -3487,7 +3763,7 @@ static void log_CmdEndRendering(void* cmd) {
 typedef void (*PFN_cmdCopyBuffer)(void*, void*, void*, uint32_t, const void*);
 static void log_CmdCopyBuffer(void* cmd, void* src, void* dst, uint32_t regionCount, const void* regions) {
     wd_note("vkCmdCopyBuffer");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdCopyBuffer") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdCopyBuffer, &meow_d_vkCmdCopyBuffer, "vkCmdCopyBuffer");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdCopyBuffer");
         return;
@@ -3510,7 +3786,7 @@ typedef void (*PFN_cmdBindVertexBuffers)(void*, uint32_t, uint32_t, const void*,
 static void log_CmdBindVertexBuffers(void* cmd, uint32_t firstBinding, uint32_t bindingCount,
                                      const void* pBuffers, const void* pOffsets) {
     wd_note("vkCmdBindVertexBuffers");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdBindVertexBuffers") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdBindVertexBuffers, &meow_d_vkCmdBindVertexBuffers, "vkCmdBindVertexBuffers");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdBindVertexBuffers");
         return;
@@ -3534,7 +3810,7 @@ static void log_CmdBindVertexBuffers(void* cmd, uint32_t firstBinding, uint32_t 
 typedef void (*PFN_cmdBindIndexBuffer)(void*, void*, uint64_t, uint32_t);
 static void log_CmdBindIndexBuffer(void* cmd, void* buffer, uint64_t offset, uint32_t indexType) {
     wd_note("vkCmdBindIndexBuffer");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdBindIndexBuffer") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdBindIndexBuffer, &meow_d_vkCmdBindIndexBuffer, "vkCmdBindIndexBuffer");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdBindIndexBuffer");
         return;
@@ -3556,8 +3832,10 @@ typedef void (*PFN_cmdBindDescriptorSets)(void*, uint32_t, void*, uint32_t, uint
 static void log_CmdBindDescriptorSets(void* cmd, uint32_t bindPoint, void* layout, uint32_t firstSet,
                                       uint32_t setCount, const void* pDescriptorSets,
                                       uint32_t dynamicOffsetCount, const void* pDynamicOffsets) {
+    static unsigned char s_tp_bind;
+    meow_log_thread_once(&s_tp_bind, "vkCmdBindDescriptorSets");
     wd_note("vkCmdBindDescriptorSets");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdBindDescriptorSets") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdBindDescriptorSets, &meow_d_vkCmdBindDescriptorSets, "vkCmdBindDescriptorSets");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdBindDescriptorSets");
         return;
@@ -3607,7 +3885,7 @@ typedef VkImageCopy VkImageCopyL;
 static void log_CmdCopyImage(void* cmd, void* srcImage, uint32_t srcLayout, void* dstImage,
                              uint32_t dstLayout, uint32_t regionCount, const void* pRegions) {
     wd_note("vkCmdCopyImage");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdCopyImage") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdCopyImage, &meow_d_vkCmdCopyImage, "vkCmdCopyImage");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdCopyImage");
         return;
@@ -3641,7 +3919,7 @@ static void log_CmdBlitImage(void* cmd, void* srcImage, uint32_t srcLayout, void
                              uint32_t dstLayout, uint32_t regionCount, const void* pRegions,
                              uint32_t filter) {
     wd_note("vkCmdBlitImage");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdBlitImage") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdBlitImage, &meow_d_vkCmdBlitImage, "vkCmdBlitImage");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdBlitImage");
         return;
@@ -3682,7 +3960,7 @@ typedef VkImageSubresourceRange  VkImageSubresourceRangeL;
 static void log_CmdClearColorImage(void* cmd, void* image, uint32_t imageLayout, const void* pColor,
                                    uint32_t rangeCount, const void* pRanges) {
     wd_note("vkCmdClearColorImage");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdClearColorImage") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdClearColorImage, &meow_d_vkCmdClearColorImage, "vkCmdClearColorImage");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdClearColorImage");
         return;
@@ -3718,7 +3996,7 @@ typedef VkViewport VkViewportL;
 static void log_CmdSetViewport(void* cmd, uint32_t firstViewport, uint32_t viewportCount,
                                const void* pViewports) {
     wd_note("vkCmdSetViewport");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdSetViewport") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdSetViewport, &meow_d_vkCmdSetViewport, "vkCmdSetViewport");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdSetViewport");
         return;
@@ -3747,7 +4025,7 @@ typedef VkRect2D VkRect2DL;
 static void log_CmdSetScissor(void* cmd, uint32_t firstScissor, uint32_t scissorCount,
                               const void* pScissors) {
     wd_note("vkCmdSetScissor");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdSetScissor") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdSetScissor, &meow_d_vkCmdSetScissor, "vkCmdSetScissor");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdSetScissor");
         return;
@@ -3776,7 +4054,7 @@ typedef VkClearAttachment VkClearAttachmentL;
 static void log_CmdClearAttachments(void* cmd, uint32_t attachmentCount, const void* pAttachments,
                                     uint32_t rectCount, const void* pRects) {
     wd_note("vkCmdClearAttachments");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdClearAttachments") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdClearAttachments, &meow_d_vkCmdClearAttachments, "vkCmdClearAttachments");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdClearAttachments");
         return;
@@ -3877,7 +4155,7 @@ static int meow_translate_cmd_pipeline_barrier2(void* cmd, const void* di) {
     void (*real)(void*, uint32_t, uint32_t, uint32_t, uint32_t, const void*, uint32_t, const void*,
                  uint32_t, const void*) =
         (void (*)(void*, uint32_t, uint32_t, uint32_t, uint32_t, const void*, uint32_t, const void*,
-                  uint32_t, const void*))(g_gdpa ? g_gdpa(g_dev_seen, "vkCmdPipelineBarrier") : NULL);
+                  uint32_t, const void*))(meow_cached_proc(&meow_p_vkCmdPipelineBarrier, &meow_d_vkCmdPipelineBarrier, "vkCmdPipelineBarrier"));
     if (real == NULL) {
         MEOWLOGE("meowvulkan: SYNC2->V1: cannot resolve the real vkCmdPipelineBarrier");
         return -3;
@@ -4001,7 +4279,7 @@ static void log_CmdPipelineBarrier(void* cmd, uint32_t srcStageMask, uint32_t ds
                                    const void* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount,
                                    const void* pImageMemoryBarriers) {
     wd_note("vkCmdPipelineBarrier");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdPipelineBarrier") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdPipelineBarrier, &meow_d_vkCmdPipelineBarrier, "vkCmdPipelineBarrier");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdPipelineBarrier");
         return;
@@ -4032,7 +4310,7 @@ typedef void (*PFN_cmdPushConstants)(void*, void*, uint32_t, uint32_t, uint32_t,
 static void log_CmdPushConstants(void* cmd, void* layout, uint32_t stageFlags, uint32_t offset,
                                  uint32_t size, const void* pValues) {
     wd_note("vkCmdPushConstants");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdPushConstants") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdPushConstants, &meow_d_vkCmdPushConstants, "vkCmdPushConstants");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdPushConstants");
         return;
@@ -4050,7 +4328,7 @@ typedef void (*PFN_cmdUpdateBuffer)(void*, void*, uint64_t, uint64_t, const void
 static void log_CmdUpdateBuffer(void* cmd, void* dstBuffer, uint64_t dstOffset, uint64_t dataSize,
                                 const void* pData) {
     wd_note("vkCmdUpdateBuffer");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdUpdateBuffer") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdUpdateBuffer, &meow_d_vkCmdUpdateBuffer, "vkCmdUpdateBuffer");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdUpdateBuffer");
         return;
@@ -4067,7 +4345,7 @@ typedef void (*PFN_cmdFillBuffer)(void*, void*, uint64_t, uint64_t, uint32_t);
 static void log_CmdFillBuffer(void* cmd, void* dstBuffer, uint64_t dstOffset, uint64_t size,
                               uint32_t data) {
     wd_note("vkCmdFillBuffer");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdFillBuffer") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdFillBuffer, &meow_d_vkCmdFillBuffer, "vkCmdFillBuffer");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdFillBuffer");
         return;
@@ -4084,7 +4362,7 @@ static void log_CmdFillBuffer(void* cmd, void* dstBuffer, uint64_t dstOffset, ui
 typedef void (*PFN_cmdExecuteCommands)(void*, uint32_t, const void*);
 static void log_CmdExecuteCommands(void* cmd, uint32_t commandBufferCount, const void* pCommandBuffers) {
     wd_note("vkCmdExecuteCommands");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdExecuteCommands") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdExecuteCommands, &meow_d_vkCmdExecuteCommands, "vkCmdExecuteCommands");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdExecuteCommands");
         return;
@@ -4289,7 +4567,7 @@ typedef void (*PFN_cmdPushDescriptorSetWithTemplate)(void*, void*, void*, uint32
 static void log_CmdPushDescriptorSetWithTemplate(void* cmd, void* tmpl, void* layout, uint32_t set,
                                                  const void* pData) {
     wd_note("vkCmdPushDescriptorSetWithTemplate");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdPushDescriptorSetWithTemplate") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdPushDescriptorSetWithTemplate, &meow_d_vkCmdPushDescriptorSetWithTemplate, "vkCmdPushDescriptorSetWithTemplate");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdPushDescriptorSetWithTemplate");
         return;
@@ -4393,7 +4671,7 @@ _Static_assert(offsetof(VkDependencyInfoL, imageMemoryBarrierCount) == 48, "VkDe
 typedef void (*PFN_cmdSetEvent)(void*, uint64_t, uint32_t);
 static void log_CmdSetEvent(void* cmd, uint64_t event, uint32_t stageMask) {
     wd_note("vkCmdSetEvent");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdSetEvent") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdSetEvent, &meow_d_vkCmdSetEvent, "vkCmdSetEvent");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdSetEvent");
         return;
@@ -4409,7 +4687,7 @@ static void log_CmdSetEvent(void* cmd, uint64_t event, uint32_t stageMask) {
 typedef void (*PFN_cmdResetEvent)(void*, uint64_t, uint32_t);
 static void log_CmdResetEvent(void* cmd, uint64_t event, uint32_t stageMask) {
     wd_note("vkCmdResetEvent");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdResetEvent") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdResetEvent, &meow_d_vkCmdResetEvent, "vkCmdResetEvent");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdResetEvent");
         return;
@@ -4432,7 +4710,7 @@ static void log_CmdWaitEvents(void* cmd, uint32_t eventCount, const void* pEvent
                               uint32_t bufferMemoryBarrierCount, const void* pBufferMemoryBarriers,
                               uint32_t imageMemoryBarrierCount, const void* pImageMemoryBarriers) {
     wd_note("vkCmdWaitEvents");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdWaitEvents") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdWaitEvents, &meow_d_vkCmdWaitEvents, "vkCmdWaitEvents");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdWaitEvents");
         return;
@@ -4463,7 +4741,7 @@ static void log_CmdWaitEvents(void* cmd, uint32_t eventCount, const void* pEvent
 typedef void (*PFN_cmdSetEvent2)(void*, uint64_t, const void*);
 static void log_CmdSetEvent2(void* cmd, uint64_t event, const void* pDependencyInfo) {
     wd_note("vkCmdSetEvent2");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdSetEvent2") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdSetEvent2, &meow_d_vkCmdSetEvent2, "vkCmdSetEvent2");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdSetEvent2");
         return;
@@ -4485,7 +4763,7 @@ static void log_CmdSetEvent2(void* cmd, uint64_t event, const void* pDependencyI
 typedef void (*PFN_cmdResetEvent2)(void*, uint64_t, uint64_t);
 static void log_CmdResetEvent2(void* cmd, uint64_t event, uint64_t stageMask) {
     wd_note("vkCmdResetEvent2");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdResetEvent2") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdResetEvent2, &meow_d_vkCmdResetEvent2, "vkCmdResetEvent2");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdResetEvent2");
         return;
@@ -4503,7 +4781,7 @@ typedef void (*PFN_cmdWaitEvents2)(void*, uint32_t, const void*, const void*);
 static void log_CmdWaitEvents2(void* cmd, uint32_t eventCount, const void* pEvents,
                                const void* pDependencyInfos) {
     wd_note("vkCmdWaitEvents2");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdWaitEvents2") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdWaitEvents2, &meow_d_vkCmdWaitEvents2, "vkCmdWaitEvents2");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdWaitEvents2");
         return;
@@ -4535,7 +4813,7 @@ static void log_CmdWaitEvents2(void* cmd, uint32_t eventCount, const void* pEven
 typedef void (*PFN_cmdWriteTimestamp)(void*, uint32_t, uint64_t, uint32_t);
 static void log_CmdWriteTimestamp(void* cmd, uint32_t stage, uint64_t queryPool, uint32_t query) {
     wd_note("vkCmdWriteTimestamp");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdWriteTimestamp") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdWriteTimestamp, &meow_d_vkCmdWriteTimestamp, "vkCmdWriteTimestamp");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdWriteTimestamp");
         return;
@@ -4551,7 +4829,7 @@ static void log_CmdWriteTimestamp(void* cmd, uint32_t stage, uint64_t queryPool,
 typedef void (*PFN_cmdWriteTimestamp2)(void*, uint64_t, uint64_t, uint32_t);
 static void log_CmdWriteTimestamp2(void* cmd, uint64_t stage, uint64_t queryPool, uint32_t query) {
     wd_note("vkCmdWriteTimestamp2");
-    PFN_vkVoidFunctionLocal real = g_gdpa ? g_gdpa(g_dev_seen, "vkCmdWriteTimestamp2") : NULL;
+    PFN_vkVoidFunctionLocal real = meow_cached_proc(&meow_p_vkCmdWriteTimestamp2, &meow_d_vkCmdWriteTimestamp2, "vkCmdWriteTimestamp2");
     if (real == NULL) {
         MEOWLOGE("meowvulkan: cannot resolve the real vkCmdWriteTimestamp2");
         return;
@@ -5260,7 +5538,7 @@ static void init_once(void) {
     // Deployment self-certification: this campaign lost a run to "the fix was in the tree but not on
     // the device", so every shim build now names itself. Bump the tag whenever the shim changes.
     // F74 env switch tiers (A/B) are documented in the header comment at the top of this file.
-    MEOWLOGI("meowvulkan: shim build 2026-09-18.64 quiet-push-counters");
+    MEOWLOGI("meowvulkan: shim build 2026-09-19.69 review-fixes");
     // Crash backtraces for the Vulkan path are handled by meowbt, which the bridge now installs from
     // meowSetSurfaceId (see egl_gl.c) -- reachable on this path, unlike the GL-only install sites.
     // Enable with the documented envs: MEOW_BT=1 (and optionally MEOW_BT_FILE=<path>).
