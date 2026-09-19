@@ -36,6 +36,7 @@
 #include "SDL_ohosevents.h"
 #include "SDL_ohoswindow.h"
 #include "SDL_ohosmouse.h"
+#include "SDL_ohosvulkan.h"
 #ifdef SDL_VIDEO_OPENGL_EGL
 #include "SDL_ohosgl.h"
 #endif
@@ -159,6 +160,17 @@ static SDL_VideoDevice *OHOS_CreateDevice(void)
     device->GL_GetSwapInterval = OHOS_GL_GetSwapInterval;
     device->GL_SwapWindow = OHOS_GL_SwapWindow;
     device->GL_DestroyContext = OHOS_GL_DestroyContext;
+#endif
+
+    /* Without these entries SDL_Vulkan_LoadLibrary() fails with
+     * "No dynamic Vulkan support in current SDL video driver (ohos)", which is what
+     * makes Minecraft's Vulkan backend refuse to come up (SDL_video.c:6261). */
+#ifdef SDL_VIDEO_VULKAN
+    device->Vulkan_LoadLibrary = OHOS_Vulkan_LoadLibrary;
+    device->Vulkan_UnloadLibrary = OHOS_Vulkan_UnloadLibrary;
+    device->Vulkan_GetInstanceExtensions = OHOS_Vulkan_GetInstanceExtensions;
+    device->Vulkan_CreateSurface = OHOS_Vulkan_CreateSurface;
+    device->Vulkan_DestroySurface = OHOS_Vulkan_DestroySurface;
 #endif
 
     return device;
