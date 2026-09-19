@@ -91,7 +91,7 @@
 #    源码：**更新仓** openjdk/jdk26u（非主线！）→ ref/jdk26u；宿主 worktree：
 tar xzf stuffs/research/jdk26/openjdk-26.0.2.1_linux-aarch64_bin.tar.gz -C stuffs/research/jdk26/_inspect
 git clone https://github.com/openjdk/jdk26u.git ref/jdk26u
-git -C ref/jdk26u worktree add stuffs/research/jdk26/jdk26u-src jdk-26.0.2.1-ga
+git -C ref/jdk26u worktree add "$PWD/stuffs/research/jdk26/jdk26u-src" jdk-26.0.2.1-ga   # 绝对路径（-C 会先 chdir）
 
 # 1) 容器（openEuler 24.03 aarch64；环境见「构建环境」）—— 编 libjvm（+ 可选瘦 modules）
 sh tools/jre26/linux_bootstrap.sh         # 装工具链 + boot JDK（如已装可跳过）

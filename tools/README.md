@@ -17,7 +17,7 @@
 | `ref/openal-soft` | https://github.com/kcat/openal-soft.git | `1.24.3` | `git clone https://github.com/kcat/openal-soft.git ref/openal-soft` |
 | `ref/freetype` | https://gitlab.freedesktop.org/freetype/freetype | `VER-2-13-3` | 见 `tools/freetype/` |
 | `ref/oshi` | https://github.com/oshi/oshi | 多版本 | 见 `tools/oshi/` |
-| `ref/SDL` + `ref/SDL-3.4.14` | https://github.com/libsdl-org/SDL.git | `release-3.4.14` | `git clone … ref/SDL` → `git -C ref/SDL worktree add --detach ref/SDL-3.4.14 release-3.4.14`（见 `tools/sdl/`） |
+| `ref/SDL` + `ref/SDL-3.4.14` | https://github.com/libsdl-org/SDL.git | `release-3.4.14` | `git clone … ref/SDL` → `git -C ref/SDL worktree add --detach "$WS/ref/SDL-3.4.14" release-3.4.14`（`$WS` = 工作区根；**必须绝对路径**，见 §4「worktree 路径基准」） |
 | `ref/jdk26u` | https://github.com/openjdk/jdk26u.git | `jdk-26.0.2.1-ga` | **JDK 26 更新仓**（26.0.x 不在主线 `openjdk/jdk`！）——随包 JRE 自编件的精确源，见 `tools/jre26/` |
 | `ref/{shaderc,glslang,SPIRV-Tools,SPIRV-Headers,spirv-cross}` | google/shaderc、KhronosGroup/* | 按官方 LWJGL natives 的 `.git` 标记钉修订 | `tools/shaderc/rebuild_for_meowcraft.sh` **自动 clone**（见 `tools/shaderc/README.md`） |
 
@@ -41,7 +41,7 @@ commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61
 | `freetype/` | `libfreetype.so` | FreeType 2.13.3 OHOS 交叉编 |
 | `jre26/` | 随包 JRE 集（`libs/*.so` + `java.home` 数据） | **魔改官方 OpenJDK 26.0.2.1(glibc) 跑 OHOS(musl)，零黑箱**：官方 26 lib **原地改 `.dynstr`** + `libc6.so` 兼容层 + **自编 `libjli`** + **自编 `libjvm`**（openEuler 容器编，两件均带 OHOS 分体 patch，源 = 更新仓 `jdk26u` @ `jdk-26.0.2.1-ga`）；数据经 jlink 瘦身。见 `tools/jre26/README.md` |
 | `jre25/` | —（历史配方） | **25 时代**的随包 JRE 配方/溯源（已发布版本）；随包 JRE 已升级到 26，**勿用于当前随包**。见 `tools/jre25/README.md` |
-| `sdl/` | `libSDL3.so` | 自编 OHOS **SDL3**（fork tag `release-3.4.14`）+ 自研 **`ohos` 驱动**（窗口/EGL/输入/grab）；**MC 26.3** 的平台绑定 |
+| `sdl/` | `libSDL3.so` | 自编 OHOS **SDL3**（fork tag `release-3.4.14`）+ 自研 **`ohos` 驱动**（窗口/EGL/输入/grab/**Vulkan WSI**）；**MC 26.3** 的平台绑定 |
 | `shaderc/` | `libshaderc.so`、`libspirv-cross.so` | 自编（glslang/SPIRV-Tools 静态并入；按官方 natives `.git` 钉修订）；**MC 26.3 `renderpearl`** 用 |
 | `oshi/` | `oshi-core-<v>-meow.jar` ×10 | CPU 拓扑合成补丁；**现代 9 项 + legacy `oshi-core-1.1`（MC 1.16.x）** |
 | `meow-launcher/` | `launcher.jar` | 净室自研 `meow.launcher`（无 GPL/Pojav/HMCL） |
@@ -72,7 +72,7 @@ commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61
 # A. LWJGL 单代 3.4.3（javac 那步由人跑；见 tools/lwjgl/README.md）
 sh tools/lwjgl/build_libffi.sh --src stuffs/research/libffi/libffi-3.8.0 \
     --sdk-native $SDK/native --out stuffs/research/libffi/out-ohos            # ① libffi 3.8.0（3.4.x natives 用）
-git -C ref/lwjgl3 worktree add --detach ref/lwjgl3-3.4.3 3.4.3               # ② 3.4.3 源码树
+git -C ref/lwjgl3 worktree add --detach "$WS/ref/lwjgl3-3.4.3" 3.4.3          # ② 3.4.3 源码树（$WS = 工作区根；绝对路径见 §4）
 sh tools/lwjgl/build_lwjgl_jar.sh --version 3.4.3 --overlay tools/lwjgl/deltas/overlay \
     --overlay tools/lwjgl/deltas/overlay-3.4.3      # ③ 3.4.3 jar（人跑 javac）；≥3.4.x 自动补 sdl/vma/spvc/shaderc 模块（MC 26.3）
 sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3                                # ④ 3.4.3 natives → liblwjgl_343{,_opengl,_stb}.so（自动带 libffi）
@@ -143,7 +143,10 @@ devecocli run --module entry meowjre --device <serial>
   `python3 tools/relocate_gson.py <base.tar.gz>` → `python3 tools/lwjgl/pack_extras.py --base-tar <base.tar.gz> --jar lwjgl-3.4.3.jar=<built> --require lwjgl-3.4.3.jar --out <final>`
   → 覆盖 `entry/.../rawfile/meowcraft_extras.tar.gz` 并**升 `EXTRAS_VERSION`**。
 - **JRE 可复现**：`libc6.so`/`libjli.so`、官方 26 件魔改、数据 tar（`tools/jre26/pack_jre_data.py`）均**逐字节**；自编 `libjvm` 同 OS/工具链/源/**同路径** + `SOURCE_DATE_EPOCH=1784133400`（`jdk-26.0.2.1-ga` 提交）**2× cmp 一致**（`d28164cd…`；`linux_verify_jvm_repro.sh` 默认 2，`MEOW_REPRO_N` 可调高。见 `tools/jre26/README.md` §可复现性）。
-- **native 可复现**：同 tag + 同 SDK + **同 `--src`/`--out` 绝对路径** → 逐字节一致（链接器把输出路径写进 `.dynstr`；换路径同功能、哈希不同）。本工具链的新原生已 **3× 干净重建 `cmp` 一致**（对照 2026-09-11 盘上随包件）：`libSDL3.so`(`241bbfef…`)、`libshaderc.so`(`0cff3465…`)、`libspirv-cross.so`(`93ad9907…`)、`liblwjgl.so`(`df886466…`)；其中 `spirv-cross` 需 `SOURCE_DATE_EPOCH`（`tools/shaderc/build_shaderc_meow.sh` 已内置，取 pinned 提交时间）。`libgl4es.so`(`90c6ff6b…`) 同路径下**预期**可复现（见 `tools/gl4es/README.md`，尚未 3× 验证）。**VMA / F2 单件**：`liblwjgl_vma.so` release(`479a619f…`，默认 `WORK=stuffs/research/vulkan/vma_build`) 与随包件 `cmp` 一致、`liblwjgl_343.so` F2(`2a6fcf99…`，`libs/meowlwjgls/libs/arm64-v8a/`) —— 见 §2「单件脚本」；VMA 诊断版(`64cba35f…`)仅存在于 `stuffs/`、**不随包**。
+- **★ `git -C <repo> …` 里的路径基准是 `<repo>`，不是你的 cwd（2026-09-19 事故）**：`git -C ref/SDL worktree add --detach ref/SDL-3.4.14 …`
+  会在 `ref/SDL/` **里面**建出 `ref/SDL/ref/SDL-3.4.14`（文档里多处曾这么写，已改）。⇒ **建/删 worktree 一律用绝对路径**（或相对该 repo 的 `../…`）；
+  删错建的树也用绝对路径 + `worktree prune`，并顺手清掉留下的**空父目录**。自证：`git -C <repo> worktree list`。
+- **native 可复现**：同 tag + 同 SDK + **同 `--src`/`--out` 绝对路径** → 逐字节一致（链接器把输出路径写进 `.dynstr`；换路径同功能、哈希不同）。本工具链的新原生已 **3× 干净重建 `cmp` 一致**（对照 2026-09-11 盘上随包件）：`libSDL3.so`(`6cdf75fa…`；2026-09-19 加 Vulkan 后**从零 3 轮 9 次**逐字节重验，每轮重取 worktree + 清 build 目录)、`libshaderc.so`(`0cff3465…`)、`libspirv-cross.so`(`93ad9907…`)、`liblwjgl.so`(`df886466…`)；其中 `spirv-cross` 需 `SOURCE_DATE_EPOCH`（`tools/shaderc/build_shaderc_meow.sh` 已内置，取 pinned 提交时间）。`libgl4es.so`(`90c6ff6b…`) 同路径下**预期**可复现（见 `tools/gl4es/README.md`，尚未 3× 验证）。**VMA / F2 单件**：`liblwjgl_vma.so` release(`479a619f…`，默认 `WORK=stuffs/research/vulkan/vma_build`) 与随包件 `cmp` 一致、`liblwjgl_343.so` F2(`2a6fcf99…`，`libs/meowlwjgls/libs/arm64-v8a/`) —— 见 §2「单件脚本」；VMA 诊断版(`64cba35f…`)仅存在于 `stuffs/`、**不随包**。
 - **构建期断言（缺件在发包时拦下，运行期不加防护）**：`pack_extras.py --require <member>`（断言 tar 成员齐，如 `lwjgl-3.4.3.jar`）；
   `install_natives.sh --verify`（断言 `natives.manifest` 每项在盘且 sha 匹配）。缺件属"我们发包可掌控"→ 只在构建期拦，不在运行时查（省开销）。
 - **javac**：任何 `.jar` 步骤沙箱内不可跑，须人在有 JDK 的 shell 执行。
@@ -153,8 +156,8 @@ devecocli run --module entry meowjre --device <serial>
 - **工具内详解**：`tools/lwjgl/README.md` §1（**overlay 机制**：为什么要覆盖 / 5 步流水线 / 两层判据 / 加代清单），§2–§4（3.4.3 构建 / 打包 / digests）。
 - **JRE 收编**：`tools/jre26/README.md`（现役：输入/工序/可复现/digests/与 25 差异；源 = 更新仓 `jdk26u` @ `jdk-26.0.2.1-ga`）、`tools/jre25/README.md`（历史）。
 - **legacy（MC 1.6.x–1.16.x）**：`tools/lwjgl2/README.md`（LWJGL2 `liblwjgl.so`：生成/编译/随包/踩坑/可复现）、`tools/gl4es/README.md`（gl4es `libgl4es.so`：NOEGL 宿主自持上下文）。
-- **SDL3 / shaderc**：`tools/sdl/README.md`（拉取/补丁/驱动文件/digest）、`tools/shaderc/README.md`；复盘对照 `notes/20-design/26.3-SDL适配复盘.md`、方案 `notes/20-design/sdl3桥接方案.md`。
-- 设计/流程：`notes/20-design/{净室-meow-launcher,净室-lwjgl-glfw-bridge,lwjgl自编方案,lwjgl多版本并存方案}.md`
+- **SDL3 / shaderc**：`tools/sdl/README.md`（拉取/补丁/驱动文件/digest）、`tools/shaderc/README.md`；复盘 `notes/20-design/render/SDL3适配-复盘.md`（§一 时间线、**§七 Vulkan 接通**）、方案 `notes/20-design/render/SDL3桥接-设计.md`。
+- 设计/流程：`notes/20-design/launch/launcher净室-设计.md`、`notes/20-design/render/GLFW净室桥-设计.md`、`notes/20-design/lwjgl/LWJGL3世代管理-方案.md`、`notes/20-design/lwjgl/LWJGL3单代收敛-决策依据.md`、`notes/20-design/lwjgl/LWJGL2自编-方案.md`
 - 适配/移植：`notes/40-adaptation/{openal-ohos,ohaudio-backend,freetype-ohos,oshi-cpu-info,launcher-rebuild}.md`
 - 溯源/校验和：`notes/30-supply-chain/{provenance-master.md,assets-digests.txt,per-so-catalog.md}`
 - 现状总览：`notes/00-current/{现状基线.md,架构决策与踩坑.md}`
@@ -169,7 +172,8 @@ devecocli run --module entry meowjre --device <serial>
 | `stuffs/lwjgl2/` | LWJGL2 native 构建/复现产物（`build/`、`repro/`、`liblwjgl.so`） | `sh tools/lwjgl2/build_lwjgl2_meow.sh --src ref/lwjgl --sdk-native $SDK/native --out stuffs/lwjgl2 --with-display` |
 | `ref/lwjgl/{bin-meow,src/hdrs-meow,src/generated,src/native/generated}` | LWJGL2 生成物（补丁加入 `.gitignore`，可删可重建） | `sh tools/lwjgl2/generate_sources.sh`（需先 `git apply` 补丁） |
 | `ref/openal-soft.build/` | OpenAL worktree（tag 1.24.3，已打补丁）+ build 目录 | `sh tools/openal/rebuild_for_meowcraft.sh 1.24.3`（自动建 worktree + 补丁 + 编译） |
-| `ref/lwjgl3-3.4.3/` | LWJGL 3.4.3 tag 的 git worktree（纯 tag，无独特改动） | `git -C ref/lwjgl3 worktree add --detach ref/lwjgl3-3.4.3 3.4.3` |
+| `ref/lwjgl3-3.4.3/` | LWJGL 3.4.3 tag 的 git worktree（纯 tag，无独特改动） | `git -C ref/lwjgl3 worktree add --detach "$WS/ref/lwjgl3-3.4.3" 3.4.3` |
+| `ref/SDL-3.4.14/` | SDL fork 的 tag worktree（`release-3.4.14`；**patcher 会就地打补丁** ⇒ `git status` 非空属正常） | `git -C ref/SDL worktree add --detach "$WS/ref/SDL-3.4.14" release-3.4.14`；要回到"干净树"（撤销 patcher 改动）就 `worktree remove --force` 后重加，见 `tools/sdl/README.md` §3 末 |
 | `ref/jna-cache/` | JNA jar 下载缓存（oshi 构建用） | oshi 构建时**自动重下**（见 `tools/oshi/README.md`） |
 
 - 删 **worktree** 务必用 `git -C ref/<repo> worktree remove --force <path>`（或 `rm -rf` 后 `git -C ref/<repo> worktree prune`），否则留悬挂条目。

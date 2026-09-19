@@ -21,7 +21,7 @@ MC 1.13–1.21.x), the 3.4.3 natives, the `libffi.a` the 3.4.x core links, and t
 ```sh
 # LWJGL source (all tags; HEAD is a dev tree, always pick a tag)
 git clone https://github.com/LWJGL/lwjgl3.git ref/lwjgl3
-git -C ref/lwjgl3 worktree add --detach ref/lwjgl3-3.4.3 3.4.3     # 3.4.x source tree
+git -C ref/lwjgl3 worktree add --detach "$PWD/ref/lwjgl3-3.4.3" 3.4.3   # 3.4.x source tree (absolute: -C chdirs first)
 
 # libffi source (3.8.0) for the 3.4.x core native
 curl -sL -o stuffs/research/libffi/libffi-3.8.0.tar.gz \
@@ -322,7 +322,7 @@ Reproducibility caveats (verified 2026-09-10):
   `renderpearl`); their natives ship separately (`libSDL3.so`, `libshaderc.so`, `libspirv-cross.so`).
 - Fresh classes dir every build (stale-`.class` trap).
 - After changing `libs/meowlwjgls/libs/arm64-v8a/`, **clean the module build** before
-  `devecocli build --modules entry meowjre25` (hvigor does not track libs add/remove).
+  `devecocli build --modules entry meowjre` (hvigor does not track libs add/remove).
 
-Full analysis: `notes/20-design/{lwjgl自编方案.md,lwjgl多版本并存方案.md}`,
+Full analysis: `notes/20-design/lwjgl/LWJGL3世代管理-方案.md`, `notes/20-design/lwjgl/LWJGL3单代收敛-决策依据.md`,
 `stuffs/research/lwjgl/REPRODUCE_CONTRACT_lwjgl_jar.md`.

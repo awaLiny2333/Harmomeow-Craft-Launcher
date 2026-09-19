@@ -19,7 +19,7 @@ not need it). Create it once:
 ```sh
 # from the workspace root (holds ref/ and stuffs/)
 git clone https://github.com/libsdl-org/SDL.git ref/SDL
-git -C ref/SDL worktree add --detach ref/SDL-3.4.14 release-3.4.14
+git -C ref/SDL worktree add --detach "$PWD/ref/SDL-3.4.14" release-3.4.14   # 必须绝对路径：-C 会先 chdir，相对路径会在 ref/SDL 里再建一层
 ```
 
 **Why exactly `release-3.4.14`?** It is the revision LWJGL 3.4.3's official
@@ -41,6 +41,7 @@ git -C ref/SDL worktree add --detach ref/SDL-3.4.14 release-3.4.14
 | `SDL_ohoswindow.c/.h` | `struct SDL_WindowData`, external-window creation, **single shared EGL surface**, buffer-geometry pinning, `OHOS_SyncSurfaceSize()` (resize) |
 | `SDL_ohosevents.c/.h` | **input pump** (`OHOS_PumpEvents`): drains the bridge ring → SDL events; `WaitEventTimeout` |
 | `SDL_ohosgl.c/.h` | EGL context/surface/swap + **GL entry-point resolution via `dlopen`+`dlsym`** (pointer identity with LWJGL) |
+| `SDL_ohosvulkan.c/.h` | **Vulkan support**: the `Vulkan_LoadLibrary`/`UnloadLibrary`/`GetInstanceExtensions`/`CreateSurface`/`DestroySurface` entries SDL core needs (without them `SDL_Vulkan_LoadLibrary` fails with *“No dynamic Vulkan support in current SDL video driver (ohos)”*). See §6. |
 | `SDL_ohosmouse.c/.h` | **`SDL_Mouse` hooks** (relative mode / warp) → `env->grabbing` |
 | `ohos_meow_environ.h` | vendored, trimmed copy of the bridge ABI struct (ring + cursor slots) |
 
@@ -76,8 +77,8 @@ Key behaviours (all reasoned from Minecraft 26.3 + on-device findings):
 ## 2. Build
 
 ```sh
-# from the workspace root (Meowcraft/): requires ref/SDL-3.4.14 (see §0)
-sh Meowcraft/tools/sdl/rebuild_for_meowcraft.sh
+# from the workspace root: requires ref/SDL-3.4.14 (see §0)
+sh Harmomeow-Craft-Launcher/tools/sdl/rebuild_for_meowcraft.sh
 ```
 
 The wrapper patches `ref/SDL-3.4.14` in place, builds into
@@ -88,7 +89,7 @@ Generic, path-agnostic script (any OHOS project can reuse it; the **source tree
 must already be checked out**):
 
 ```sh
-sh Meowcraft/tools/sdl/build_sdl_meow.sh \
+sh Harmomeow-Craft-Launcher/tools/sdl/build_sdl_meow.sh \
   --src <SDL3 源码树> --sdk-native <OHOS SDK>/native --out <输出目录> \
   [--build <构建目录>] [--api 23] [--arch arm64-v8a] [--patcher <补丁>]
 ```
@@ -100,7 +101,7 @@ SDK path defaults to `$OHOS_SDK_NATIVE`, else
 
 ```sh
 cmake -G Ninja -S ref/SDL-3.4.14 -B stuffs/research/sdl/build-ohos \
-  -DCMAKE_TOOLCHAIN_FILE=Meowcraft/tools/sdl/sdl_ohos.toolchain.cmake \
+  -DCMAKE_TOOLCHAIN_FILE=Harmomeow-Craft-Launcher/tools/sdl/sdl_ohos.toolchain.cmake \
   -DOHOS_SDK_NATIVE=$OHOS_SDK_NATIVE -DOHOS_ARCH=arm64-v8a \
   -DOHOS_STL=c++_shared -DOHOS_PLATFORM_LEVEL=23 \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
@@ -137,6 +138,15 @@ loudly if an anchor is missing. It applies:
 8. `src/video/khronos/EGL/eglplatform.h`: `#elif defined(__OHOS__)` with
    `typedef struct OHNativeWindow *EGLNativeWindowType;` + `#include <native_window/external_window.h>`.
 
+**Reverting a patcher change does not revert it.** The patcher is check-then-insert
+(add-only), so a tree that was already patched keeps the edit and the next run merely
+reports "already present" — that is how a removed `hilog_ndk.z` link kept failing the
+`DT_NEEDED` check until the tree was reset. To undo, reset and let the patcher re-apply:
+
+```sh
+git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.14
+```
+
 ## 4. Verified build (2026-09-11, SDK clang 15.0.4, api 23)
 
 | Item | Result |
@@ -147,7 +157,7 @@ loudly if an anchor is missing. It applies:
 | Exports | 1270 `SDL_*` dynamic symbols |
 | Driver present | `SDL OpenHarmony (OHOS) video driver`; `OHOS_bootstrap` in `libSDL3.so` |
 | Artifact | `stuffs/research/sdl/out/libSDL3.so` (→ installed as `libSDL3.so`, manifest tag `common`) |
-| sha256 | `241bbfeffdcf9b119c93bbb7464b7f61c69ea2e177a140fe150ac065764b6bbd` |
+| sha256 | `6cdf75fa1562125f5e42bd1f5b521801822bf542602c3dbd8eb8d280612b56e8` (2,050,560 bytes; re-verified 2026-09-19 together with the Vulkan support — see §4b) |
 
 > Reproducibility: like all our native builds, the digest corresponds to the
 > recorded `--src`/`--out` paths; rebuilds at other paths are functionally
@@ -155,21 +165,27 @@ loudly if an anchor is missing. It applies:
 
 ## 4b. Reproducibility
 
-**3× clean rebuilds (`cmp` byte-identical)** at the same `--src`/`--out` paths:
-`libSDL3.so` sha256 `241bbfeffdcf9b119c93bbb7464b7f61c69ea2e177a140fe150ac065764b6bbd`.
+**3× from-scratch rebuilds (`cmp` byte-identical) at the current source state**: each one
+re-creates the worktree (`git worktree remove/add`, i.e. a pristine `release-3.4.14`) *and*
+wipes the build dir, so the patcher is exercised every time. Same `--src`/`--out` paths:
+`libSDL3.so` sha256 `6cdf75fa1562125f5e42bd1f5b521801822bf542602c3dbd8eb8d280612b56e8`, 2,050,560 bytes.
 (Same-path caveat as all our natives: the linker embeds the output path in `.dynstr`.)
+The Vulkan work went through three such rounds — 9 builds in total — each round identical within itself.
+
+Contract checked on the artifact: 1270 `SDL_*` dynamic symbols, `DT_NEEDED` = `libnative_window.so libc.so`
+only (EGL/GL/Vulkan/hilog are resolved at run time), `ohos` driver present.
 
 ## 5. Install into the app
 ```sh
-sh Meowcraft/tools/lwjgl/install_natives.sh --sdl stuffs/research/sdl/out/libSDL3.so
+sh Harmomeow-Craft-Launcher/tools/lwjgl/install_natives.sh --sdl stuffs/research/sdl/out/libSDL3.so
 # → libs/meowlwjgls/libs/arm64-v8a/libSDL3.so (natives.manifest tag "common")
 ```
 Then clean the module build and redeploy (`hvigor` does not track `libs/` add/remove):
 
 ```sh
-rm -rf libs/{meowlwjgls,meowjre25,meowcraftlib}/build entry/build
-devecocli build --modules entry meowjre25
-devecocli run --module entry meowjre25 --device <serial>
+rm -rf libs/{meowlwjgls,meowjre,meowcraftlib}/build entry/build
+devecocli build --modules entry meowjre
+devecocli run --module entry meowjre --device <serial>
 ```
 
 ## 6. Limitations / not provided
@@ -183,12 +199,36 @@ devecocli run --module entry meowjre25 --device <serial>
   posts the ENTER/LEAVE events, and the real pixel size arrives via
   `OHOS_SyncSurfaceSize` (`device_caps |= VIDEO_DEVICE_CAPS_SENDS_FULLSCREEN_DIMENSIONS`).
   Exclusive mode degrades to borderless (display-mode list is empty).
-- **Clipboard / messagebox / tray / Vulkan**: not implemented by this driver.
+- **Clipboard / messagebox / tray**: not implemented by this driver.
+- **Vulkan**: implemented (2026-09-19). `SDL_Vulkan_LoadLibrary` takes the caller's
+  library path, else `SDL_HINT_VULKAN_LIBRARY` (which `SDL_GetHint` reads from the
+  environment, so `SDL_VULKAN_LIBRARY=libmeowvulkan.so` switches loader with no
+  rebuild), else the system loader. Instance extensions are reported as
+  `{VK_KHR_surface, VK_OHOS_surface}` and the surface is created from the external
+  OHNativeWindow the bridge publishes. Two things to know before touching it:
+  (a) SDL 3.4.14's bundled Khronos headers predate the OHOS surface extension, so the
+  WSI symbols are declared locally in `SDL_ohosvulkan.c` (values match the upstream
+  HarmonyOS port and the bridge); (b) the driver deliberately does **not** reproduce the
+  bridge's pre-surface window policy (producer geometry pinning + file-driven
+  usage/format): the bridge and ArkTS already set both when the surface id is published,
+  and the surface plus swapchain come up correctly without it (measured 2026-09-19), so
+  the driver stays free of a `libmeowcraftbridge.so` dependency. That policy now lives in
+  the bridge as a file-local static used only by the GLFW path.
+  `SDL_Vulkan_GetPresentationSupport` is deliberately not
+  implemented: SDL then reports "always supported", the same simplification the GLFW
+  bridge makes. Evidence: `stuffs/research/sdl/reports/vulkan-mc263.md`.
+- **This driver's own logging goes to stderr** (with a best-effort hilog copy): the
+  application silences `SDL_Log*` — nothing from SDL core or this driver reaches hilog or
+  a log file, even at `WARN` — while stderr provably arrives in the exported log, and
+  linking hilog would add a `DT_NEEDED` entry that `build_sdl_meow.sh` deliberately
+  rejects. Look for `[jre_stderr] MeowSDL: …`.
 - Window `Show/Hide/Raise/Focusable/Minimize` are not implemented (external
   window owned by ArkTS).
 
 ## 7. Related
 
-- Design/plan: `notes/20-design/sdl3桥接方案.md` (§6 进展, §7 输入, §8 结论), `notes/20-design/26.3-SDL适配复盘.md`.
-- Research reports: `stuffs/research/sdl/reports/*.md`.
+- Design/plan: `notes/20-design/render/SDL3桥接-设计.md`, `notes/20-design/render/SDL3适配-复盘.md`.
+- Research reports: `stuffs/research/sdl/reports/*.md` (incl. `vulkan-mc263.md`).
+- Upstream reference for OHOS (read-only; only on `main`, entering no 3.4.x release):
+  `stuffs/research/sdl/upstream-openharmony/`.
 - The jar side (adding the `org.lwjgl.sdl` module): `tools/lwjgl/README.md`.

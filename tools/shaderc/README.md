@@ -51,7 +51,7 @@ The TLS proxy uses a self-signed cert, so clones pass `git -c http.sslVerify=fal
 
 ```sh
 # from the workspace root (Meowcraft/): clones the ref/ trees if missing, then builds
-sh Meowcraft/tools/shaderc/rebuild_for_meowcraft.sh
+sh Harmomeow-Craft-Launcher/tools/shaderc/rebuild_for_meowcraft.sh
 ```
 
 The wrapper pins/uses the `ref/` trees, builds into
@@ -62,7 +62,7 @@ The wrapper pins/uses the `ref/` trees, builds into
 Generic, path-agnostic script (any OHOS project can reuse it):
 
 ```sh
-sh Meowcraft/tools/shaderc/build_shaderc_meow.sh \
+sh Harmomeow-Craft-Launcher/tools/shaderc/build_shaderc_meow.sh \
   --src <shaderc> --glslang <glslang> --spirv-tools <SPIRV-Tools> \
   --spirv-headers <SPIRV-Headers> --spirv-cross <SPIRV-Cross> \
   --sdk-native <OHOS SDK>/native --out <out> \
@@ -80,7 +80,7 @@ get embedded):
 
 ```sh
 cmake -G Ninja -S ref/shaderc -B <build>/shaderc \
-  -DCMAKE_TOOLCHAIN_FILE=Meowcraft/tools/shaderc/shaderc_ohos.toolchain.cmake \
+  -DCMAKE_TOOLCHAIN_FILE=Harmomeow-Craft-Launcher/tools/shaderc/shaderc_ohos.toolchain.cmake \
   -DOHOS_SDK_NATIVE=$OHOS_SDK_NATIVE -DOHOS_ARCH=arm64-v8a \
   -DOHOS_STL=c++_shared -DOHOS_PLATFORM_LEVEL=23 \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
@@ -99,7 +99,7 @@ SPIRV-Cross:
 
 ```sh
 cmake -G Ninja -S ref/spirv-cross -B <build>/spirv-cross \
-  -DCMAKE_TOOLCHAIN_FILE=Meowcraft/tools/shaderc/shaderc_ohos.toolchain.cmake \
+  -DCMAKE_TOOLCHAIN_FILE=Harmomeow-Craft-Launcher/tools/shaderc/shaderc_ohos.toolchain.cmake \
   -DOHOS_SDK_NATIVE=$OHOS_SDK_NATIVE -DOHOS_ARCH=arm64-v8a \
   -DOHOS_STL=c++_shared -DOHOS_PLATFORM_LEVEL=23 \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \

@@ -86,7 +86,7 @@
 #    官方 JDK25 tar（jdk.java.net/archive）→ stuffs/research/jdk25/
 #    OpenJDK 源码：git clone https://github.com/openjdk/jdk → stuffs/research/jdk25/jdk
 tar xzf stuffs/research/jdk25/openjdk-25.0.2_linux-aarch64_bin.tar.gz -C stuffs/research/jdk25/_inspect
-git -C stuffs/research/jdk25/jdk worktree add stuffs/research/jdk25/jdk25src jdk-25-ga
+git -C stuffs/research/jdk25/jdk worktree add "$PWD/stuffs/research/jdk25/jdk25src" jdk-25-ga   # 绝对路径（-C 会先 chdir）
 
 # 1) 容器（openEuler 24.03 aarch64；环境见「构建环境」）—— 编 libjvm + 瘦 modules
 sh tools/jre25/linux_bootstrap.sh         # 装工具链 + boot JDK

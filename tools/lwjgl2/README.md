@@ -3,8 +3,8 @@
 产出 **`liblwjgl.so`**（aarch64 只找此名，不带 64），顶替 MC 1.6.x–1.12.2 缺失的 LWJGL2 native。
 **只编 native**，不重编 MC 的 `lwjgl-2.9.x.jar`。
 
-- **完整设计**：[`../../notes/20-design/lwjgl2-ohos自编方案.md`](../../notes/20-design/lwjgl2-ohos自编方案.md)
-- **完整战役记录（来源/编译/魔改/逐条根因与证据）**：[`../../notes/20-design/LWJGL2-legacy适配复盘.md`](../../notes/20-design/LWJGL2-legacy适配复盘.md)
+- **完整设计**：[`../../notes/20-design/lwjgl/LWJGL2自编-方案.md`](../../notes/20-design/lwjgl/LWJGL2自编-方案.md)
+- **完整战役记录（来源/编译/魔改/逐条根因与证据）**：[`../../notes/20-design/lwjgl/LWJGL2-legacy适配-复盘.md`](../../notes/20-design/lwjgl/LWJGL2-legacy适配-复盘.md)
 - 本地补丁说明：[`patches/README.md`](patches/README.md)
 
 > **JNI_VERSION=19** 跨 2.9.0/2.9.1/2.9.3/2.9.4 一致、JNI 符号稳定 → 一份 native 服务 **1.6.x–1.12.2**（用户实机：**1.6.1 / 1.6.4** / 1.7.10 / 1.8.9 / 1.12.2 可玩）。
@@ -41,9 +41,9 @@ sh tools/lwjgl2/build_lwjgl2_meow.sh \
 
 # ④ 随包（manifest tag common）+ 清模块 build + 构建 + 部署
 sh tools/lwjgl/install_natives.sh --native liblwjgl.so=../stuffs/lwjgl2/liblwjgl.so
-rm -rf "$WS/entry/build" "$WS/libs/meowjre25/build"
-devecocli build --modules entry meowjre25
-devecocli run --skip-build --module entry meowjre25 --device 127.0.0.1:40229
+rm -rf "$WS/entry/build" "$WS/libs/meowjre/build"
+devecocli build --modules entry meowjre
+devecocli run --skip-build --module entry meowjre --device 127.0.0.1:40229
 ```
 
 **易错点**：②③ 依赖 `$WS/ref/lwjgl` 里由 ② 生成的 `src/hdrs-meow/`（③ 会明确报错提示先跑 ②）；脚本**拒绝**含空格的路径；

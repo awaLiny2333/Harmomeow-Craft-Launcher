@@ -68,7 +68,7 @@ sh build_oshi_meow.sh --oshi-repo DIR --minecraft DIR --cache DIR --out DIR <osh
 
 每个版本：
 
-1. `git -C <oshi-repo> worktree add --detach <repo>.build/<v> oshi-parent-<v>`（取源码）。
+1. `git -C <oshi-repo> worktree add --detach "$PWD/<repo>.build/<v>" oshi-parent-<v>`（取源码；路径须**绝对** —— `-C` 会先 chdir）。
 2. 从该 tag 的 `oshi-core/pom.xml` 读 `jna.version` / `slf4j.version`（**老 oshi 必须用它自己
    声明的 JNA**，否则 `Cfgmgr32` 等覆写签名冲突）。
 3. 解析依赖 jar：`<minecraft>/libraries` 有就用，没有则从 **Maven Central** 下到 `<cache>`。

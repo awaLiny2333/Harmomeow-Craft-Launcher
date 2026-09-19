@@ -8,7 +8,7 @@
 
 ```sh
 cd <ws>/ref/lwjgl
-git apply <ws>/Meowcraft/tools/lwjgl2/patches/0001-generator-filer-bypass.patch
+git apply <ws>/Harmomeow-Craft-Launcher/tools/lwjgl2/patches/0001-generator-filer-bypass.patch
 ```
 
 校验（若改动已在工作区，反向应通过）：
@@ -26,7 +26,7 @@ git apply --check --reverse .../0001-generator-filer-bypass.patch
 ## 重新生成补丁
 
 ```sh
-cd <ws>/ref/lwjgl && git diff > <ws>/Meowcraft/tools/lwjgl2/patches/0001-generator-filer-bypass.patch
+cd <ws>/ref/lwjgl && git diff > <ws>/Harmomeow-Craft-Launcher/tools/lwjgl2/patches/0001-generator-filer-bypass.patch
 ```
 （需在补丁头部保留说明注释块，或另建 `0001-*.md` 记录。）
 

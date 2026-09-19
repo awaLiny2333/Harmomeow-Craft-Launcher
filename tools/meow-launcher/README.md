@@ -33,7 +33,7 @@ sh tools/meow-launcher/build_meow_launcher.sh
 sh tools/meow-launcher/finalize_for_meowcraft.sh
 
 # 3) bump EXTRAS_VERSION in entry/.../constants/LaunchDefaults.ets, then
-devecocli build && devecocli run --module entry meowjre25 --device <serial>
+devecocli build && devecocli run --module entry meowjre --device <serial>
 ```
 gson is fetched from Maven Central with the published `.sha1` verified (or pass `--gson FILE` / `--offline`).
 
