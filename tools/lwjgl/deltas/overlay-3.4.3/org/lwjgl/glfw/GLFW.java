@@ -442,6 +442,10 @@ public class GLFW {
     public static GLFWWindowCloseCallback mGLFWWindowCloseCallback;
     public static GLFWWindowContentScaleCallback mGLFWWindowContentScaleCallback;
     public static GLFWWindowFocusCallback mGLFWWindowFocusCallback;
+    /* Window whose focus callback was registered. glfwSetWindowFocusCallback() below does
+     * not keep it, but MC's Window.onFocus(long,boolean) ignores calls whose handle differs
+     * from its own, so the re-dispatch in glfwPollEvents() must pass exactly this handle. */
+    public static long mGLFWWindowFocusHandle;
     public static GLFWWindowIconifyCallback mGLFWWindowIconifyCallback;
     public static GLFWWindowMaximizeCallback mGLFWWindowMaximizeCallback;
     public static GLFWWindowPosCallback mGLFWWindowPosCallback;
@@ -789,6 +793,33 @@ public class GLFW {
     public static void glfwWindowHintString(int hint, CharSequence value) {
     }
 
+    /**
+     * Window focus. Minecraft only ever learns that the window lost focus through the
+     * window focus callback registered with glfwSetWindowFocusCallback
+     * (Window.onFocus -> Window.focused -> Minecraft.pauseIfInactive); this stub is where
+     * that callback lives, and the platform state is kept by the bridge (ArkTS
+     * windowStageEvent ACTIVE/INACTIVE), so poll it here - the one place MC calls every
+     * frame. The stored GLFW_FOCUSED attribute doubles as the last-seen state, so a change
+     * is dispatched exactly once.
+     */
+    private static void pollWindowFocus() {
+        if (mGLFWWindowFocusHandle == 0L) {
+            return;
+        }
+        GLFWWindowProperties properties = mGLFWWindowMap.get(mGLFWWindowFocusHandle);
+        if (properties == null) {
+            return;
+        }
+        int focusNow = CallbackBridge.nativeWindowUnfocused() == 0 ? GLFW_TRUE : GLFW_FALSE;
+        Integer previous = properties.windowAttribs.get(GLFW_FOCUSED);
+        if (previous == null || previous != focusNow) {
+            properties.windowAttribs.put(GLFW_FOCUSED, focusNow);
+            if (mGLFWWindowFocusCallback != null) {
+                mGLFWWindowFocusCallback.invoke(mGLFWWindowFocusHandle, focusNow == GLFW_TRUE);
+            }
+        }
+    }
+
     public static void glfwPollEvents() {
         if (!mGLFWIsInputReady) {
             mGLFWIsInputReady = true;
@@ -804,6 +835,7 @@ public class GLFW {
         }
         invokeV(Functions.StopPumping);
         mGLFWInputPumping = false;
+        pollWindowFocus();
     }
 
     public static void glfwWaitEvents() {
@@ -1398,6 +1430,7 @@ public class GLFW {
 
     public static GLFWWindowFocusCallback glfwSetWindowFocusCallback(long window,
             GLFWWindowFocusCallbackI cbfun) {
+        mGLFWWindowFocusHandle = window;
         GLFWWindowFocusCallback previous = mGLFWWindowFocusCallback;
         mGLFWWindowFocusCallback = cbfun == null ? null : GLFWWindowFocusCallback.create(cbfun);
         return previous;

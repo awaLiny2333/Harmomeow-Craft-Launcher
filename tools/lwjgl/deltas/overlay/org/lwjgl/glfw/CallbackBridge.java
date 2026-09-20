@@ -56,6 +56,15 @@ public final class CallbackBridge {
      */
     public static native void nativeSetFullscreen(boolean fullscreen, int x, int y, int width, int height);
 
+    /**
+     * Window focus state, polled by the GLFW stub from glfwPollEvents():
+     * 0 = focused, 1 = unfocused. Fed by the ArkTS windowStageEvent (ACTIVE/INACTIVE);
+     * zero means focused so that an older HSP that never writes it keeps the old
+     * behaviour. Minecraft only learns about focus loss through
+     * glfwSetWindowFocusCallback, which this stub re-dispatches.
+     */
+    public static native int nativeWindowUnfocused();
+
     public static native ByteBuffer nativeCreateGamepadButtonBuffer();
 
     public static native ByteBuffer nativeCreateGamepadAxisBuffer();

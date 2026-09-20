@@ -743,6 +743,18 @@ JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetFullscreen(
     meowSetFullscreenRequest(fullscreen ? 1 : 0, x, y, w, h);
 }
 
+/* Window focus for the GLFW path. MC <=26.2 learns about focus only through
+ * glfwSetWindowFocusCallback (Window.onFocus -> Minecraft.pauseIfInactive), and this
+ * fork's GLFW stub is Java, so the stub polls this from glfwPollEvents() and re-dispatches
+ * the callback itself. Same shared-block field the SDL path reads; zero means focused, so
+ * an older HSP that never writes it keeps the pre-feature behaviour. */
+JNIEXPORT jint JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeWindowUnfocused(
+    JNIEnv *jenv, jclass clazz) {
+    (void)jenv;
+    (void)clazz;
+    return (meow_environ != NULL) ? (jint)meow_environ->windowUnfocused : (jint)0;
+}
+
 /* Window focus, published by ArkTS from windowStageEvent (ACTIVE = focused). The SDL3
  * `ohos` driver polls this field and turns a change into SDL focus events, which is how
  * Minecraft 26.3 decides to auto-pause (Window.isFocused -> Minecraft.pauseIfInactive).
