@@ -68,8 +68,22 @@ export default class EntryAbility extends UIAbility {
         hilog.error(LOG_DOMAIN, LOG_TAG, 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));
         return;
       }
-      // 应用内主题（Mojang 红替代默认蓝）；官方要求放在 loadContent 完成回调里。
+      // 应用内主题（青色）；官方要求放在 loadContent 完成回调里。
       ThemeControl.setDefaultTheme(MEOW_THEME);
+
+      // Set immersive
+      try {
+        const mainWindow = windowStage.getMainWindowSync();
+        mainWindow.setImmersiveModeEnabledState(true);
+        mainWindow.setWindowDecorVisible(false);
+        mainWindow.setWindowSystemBarEnable([]).catch((err: BusinessError) => {
+          hilog.error(LOG_DOMAIN, LOG_TAG, 'Failed to setWindowSystemBarEnable. code: %{public}s, message: %{public}s',
+            err.code, err.message);
+        });
+      } catch (err) {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'Failed to set immersive. Cause: %{public}s', JSON.stringify(err));
+      }
+
       hilog.info(LOG_DOMAIN, LOG_TAG, 'Succeeded in loading the content.');
     });
   }

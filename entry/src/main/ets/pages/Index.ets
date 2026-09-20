@@ -188,6 +188,7 @@ struct Index {
       .width('100%')
       .height('100%');
     }
+    .useEffect(true, EffectType.WINDOW_EFFECT)
     .width('100%')
     .height('100%');
   }
