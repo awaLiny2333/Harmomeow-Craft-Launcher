@@ -270,14 +270,14 @@ add a `LWJGL_GEN_TABLE` row).
 python3 tools/lwjgl/pack_extras.py \
   --base-tar entry/src/main/resources/rawfile/meowcraft_extras.tar.gz \
   --drop-prefix lwjgl-natives- \
-  --jar lwjgl-3.4.3.jar=stuffs/research/lwjgl_build-3.4.3-v4/out/lwjgl.jar \
+  --jar lwjgl-3.4.3.jar=stuffs/research/lwjgl_build-3.4.3-v6/out/lwjgl.jar \
   --require lwjgl-3.4.3.jar \
   --out stuffs/research/meowcraft_extras.tar.gz
-# ⚠️ point --jar at the work dir you just built (the campaign's latest is
-# `lwjgl_build-3.4.3-v4`); `lwjgl_build-3.4.3/out/lwjgl.jar` is the PRE-campaign build
+# ⚠️ point --jar at the work dir you just built (the latest so far is
+# `lwjgl_build-3.4.3-v6`); `lwjgl_build-3.4.3/out/lwjgl.jar` is the PRE-campaign build
 # (b9b54d37…) and would silently ship the old jar without the capability mask / version-group /
-# log fixes. pack_extras.py drops EVERY lwjgl jar the base tar carried before adding --jar, so a
-# retired generation cannot linger in the bundle (it used to only drop the ancient `lwjgl.jar`).
+# window-focus / log fixes. pack_extras.py drops EVERY lwjgl jar the base tar carried before
+# adding --jar, so a retired generation cannot linger in the bundle.
 sh tools/lwjgl/install_natives.sh --verify    # assert every manifest native is on disk
 cp stuffs/research/meowcraft_extras.tar.gz entry/src/main/resources/rawfile/
 # then bump EXTRAS_VERSION in entry/.../constants/LaunchDefaults.ets and rebuild/deploy.
@@ -285,15 +285,21 @@ cp stuffs/research/meowcraft_extras.tar.gz entry/src/main/resources/rawfile/
 `finalize_for_meowcraft.sh` (the old single-`lwjgl.jar` swapper) is **retired** —
 `pack_extras.py` replaces it.
 
-## 4. Artifacts & digests (jar/tar re-measured 2026-09-16; natives 2026-09-10)
+## 4. Artifacts & digests (jar/tar re-measured 2026-09-20; natives 2026-09-10)
 
 | artifact | sha256 |
 |---|---|
-| `lwjgl-3.4.3.jar` (5 3.4.x compat shims; no `Multi-Release` claim; GL_VERSION-derived version groups; runtime capability-mask interface; NUL-safe self-evidence) | `1b8020540293c95cca475e3b2d15672541130691e6412ad4404ba332e73cdecb` (12,952,886 B, 6185 classes) |
+| `lwjgl-3.4.3.jar` (5 3.4.x compat shims; no `Multi-Release` claim; GL_VERSION-derived version groups; runtime capability-mask interface; NUL-safe self-evidence; **window-focus polling in the GLFW stub**) | `970dbec847d2736d55a1a8a60ef8690592e0722d0da31fb5ab59845c2d7db606` (12,953,332 B, 6185 classes) |
 | `liblwjgl_343.so` / `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (3.4.3; core = **F2** alignment clamp) | `2a6fcf99…` / `e1f1413b…` / `8eb4a1b8…` (pre-F2 core backup `16298280…`) |
 | `liblwjgl_vma.so` (VMA; release = shipped) | `479a619f…` (506,288 B) |
 | `libffi.a` (3.8.0, aarch64-linux-ohos) | `238cadb7bfa70ca5b4f718cc66878f1f3d26107bc6f6b0e272380c3f3f1fda5b` |
-| `meowcraft_extras.tar.gz` (shipped; single modern generation; EXTRAS_VERSION=20260917-vk-backend-cli) | `465cae0f0e5fc1b000c0e5543818d8297d7f86b62ac0a61c98cadfcd03d80f85` (12,310,890 B) |
+| `meowcraft_extras.tar.gz` (shipped; single modern generation; EXTRAS_VERSION=20260920-focus-autopause) | `9864025bb495e30c5590e8a5dafa0732ada7cc6017d663e469b887d308602124` (12,310,999 B) |
+
+**Reproducibility (each measured by running it twice, 2026-09-20)**: two `build_lwjgl_jar.sh`
+builds into the **same `--work`** are byte-identical (`cmp`), and two `pack_extras.py` runs from
+the same inputs are byte-identical. Same-path caveat as our natives: build into the same
+absolute `--work` to get the same bytes (`pack_jar.py` itself is deterministic — fixed
+timestamps + sorted entries).
 
 Reproducibility caveats (verified 2026-09-10):
 - **Native builds are byte-reproducible only when the absolute `--src`/`--out` paths are
