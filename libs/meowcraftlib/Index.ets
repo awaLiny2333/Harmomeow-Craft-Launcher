@@ -10,6 +10,7 @@ import bridge from 'libmeowjrebridge.so';
 export const launchJvm = bridge.launchJvm;
 // 自研 meowcraftbridge 桥：把 XComponent surfaceId 交给 libmeowcraftbridge.so（写 env+0 窗口环）。
 export const setGameSurface = bridge.setGameSurface;
+export const setWindowActive = bridge.setWindowActive;
 export const resizeGameSurface = bridge.resizeGameSurface;
 export const requestGameWindowClose = bridge.requestGameWindowClose;
 // 输入透传：ArkTS 事件 -> critical_send_* 全自研链路（ring+pump）。

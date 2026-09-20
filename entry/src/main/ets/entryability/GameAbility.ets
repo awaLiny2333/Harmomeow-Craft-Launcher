@@ -19,6 +19,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { window } from '@kit.ArkUI';
 import { LOG_DOMAIN } from '../common/constants/Constants';
 import { gameLaunchParams, setGameLaunchParams } from '../common/state/GameLaunchParams';
+import { notifyWindowActive } from '../common/state/JvmLauncher';
 import { GAME_ROUTE } from '../common/constants/LaunchContract';
 
 const LOG_TAG = 'GameAbility';
@@ -65,6 +66,18 @@ export default class GameAbility extends UIAbility {
       // 顶栏标题设为该版本 id（"游戏窗口显示自己的版本号"）。
       this.applyWindowTitle(windowStage);
     });
+
+    // 26.3(SDL)：MC 靠 SDL 的 FOCUS_LOST/GAINED 决定是否自动暂停（options: pauseOnLostFocus）；
+    // 平台侧告知获焦/失焦的只有 windowStageEvent，转给 native（写共享块 → SDL 驱动发焦点事件）。
+    try {
+      windowStage.on('windowStageEvent', (ev: window.WindowStageEventType) => {
+        notifyWindowActive(ev === window.WindowStageEventType.ACTIVE).catch((e: BusinessError) => {
+          hilog.warn(LOG_DOMAIN, LOG_TAG, 'notifyWindowActive failed code=%{public}s', e.code);
+        });
+      });
+    } catch (e) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG, 'windowStageEvent subscribe failed');
+    }
   }
 
   /** 把游戏窗口顶栏标题设为当前启动版本的 id（best-effort；设备/窗口不支持则忽略）。 */

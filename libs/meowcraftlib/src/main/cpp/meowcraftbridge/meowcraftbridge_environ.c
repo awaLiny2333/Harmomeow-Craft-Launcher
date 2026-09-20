@@ -69,6 +69,7 @@ _Static_assert(offsetof(struct meow_environ_s, fsX) == 0x271f4, "fsX");
 _Static_assert(offsetof(struct meow_environ_s, fsY) == 0x271f8, "fsY");
 _Static_assert(offsetof(struct meow_environ_s, fsW) == 0x271fc, "fsW");
 _Static_assert(offsetof(struct meow_environ_s, fsH) == 0x27200, "fsH");
+_Static_assert(offsetof(struct meow_environ_s, windowUnfocused) == 0x27204, "windowUnfocused");
 _Static_assert(sizeof(struct meow_environ_s) == MEOW_STATE_BYTES,
                "state block must be exactly 0x27228 bytes");
 
@@ -106,6 +107,10 @@ __attribute__((constructor)) static void meow_state_init(void) {
      * meow* NAPI surface, so the block must be usable before any such call.
      */
     meow_environ->isInputReady = 1;
+
+    /* Window focus: zero means focused, which is also what an older HSP leaves here, so
+     * the game never auto-pauses before the first real windowStageEvent (ACTIVE/INACTIVE). */
+    meow_environ->windowUnfocused = 0;
 
     char hex[32];
     snprintf(hex, sizeof(hex), "%p", (void *)meow_environ);

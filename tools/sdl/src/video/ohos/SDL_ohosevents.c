@@ -27,6 +27,7 @@
 #include "../../events/SDL_mouse_c.h"
 
 #include "SDL_ohosvideo.h"
+#include "SDL_ohoswindow.h"
 #include "SDL_ohosevents.h"
 #include "ohos_meow_environ.h"
 
@@ -179,6 +180,40 @@ void OHOS_PumpEvents(SDL_VideoDevice *_this)
 
     /* Follow the ArkTS/XComponent surface size (resize support). */
     OHOS_SyncSurfaceSize(_this);
+
+    /* Window focus. Minecraft 26.3 pauses itself (after 500 ms) when its window reports
+     * lost focus, and it only learns that from SDL_EVENT_WINDOW_FOCUS_LOST/GAINED
+     * (Window.handleEvent cases 526/527 -> Minecraft.pauseIfInactive). ArkTS publishes the
+     * windowStageEvent ACTIVE/INACTIVE state into env->windowUnfocused, and calling
+     * SDL_SetKeyboardFocus() is all we need: SDL core emits the matching window event
+     * itself (src/events/SDL_keyboard.c).
+     *
+     * The zero value means focused, so an older HSP that never writes the field leaves the
+     * game exactly as it behaved before this feature.
+     *
+     * On loss we remember which window had focus: the driver owns several SDL windows over
+     * the one native surface (MC opens a probe, the real one and a throwaway), so restoring
+     * blindly from the window list could hand SDL's keyboard focus to the wrong one.
+     * SDL_ResetKeyboard() drops keys held while the user switched away. */
+    {
+        static int lastUnfocused = 0;
+        static SDL_Window *lastFocusWindow = NULL;
+        int unfocused = env->windowUnfocused ? 1 : 0;
+
+        if (unfocused != lastUnfocused) {
+            lastUnfocused = unfocused;
+            if (unfocused) {
+                lastFocusWindow = SDL_GetKeyboardFocus();
+                SDL_ResetKeyboard();
+                SDL_SetKeyboardFocus(NULL);
+            } else {
+                SDL_Window *focus = lastFocusWindow ? lastFocusWindow : (win ? win : _this->windows);
+                if (focus) {
+                    SDL_SetKeyboardFocus(focus);
+                }
+            }
+        }
+    }
 
     grabbing = env->grabbing ? 1 : 0;
 

@@ -133,7 +133,16 @@ struct meow_environ_s {
     /* 0x271f8 */ int fsY;
     /* 0x271fc */ int fsW;
     /* 0x27200 */ int fsH;
-    /* 0x27204 */ unsigned char reserved_tail[MEOW_STATE_BYTES - 0x27204];
+    /* 0x27204 */ int windowUnfocused;  /* 1 = game window lost focus, 0 = focused.
+                                        * MUST read 0 when nobody wrote it: the field lives in
+                                        * space that used to be reserved_tail, so an older HSP
+                                        * (which knows nothing about it) leaves it zeroed, and the
+                                        * zero default has to keep the old behaviour (focused, no
+                                        * auto-pause). ArkTS publishes windowStageEvent ACTIVE/INACTIVE
+                                        * through this; the SDL3 `ohos` driver turns a change into
+                                        * SDL_EVENT_WINDOW_FOCUS_GAINED/LOST, which is how MC 26.3
+                                        * decides to auto-pause. See notes 00-current/架构决策与踩坑.md §13.2. */
+    /* 0x27208 */ unsigned char reserved_tail[MEOW_STATE_BYTES - 0x27208];
 };
 
 extern struct meow_environ_s *meow_environ;

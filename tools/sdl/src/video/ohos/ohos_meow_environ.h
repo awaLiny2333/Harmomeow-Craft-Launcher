@@ -97,8 +97,15 @@ struct meow_environ_s {
     /* 0x271f8 */ int fsY;
     /* 0x271fc */ int fsW;
     /* 0x27200 */ int fsH;
-    /* 0x27204 */ unsigned char reserved_tail[MEOW_STATE_BYTES - 0x27204];
+    /* 0x27204 */ int windowUnfocused;  /* 1 = game window lost focus, 0 = focused (zero = old behaviour) */
+    /* 0x27208 */ unsigned char reserved_tail[MEOW_STATE_BYTES - 0x27208];
 };
+
+/* Keep the layout honest from this side too: the bridge asserts the same offsets in
+ * meowcraftbridge_environ.c. A negative array size is a portable compile-time failure,
+ * so this needs no C11 _Static_assert. */
+typedef char ohos_meow_environ_size_check[sizeof(struct meow_environ_s) == MEOW_STATE_BYTES ? 1 : -1];
+typedef char ohos_meow_environ_focus_check[offsetof(struct meow_environ_s, windowUnfocused) == 0x27204 ? 1 : -1];
 
 #ifdef __cplusplus
 }

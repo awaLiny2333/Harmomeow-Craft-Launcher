@@ -39,6 +39,18 @@ export const setGameSurface: (surfaceId: number, w: number, h: number) => boolea
 export const resizeGameSurface: (surfaceId: number, w: number, h: number) => boolean;
 
 /**
+ * Report whether the game window currently has focus (from ArkTS
+ * windowStageEvent ACTIVE/INACTIVE). The value lands in the shared state block and the
+ * SDL3 `ohos` driver turns a change into SDL_EVENT_WINDOW_FOCUS_GAINED/LOST, which is
+ * how Minecraft 26.3 decides to auto-pause (respecting options.txt: pauseOnLostFocus).
+ * No-op-safe until libmeowcraftbridge.so has been primed.
+ * @param active true when the window is focused (ACTIVE), false when it lost focus.
+ * @returns true when the state was delivered; false if the argument was not a boolean or
+ *   the bridge is not ready yet (the call is then ignored, never guessed).
+ */
+export const setWindowActive: (active: boolean) => boolean;
+
+/**
  * Ask libmeowcraftbridge to flip LWJGL's shouldClose flag so Minecraft exits gracefully.
  * Intended for the XComponent surface-destroyed callback. No-op-safe if the
  * bridge has not been primed.

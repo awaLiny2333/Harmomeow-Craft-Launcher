@@ -27,6 +27,7 @@ export interface JreLibModule {
     rendererLib: string, rendererEnv: string, glProfile: string, extraRenderEnv: string) => void;
   /** 自研 meowcraftbridge：surface 就绪时把 surfaceId 给它（写 env+0 窗口环）。 */
   setGameSurface?: (surfaceId: number, w: number, h: number) => boolean;
+  setWindowActive?: (active: boolean) => boolean;
   /** 自研 meowcraftbridge：resize 通知（同 sid 只标尺寸，render 线程 apply）。 */
   resizeGameSurface?: (surfaceId: number, w: number, h: number) => boolean;
   /** 自研 meowcraftbridge：关窗请求（翻转 LWJGL shouldClose，让 MC 优雅退出）。 */
@@ -62,6 +63,18 @@ let jvmStarted = false;
  * 经 jrelib HSP 桥：先确保 JRE 数据已解压（由调用方保证），
  * 动态 import 后把参数交给 native 桥（pipe 捕获输出上抛 hilog）。
  */
+/**
+ * 26.3(SDL)：把"游戏窗口是否获焦"告诉 native。
+ * 为什么需要：MC 只在收到 SDL 的 FOCUS_LOST/FOCUS_GAINED 时才更新自己的 focused（→
+ * `Minecraft.pauseIfInactive` 依 options 的 pauseOnLostFocus 决定自动暂停）；平台侧能给出
+ * 这个状态的只有 windowStageEvent 的 ACTIVE/INACTIVE。native 侧落进共享块，由 SDL `ohos`
+ * 驱动翻译成 SDL 焦点事件。best-effort：HSP 未就绪 / 旧版 HSP 无该入口时静默忽略。
+ */
+export async function notifyWindowActive(active: boolean): Promise<void> {
+  const craft = await import('meowjre') as JreLibModule;
+  craft.setWindowActive?.(active);
+}
+
 export async function startJvm(uiContext: common.UIAbilityContext, argv: string[],
   rendererLib: string, rendererEnv: string, glProfile: string, renderEnv: string): Promise<boolean> {
   if (jvmStarted) {

@@ -743,6 +743,25 @@ JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetFullscreen(
     meowSetFullscreenRequest(fullscreen ? 1 : 0, x, y, w, h);
 }
 
+/* Window focus, published by ArkTS from windowStageEvent (ACTIVE = focused). The SDL3
+ * `ohos` driver polls this field and turns a change into SDL focus events, which is how
+ * Minecraft 26.3 decides to auto-pause (Window.isFocused -> Minecraft.pauseIfInactive).
+ * Same rationale as the fullscreen request above: the flag lives in the shared block so
+ * a driver in another linker namespace reads it without any dlsym. */
+void meowSetWindowActive(int active) {
+    struct meow_environ_s *env = meow_environ;
+    /* Stored inverted on purpose: 0 = focused is the fail-safe default, because this field
+     * sits in space that used to be reserved_tail -- an older HSP never writes it, and the
+     * zeroed value must keep the old behaviour (focused, no auto-pause). */
+    int unfocused = active ? 0 : 1;
+
+    if (env == NULL || unfocused == env->windowUnfocused) {
+        return;
+    }
+    env->windowUnfocused = unfocused;
+    MEOWLOGI("setWindowActive: %{public}d (windowUnfocused=%{public}d)", active ? 1 : 0, unfocused);
+}
+
 /* ArkTS side (libmeowjrebridge) takes the pending request; returns the kind and
  * fills the requested window rect (windowed restore geometry). */
 int meowTakeFullscreenRequest(int *x, int *y, int *w, int *h) {

@@ -656,6 +656,47 @@ napi_value SetGameSurface(napi_env env, napi_callback_info info) {
     return r;
 }
 
+// Window focus (26.3/SDL): ArkTS reports windowStageEvent ACTIVE/INACTIVE here; the
+// flag lands in the shared block (meow_environ->windowActive) and the SDL3 `ohos`
+// driver turns a change into SDL focus events. That is how Minecraft 26.3 decides to
+// auto-pause (Window.isFocused -> Minecraft.pauseIfInactive). No-op-safe before the
+// bridge has been primed.
+napi_value SetWindowActive(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    bool active = true;
+
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    // A missing or non-boolean argument is a caller bug: report it instead of guessing,
+    // because guessing "focused" would silently disable the auto-pause path.
+    if (argc < 1 || napi_get_value_bool(env, args[0], &active) != napi_ok) {
+        OH_LOG_Print(LOG_APP, LOG_WARN, LOG_DOMAIN, LOG_TAG,
+                     "setWindowActive: expected a boolean argument, ignored");
+        napi_value bad = nullptr;
+        napi_get_boolean(env, false, &bad);
+        return bad;
+    }
+
+    bool ok = false;
+    void* lib = MeowCraftBridgeLib();
+    if (lib != nullptr) {
+        typedef void (*SetWindowActiveFn)(int);
+        auto* fn = reinterpret_cast<SetWindowActiveFn>(dlsym(lib, "meowSetWindowActive"));
+        if (fn != nullptr) {
+            fn(active ? 1 : 0);
+            ok = true;
+            OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG, "setWindowActive %{public}d",
+                         active ? 1 : 0);
+        } else {
+            OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG,
+                         "setWindowActive: dlsym meowSetWindowActive failed");
+        }
+    }
+    napi_value r = nullptr;
+    napi_get_boolean(env, ok, &r);
+    return r;
+}
+
 // Resize: same-sid -> meowResizeSurface only marks env size (UI thread writes
 // env only, never touches EGL/NativeWindow); sid change falls through to the
 // full window-create path inside meowResizeSurface.
@@ -1185,6 +1226,8 @@ napi_value TakeFullscreenRequest(napi_env env, napi_callback_info info) {
 napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {        {"launchJvm", nullptr, LaunchJvm, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setGameSurface", nullptr, SetGameSurface, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setWindowActive", nullptr, SetWindowActive, nullptr, nullptr, nullptr, napi_default,
+         nullptr},
         {"resizeGameSurface", nullptr, ResizeGameSurface, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"requestGameWindowClose", nullptr, RequestGameWindowClose, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"meowSendKey", nullptr, MeowSendKey, nullptr, nullptr, nullptr, napi_default, nullptr},

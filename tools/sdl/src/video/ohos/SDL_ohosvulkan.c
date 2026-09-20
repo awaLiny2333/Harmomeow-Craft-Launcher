@@ -229,6 +229,7 @@ fail:
     OHOS_SDL_LOGE("Vulkan loader '%s' unusable: %s", path, SDL_GetError());
     SDL_UnloadObject(_this->vulkan_config.loader_handle);
     _this->vulkan_config.loader_handle = NULL;
+    _this->vulkan_config.vkGetInstanceProcAddr = NULL;
     return false;
 }
 
