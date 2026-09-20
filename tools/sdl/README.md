@@ -19,6 +19,7 @@ not need it). Create it once:
 ```sh
 # from the workspace root (holds ref/ and stuffs/)
 git clone https://github.com/libsdl-org/SDL.git ref/SDL
+git -C ref/SDL worktree prune    # if the tree was ever deleted by hand ("missing but already registered"), clear it first
 git -C ref/SDL worktree add --detach "$PWD/ref/SDL-3.4.14" release-3.4.14   # 必须绝对路径：-C 会先 chdir，相对路径会在 ref/SDL 里再建一层
 ```
 
@@ -157,7 +158,7 @@ git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.
 | Exports | 1270 `SDL_*` dynamic symbols |
 | Driver present | `SDL OpenHarmony (OHOS) video driver`; `OHOS_bootstrap` in `libSDL3.so` |
 | Artifact | `stuffs/research/sdl/out/libSDL3.so` (→ installed as `libSDL3.so`, manifest tag `common`) |
-| sha256 | `6cdf75fa1562125f5e42bd1f5b521801822bf542602c3dbd8eb8d280612b56e8` (2,050,560 bytes; re-verified 2026-09-19 together with the Vulkan support — see §4b) |
+| sha256 | `e696d8b25beaf6fb94df7bb46e772d28ff453a223a2d350461b8a34669536d56` (2,050,560 bytes; re-verified 2026-09-19 together with the Vulkan support and the window-focus events — see §4b) |
 
 > Reproducibility: like all our native builds, the digest corresponds to the
 > recorded `--src`/`--out` paths; rebuilds at other paths are functionally
@@ -168,9 +169,11 @@ git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.
 **3× from-scratch rebuilds (`cmp` byte-identical) at the current source state**: each one
 re-creates the worktree (`git worktree remove/add`, i.e. a pristine `release-3.4.14`) *and*
 wipes the build dir, so the patcher is exercised every time. Same `--src`/`--out` paths:
-`libSDL3.so` sha256 `6cdf75fa1562125f5e42bd1f5b521801822bf542602c3dbd8eb8d280612b56e8`, 2,050,560 bytes.
+`libSDL3.so` sha256 `e696d8b25beaf6fb94df7bb46e772d28ff453a223a2d350461b8a34669536d56`, 2,050,560 bytes.
 (Same-path caveat as all our natives: the linker embeds the output path in `.dynstr`.)
-The Vulkan work went through three such rounds — 9 builds in total — each round identical within itself.
+Twelve such builds in four rounds so far (three rounds for the Vulkan work, one for the
+window-focus events); every round was byte-identical within itself, and this round also
+matches the shipped artifact and the digested value above.
 
 Contract checked on the artifact: 1270 `SDL_*` dynamic symbols, `DT_NEEDED` = `libnative_window.so libc.so`
 only (EGL/GL/Vulkan/hilog are resolved at run time), `ohos` driver present.
