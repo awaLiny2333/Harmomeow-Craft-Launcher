@@ -1,5 +1,7 @@
-import { common } from '@kit.AbilityKit';
+import { common, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { fileIo } from '@kit.CoreFileKit';
 import { NodeContent, window, display } from '@kit.ArkUI';
 import { launchGame } from '../common/data/GameLauncher';
 import { JreLibModule, FullscreenRequest } from '../common/state/JvmLauncher';
@@ -7,6 +9,7 @@ import { gameLaunchParams } from '../common/state/GameLaunchParams';
 import { isLegacyLwjgl, setWindowDisplaySize } from '../common/data/MinecraftLauncher';
 import { readAppGlobalSettings } from '../common/data/AppSettings';
 import { LAYOUT_SPACE, OVERLAY_BG, LAUNCH_FALLBACK_MS } from '../common/constants/Constants';
+import { OPEN_URL_REQUEST_FILE } from '../common/constants/Paths';
 import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H } from '../common/constants/LaunchDefaults';
 import { GameInputController } from '../common/input/GameInputController';
 
@@ -67,6 +70,7 @@ struct GameWindow {
   private jrelib: JreLibModule | null = null;
   /** 全屏请求轮询定时器（-1 = 未启动）。 */
   private fsTimer: number = -1;
+  private urlTimer: number = -1;
 
   /** 右下角 overlay：当前鼠标有效采样率（Hz）。 */
   @Local mouseRate: number = 0;
@@ -127,16 +131,24 @@ struct GameWindow {
     this.renderScale = gs.renderScale;
     this.input.setRenderScale(this.renderScale);
     this.input.start(this.showInputRate);
-    // 轮询 MC 的全屏切换请求（GLFW stub → native 桥 → 这里驱动真实窗口）。
+    // 轮询 MC 的全屏切换请求（GLFW stub → native 桥 → 这里驱动真实窗口）：100 ms 保响应。
     this.fsTimer = setInterval(() => {
       this.pollFullscreen();
     }, 100);
+    // 打开链接是"用户点一下"的动作 ⇒ 1 s 一次文件 stat 足够；常态零成本（native 侧只在点击时写一次）。
+    this.urlTimer = setInterval(() => {
+      this.pollOpenUrl();
+    }, 1000);
   }
 
   aboutToDisappear(): void {
     if (this.fsTimer >= 0) {
       clearInterval(this.fsTimer);
       this.fsTimer = -1;
+    }
+    if (this.urlTimer >= 0) {
+      clearInterval(this.urlTimer);
+      this.urlTimer = -1;
     }
     this.input?.dispose();
   }
@@ -256,6 +268,33 @@ struct GameWindow {
     } else if (req.request === 2) {
       await this.exitFullscreen();
     }
+  }
+
+  /**
+   * 取走一次"打开链接"请求（MC 26.3：Blaze3D → SDL_OpenURL → 我们的 ohos sysurl 写请求文件）
+   * 并以隐式 Want 拉起浏览器。文件由 native 以「临时文件 + rename」写入，故不会读到半截 URL。
+   * OHOS 没有原生的"打开 URL"入口，只能由持有 Ability 的 ArkTS 侧 startAbility。
+   */
+  private pollOpenUrl(): void {
+    const path: string = `${this.context().filesDir}/${OPEN_URL_REQUEST_FILE}`;
+    let url: string;
+    try {
+      if (!fileIo.accessSync(path)) {
+        return;
+      }
+      url = fileIo.readTextSync(path);
+      fileIo.unlinkSync(path);
+    } catch (e) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG, 'pollOpenUrl: cannot take %{public}s', path);
+      return;
+    }
+    if (url.length === 0) {
+      return;
+    }
+    const want: Want = { action: 'ohos.want.action.viewData', uri: url };
+    this.context().startAbility(want).catch((e: BusinessError) => {
+      hilog.warn(LOG_DOMAIN, LOG_TAG, 'pollOpenUrl: startAbility failed code=%{public}s', e.code);
+    });
   }
 
   /** 进入全屏：maximize 的 ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER → 铺满整屏并隐藏

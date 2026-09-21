@@ -35,6 +35,7 @@
 #include <window_manager/oh_window_event_filter.h>
 
 #include "meowlog.h"
+#include "meowpasteboard.h"
 #include "meowcraftbridge_environ.h"
 
 /* Minimum spacing between window-size upcalls + EGL surface rebuilds. */
@@ -681,11 +682,34 @@ JNIEXPORT jboolean JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetInputRead
 
 JNIEXPORT jstring JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeClipboard(
     JNIEnv *jenv, jclass clazz, jint action, jbyteArray copySrc) {
-    (void)jenv;
+    char *utf8;
+    jsize len;
+
     (void)clazz;
-    (void)action;
-    (void)copySrc;
-    MEOWLOGI("nativeClipboard: not implemented, returning null");
+    if (jenv == NULL) {
+        return NULL;
+    }
+    if (action != 2000 /* CallbackBridge.CLIPBOARD_COPY */) {
+        /* Reading the clipboard needs ohos.permission.READ_PASTEBOARD (with an
+         * authorisation dialog), and the recommended no-dialog route - the paste
+         * control - only exists in ArkTS UI, which a game screen cannot host. */
+        MEOWLOGW("nativeClipboard: paste is unsupported (needs READ_PASTEBOARD)");
+        return NULL;
+    }
+    if (copySrc == NULL) {
+        return NULL;
+    }
+
+    /* The Java stub hands over the UTF-8 bytes of the string to copy. */
+    len = (*jenv)->GetArrayLength(jenv, copySrc);
+    utf8 = (char *)malloc((size_t)len + 1);
+    if (utf8 == NULL) {
+        return NULL;
+    }
+    (*jenv)->GetByteArrayRegion(jenv, copySrc, 0, len, (jbyte *)utf8);
+    utf8[len] = '\0';
+    meow_clipboard_set_text(utf8);
+    free(utf8);
     return NULL;
 }
 

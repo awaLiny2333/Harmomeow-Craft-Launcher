@@ -29,6 +29,9 @@ export const JRE_DATA_TOKEN_FILE: string = 'meow_jre_data';
 /** 启动器 home（账户 / 运行数据），与 JRE 数据同级。 */
 export const MEOW_HOME_DIR: string = 'meow-home';
 
+/** "打开链接"请求文件（native 写、ArkTS 取走；见 GameWindow.pollOpenUrl）。 */
+export const OPEN_URL_REQUEST_FILE: string = 'meow-open-url.txt';
+
 /** 版本 jar 平铺目录（cacheDir 下）。 */
 export const MC_CP_DIR: string = 'mc-cp';
 

@@ -11,13 +11,18 @@ anchor is missing, so a future SDL version cannot silently skip a change.
 What it does:
     1. src/thread/pthread/SDL_systhread.c: guard pthread_setcanceltype()
        (OHOS dynamic libc lacks PTHREAD_CANCEL_ASYNCHRONOUS).
-    2. Copy this tool's src/video/ohos/*.c/.h into <src>/src/video/ohos/.
-    3. CMakeLists.txt: enable SDL_VIDEO_DRIVER_OHOS + EGL/GL in the unix branch.
+    2. Copy this tool's src/video/ohos/*.c/.h into <src>/src/video/ohos/, and
+       src/misc/ohos/*.c/.h into <src>/src/misc/ohos/.
+    3. CMakeLists.txt: enable SDL_VIDEO_DRIVER_OHOS + EGL/GL in the unix branch
+       (and glob src/misc/ohos/*).
     4. include/build_config/SDL_build_config.h.cmake: emit the driver define.
     5. src/video/SDL_sysvideo.h: extern OHOS_bootstrap.
     6. src/video/SDL_video.c: add OHOS_bootstrap to bootstrap[].
     7. src/video/SDL_egl.c: OHOS EGL/GL library names.
     8. src/video/khronos/EGL/eglplatform.h: OHOS EGLNativeWindowType typedef.
+    9. src/misc/unix/SDL_sysurl.c: wrap its body in #if !defined(__OHOS__), so that
+       src/misc/ohos/SDL_sysurl.c is the only SDL_SYS_OpenURL in this build (the unix
+       one opens URLs by forking xdg-open, which OHOS does not have).
 """
 import os
 import shutil
@@ -25,6 +30,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DRIVER_SRC = os.path.join(HERE, "src", "video", "ohos")
+MISC_SRC = os.path.join(HERE, "src", "misc", "ohos")
 
 
 def die(msg):
@@ -82,6 +88,47 @@ def copy_driver(src):
     ensure(copied, "no driver sources found under %s" % DRIVER_SRC)
     log("copied driver sources to src/video/ohos (%s)" % ", ".join(copied))
 
+    # The OHOS URL opener sits next to the driver here, but SDL compiles it from
+    # src/misc/<platform>/SDL_sysurl.c, so it is copied to its own directory.
+    misc_dst = os.path.join(src, "src", "misc", "ohos")
+    ensure(os.path.isdir(MISC_SRC), "misc sources not found: %s" % MISC_SRC)
+    os.makedirs(misc_dst, exist_ok=True)
+    misc_copied = []
+    for name in sorted(os.listdir(MISC_SRC)):
+        if not name.endswith((".c", ".h")):
+            continue
+        shutil.copy2(os.path.join(MISC_SRC, name), os.path.join(misc_dst, name))
+        misc_copied.append(name)
+    ensure(misc_copied, "no misc sources found under %s" % MISC_SRC)
+    log("copied misc sources to src/misc/ohos (%s)" % ", ".join(misc_copied))
+
+
+def patch_sysurl(src):
+    """Keep the unix SDL_sysurl.c out of the OHOS build.
+
+    It opens URLs by forking `xdg-open`, which does not exist on OHOS; the OHOS build
+    takes src/misc/ohos/SDL_sysurl.c instead (globbed in from the CMake block below)."""
+    path = os.path.join(src, "src", "misc", "unix", "SDL_sysurl.c")
+    ensure(os.path.isfile(path), "missing %s" % path)
+    text = read_text(path)
+    marker = "the unix implementation forks xdg-open"
+    if marker in text:
+        log("unix SDL_sysurl.c already guarded")
+        return
+    anchor = '#include "SDL_internal.h"\n'
+    ensure(anchor in text, "anchor '%s' not found in %s" % (anchor.strip(), path))
+    text = text.replace(
+        anchor,
+        anchor
+        + "\n/* This fork: the OHOS build takes src/misc/ohos/SDL_sysurl.c instead\n"
+        + " * (the unix implementation forks xdg-open, which does not exist on OHOS). */\n"
+        + "#if !defined(__OHOS__)\n",
+        1,
+    )
+    text = text + "\n#endif /* !__OHOS__ */\n"
+    write_text(path, text)
+    log("guarded unix SDL_sysurl.c for OHOS")
+
 
 CMAKE_BLOCK = """    CheckVivante()
     CheckVulkan()
@@ -94,6 +141,8 @@ CMAKE_BLOCK = """    CheckVivante()
       sdl_glob_sources(
         "${SDL3_SOURCE_DIR}/src/video/ohos/*.c"
         "${SDL3_SOURCE_DIR}/src/video/ohos/*.h"
+        "${SDL3_SOURCE_DIR}/src/misc/ohos/*.c"
+        "${SDL3_SOURCE_DIR}/src/misc/ohos/*.h"
       )
       set(SDL_VIDEO_OPENGL 1)
       set(SDL_VIDEO_OPENGL_ES2 1)
@@ -129,7 +178,24 @@ def patch_cmake(src):
         write_text(path, text)
         log("added native_window link dependency to CMakeLists.txt")
     else:
-        log("CMakeLists.txt OHOS branch already present")
+        # Backfill the misc glob for trees patched before the URL opener existed.
+        video_globs = (
+            '        "${SDL3_SOURCE_DIR}/src/video/ohos/*.c"\n'
+            '        "${SDL3_SOURCE_DIR}/src/video/ohos/*.h"\n'
+        )
+        if "src/misc/ohos/*.c" not in text:
+            ensure(video_globs in text, "OHOS video glob anchor not found")
+            text = text.replace(
+                video_globs,
+                video_globs
+                + '        "${SDL3_SOURCE_DIR}/src/misc/ohos/*.c"\n'
+                + '        "${SDL3_SOURCE_DIR}/src/misc/ohos/*.h"\n',
+                1,
+            )
+            write_text(path, text)
+            log("added the src/misc/ohos glob to CMakeLists.txt")
+        else:
+            log("CMakeLists.txt OHOS branch already present")
 
 
 def patch_build_config(src):
@@ -245,6 +311,7 @@ def main():
     print("patching SDL3 OHOS video driver in %s" % src)
     patch_pthread(src)
     copy_driver(src)
+    patch_sysurl(src)
     patch_cmake(src)
     patch_build_config(src)
     patch_sysvideo_h(src)

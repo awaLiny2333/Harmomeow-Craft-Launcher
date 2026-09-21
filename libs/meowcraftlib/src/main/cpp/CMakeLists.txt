@@ -25,6 +25,7 @@ add_library(meowcraftbridge SHARED
     meowcraftbridge/egl_gl.c
     meowcraftbridge/input_bridge.c
     meowcraftbridge/meowcraftbridge_environ.c
+    meowcraftbridge/meowpasteboard.c
     meowcraftbridge/meowqos.c
     meowcraftbridge/meowbt.c)
 
