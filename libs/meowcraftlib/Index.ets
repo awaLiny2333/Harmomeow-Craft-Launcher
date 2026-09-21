@@ -25,6 +25,9 @@ export const unlockCursor = bridge.unlockCursor;
 // P0：窗口级鼠标 filter（绕开 ArkUI 节流，非 grab 直通）。
 export const mouseFilterStart = bridge.mouseFilterStart;
 export const mouseFilterStop = bridge.mouseFilterStop;
+// 触屏 -> 鼠标：窗口级 touch filter（与 mouseFilter* 同一套原点/缩放口径）。
+export const touchFilterStart = bridge.touchFilterStart;
+export const touchFilterStop = bridge.touchFilterStop;
 // 原生鼠标增量输入：挂 NDK 覆盖节点收 NODE_ON_MOUSE（grab 视角驱动）。
 export const bindNodeContent = bridge.bindNodeContent;
 export const meowGrabReset = bridge.meowGrabReset;

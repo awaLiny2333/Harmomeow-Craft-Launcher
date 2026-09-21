@@ -127,6 +127,9 @@ export const unlockCursor: (windowId: number) => number;
  */
 export const mouseFilterStart: (windowId: number, ox: number, oy: number, scale: number) => number;
 export const mouseFilterStop: (windowId: number) => number;
+export const touchFilterStart: (windowId: number, ox: number, oy: number, scale: number,
+  enable: boolean, sens: number) => number;
+export const touchFilterStop: (windowId: number) => number;
 
 /**
  * 把 ArkTS 侧 ContentSlot 的 NodeContent 交给 native，挂一个 NDK 创建的透明覆盖节点

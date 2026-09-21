@@ -354,6 +354,9 @@ struct GameWindow {
           .onMouse((event: MouseEvent) => {
             this.input?.handleMouse(event);
           })
+          .onTouch((event: TouchEvent) => {
+            this.input?.handleTouchMap(event);
+          })
           .onAxisEvent((event: AxisEvent) => {
             this.input?.handleAxis(event);
           });

@@ -1054,6 +1054,73 @@ static napi_value MouseFilterStop(napi_env env, napi_callback_info info) {
     return MkInt32(env, rc);
 }
 
+/* 触屏 → 鼠标：窗口级 touch filter（与 MouseFilter* 同一套 原点/缩放 口径）。
+ * native 侧缺省只记日志（探针），MEOW_TOUCH=1 才合成鼠标事件。 */
+static napi_value TouchFilterStart(napi_env env, napi_callback_info info) {
+    size_t argc = 6;
+    napi_value args[6] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t windowId = 0;
+    double ox = 0, oy = 0, scale = 1.0;
+    napi_get_value_int32(env, args[0], &windowId);
+    napi_get_value_double(env, args[1], &ox);
+    napi_get_value_double(env, args[2], &oy);
+    if (argc >= 4) {
+        napi_get_value_double(env, args[3], &scale);
+    }
+    if (!(scale > 0.0)) {
+        scale = 1.0;
+    }
+    bool enable = false;
+    if (argc >= 5) {
+        napi_get_value_bool(env, args[4], &enable);
+    }
+    double sens = 1.0;
+    if (argc >= 6) {
+        napi_get_value_double(env, args[5], &sens);
+    }
+    if (!(sens > 0.0)) {
+        sens = 1.0;
+    }
+    int rc = -1;
+    void* lib = MeowCraftBridgeLib();
+    if (lib != nullptr) {
+        typedef int (*Fn)(int32_t, double, double, double, int, double);
+        auto* fn = reinterpret_cast<Fn>(dlsym(lib, "meowTouchFilterStart"));
+        if (fn != nullptr) {
+            rc = fn(windowId, ox, oy, scale, enable ? 1 : 0, sens);
+        }
+    }
+    if (rc != 0) {
+        OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG,
+                     "touchFilterStart(win=%{public}d ox=%{public}f oy=%{public}f scale=%{public}f) -> %{public}d",
+                     windowId, ox, oy, scale, rc);
+    }
+    return MkInt32(env, rc);
+}
+
+static napi_value TouchFilterStop(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t windowId = 0;
+    if (argc >= 1) {
+        napi_get_value_int32(env, args[0], &windowId);
+    }
+    int rc = -1;
+    void* lib = MeowCraftBridgeLib();
+    if (lib != nullptr) {
+        typedef int (*Fn)(int32_t);
+        auto* fn = reinterpret_cast<Fn>(dlsym(lib, "meowTouchFilterStop"));
+        if (fn != nullptr) {
+            rc = fn(windowId);
+        }
+    }
+    OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
+                 "touchFilterStop(win=%{public}d) -> %{public}d", windowId, rc);
+    return MkInt32(env, rc);
+}
+
 /* ===== 原生鼠标增量输入（NDK 覆盖节点）=====
  * ArkTS 侧放 ContentSlot(NodeContent)；native 用 createNode(ARKUI_NODE_STACK) 建节点，
  * 100% 尺寸 + HitTestMode.Transparent（自己响应且不挡下层 XComponent），注册 NODE_ON_MOUSE。
@@ -1241,6 +1308,10 @@ napi_value Init(napi_env env, napi_value exports) {
         {"mouseFilterStart", nullptr, MouseFilterStart, nullptr, nullptr, nullptr, napi_default,
          nullptr},
         {"mouseFilterStop", nullptr, MouseFilterStop, nullptr, nullptr, nullptr, napi_default,
+         nullptr},
+        {"touchFilterStart", nullptr, TouchFilterStart, nullptr, nullptr, nullptr, napi_default,
+         nullptr},
+        {"touchFilterStop", nullptr, TouchFilterStop, nullptr, nullptr, nullptr, napi_default,
          nullptr},
         {"bindNodeContent", nullptr, BindNodeContent, nullptr, nullptr, nullptr, napi_default,
          nullptr},

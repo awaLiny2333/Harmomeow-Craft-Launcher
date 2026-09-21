@@ -87,6 +87,18 @@ export class SettingsTools {
     });
   }
 
+  /** 触屏当鼠标：单指点按=左键单击、拖动=移动光标、游戏内拖动=转视角、双指点按=右键（默认开）。 */
+  touchAsMouse(): boolean {
+    return this.current().touchAsMouse;
+  }
+
+  /** 写入"触屏当鼠标"开关并落盘。 */
+  setTouchAsMouse(v: boolean): void {
+    this.update((s: GlobalSettings) => {
+      s.touchAsMouse = v;
+    });
+  }
+
   // ---- 启动参数覆盖（0 / 空串 = 自动，用 LaunchDefaults 默认）----
 
   /** CPU 线程数覆盖；0 = 自动（不传 -XX:ActiveProcessorCount，由 JVM 探测）。 */
@@ -124,6 +136,19 @@ export class SettingsTools {
   setScrollSpeedPercent(n: number): void {
     this.update((s: GlobalSettings) => {
       s.scrollSpeed = n;
+    });
+  }
+
+  // ---- 触屏转视角灵敏度（百分比）----
+
+  /** 触屏转视角灵敏度百分比；未设置/非法/非正 → 默认 100（正常）。 */
+  touchSensitivityPercent(): number {
+    return this.current().touchSensitivity;
+  }
+
+  setTouchSensitivityPercent(n: number): void {
+    this.update((s: GlobalSettings) => {
+      s.touchSensitivity = n;
     });
   }
 

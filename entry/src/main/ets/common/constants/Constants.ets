@@ -49,6 +49,9 @@ export const SCROLL_VP_PER_NOTCH: number = 15;
 // 滚轮速度百分比的默认值（100 = 正常，即乘 1.0）。
 export const SCROLL_SPEED_DEFAULT_PERCENT: number = 100;
 
+// 触屏转视角灵敏度百分比的默认值（100 = 正常，即乘 1.0）。
+export const TOUCH_SENSITIVITY_DEFAULT_PERCENT: number = 128;
+
 // 下载面板远程版本列表高度（vp）：List 需定高才能用 Repeat.virtualScroll 懒加载，
 // 否则长列表（几百个版本）会一次性铺满界面并在加载瞬间卡顿。
 export const DOWNLOAD_LIST_HEIGHT: number = 360;

@@ -1,4 +1,4 @@
-import { SCROLL_SPEED_DEFAULT_PERCENT, RENDER_SCALE_DEFAULT,
+import { SCROLL_SPEED_DEFAULT_PERCENT, TOUCH_SENSITIVITY_DEFAULT_PERCENT, RENDER_SCALE_DEFAULT,
   RENDER_SCALE_OPTIONS } from '../constants/Constants';
 import { SOURCE_MIRROR, SOURCE_OFFICIAL, TYPE_RELEASE, TYPE_SNAPSHOT,
   TYPE_OTHER } from '../constants/DownloadContract';
@@ -22,7 +22,9 @@ interface LastLaunchJson {
 
 interface LauncherGroupJson {
   scrollSpeed?: number;
+  touchSensitivity?: number;
   showInputRate?: boolean;
+  touchAsMouse?: boolean;
   versionType?: string;
   lastLaunch?: LastLaunchJson;
 }
@@ -53,7 +55,7 @@ export interface GlobalSettingsJson {
  *
  * 存 `<filesDir>/meow-settings/app-settings.json` 的 `global` 段：**应用级、全局唯一**，
  * 不再按游戏目录各存一份、也不再随游戏目录迁移。分三组：
- * - `launcher`：滚动速度 / 采样率 overlay / 版本类型 / 上次启动；
+ * - `launcher`：滚动速度 / 采样率 overlay / 触屏当鼠标 / 版本类型 / 上次启动；
  * - `runtime`：CPU 线程数 / 最大堆 / 显示缩放 / 渲染环境变量 / JVM 参数；
  * - `network`：版本下载源 / loader 下载源 / 微软 client_id。
  *
@@ -63,8 +65,12 @@ export class GlobalSettings {
   // ---- launcher 组 ----
   /** 滚轮速度百分比；100 = 正常。 */
   scrollSpeed: number = SCROLL_SPEED_DEFAULT_PERCENT;
+  /** 触屏转视角灵敏度百分比；100 = 正常。 */
+  touchSensitivity: number = TOUCH_SENSITIVITY_DEFAULT_PERCENT;
   /** 是否显示鼠标采样率 overlay（默认关）。 */
   showInputRate: boolean = false;
+  /** 触屏当鼠标：单指点按=左键单击、拖动=移动光标、游戏内拖动=转视角、双指点按=右键（默认开）。 */
+  touchAsMouse: boolean = true;
   /** 版本类型过滤：release / snapshot / other。 */
   versionType: string = TYPE_RELEASE;
   /** 上次启动记录；无记录 = null。 */
@@ -122,6 +128,11 @@ function normalizeScrollSpeed(v: number | undefined): number {
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : SCROLL_SPEED_DEFAULT_PERCENT;
 }
 
+/** 触屏灵敏度夹到正数（非法 / 缺失 / 非正 → 默认值；范围与滚轮速度一致）。 */
+function normalizeTouchSensitivity(v: number | undefined): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : TOUCH_SENSITIVITY_DEFAULT_PERCENT;
+}
+
 /** 由三字段组装"上次启动"记录：齐全才算有效，否则 null（读盘与写前归一化共用）。 */
 function lastLaunchFrom(dir: string, version: string, jsonPath: string): LastLaunch | null {
   if (dir.length > 0 && version.length > 0 && jsonPath.length > 0) {
@@ -153,7 +164,9 @@ export function parseGlobalNode(raw: GlobalSettingsJson | undefined): GlobalSett
   const l = raw.launcher;
   if (l !== undefined && l !== null) {
     s.scrollSpeed = normalizeScrollSpeed(l.scrollSpeed);
+    s.touchSensitivity = normalizeTouchSensitivity(l.touchSensitivity);
     s.showInputRate = l.showInputRate === true;
+    s.touchAsMouse = l.touchAsMouse !== false;
     s.versionType = normalizeVersionType(l.versionType);
     s.lastLaunch = readLastLaunch(l.lastLaunch);
   }
@@ -176,12 +189,13 @@ export function parseGlobalNode(raw: GlobalSettingsJson | undefined): GlobalSett
 
 /**
  * 把既有归一化逻辑集中应用一遍（版本类型 / 下载源 / loader 源 / 显示缩放 / CPU 线程数 /
- * 最大堆 / 滚轮速度 / 上次启动；`showInputRate` 为布尔、`renderEnv`/`jvmArgs`/`msClientId`
+ * 最大堆 / 滚轮速度 / 上次启动；`showInputRate`/`touchAsMouse` 为布尔、`renderEnv`/`jvmArgs`/`msClientId`
  * 为自由字符串，无需夹取）。`SettingsTools.update()` 在 mutate 之后、写盘之前调用 ⇒
  * 缓存对象与磁盘落盘值（`buildGlobalNode` 写入时同规则夹取）恒一致。
  */
 export function normalizeGlobalSettings(s: GlobalSettings): GlobalSettings {
   s.scrollSpeed = normalizeScrollSpeed(s.scrollSpeed);
+  s.touchSensitivity = normalizeTouchSensitivity(s.touchSensitivity);
   s.versionType = normalizeVersionType(s.versionType);
   const ll = s.lastLaunch;
   s.lastLaunch = ll === null ? null : lastLaunchFrom(ll.dir, ll.version, ll.jsonPath);
@@ -252,7 +266,10 @@ export function buildGlobalNode(data: GlobalSettings,
   // launcher 组
   const launcher = asRecord(base['launcher']);
   putNumber(launcher, 'scrollSpeed', normalizeScrollSpeed(data.scrollSpeed), SCROLL_SPEED_DEFAULT_PERCENT);
+  putNumber(launcher, 'touchSensitivity', normalizeTouchSensitivity(data.touchSensitivity),
+    TOUCH_SENSITIVITY_DEFAULT_PERCENT);
   putBool(launcher, 'showInputRate', data.showInputRate, false);
+  putBool(launcher, 'touchAsMouse', data.touchAsMouse, true);
   putString(launcher, 'versionType', normalizeVersionType(data.versionType), TYPE_RELEASE);
   launcher['lastLaunch'] = buildLastLaunch(data.lastLaunch);
   base['launcher'] = isEmptyRecord(launcher) ? undefined : launcher;

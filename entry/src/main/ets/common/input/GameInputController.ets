@@ -53,6 +53,11 @@ export class GameInputController {
   private filterActive: boolean = false;
   private filterWinId: number = 0;
   private mapLastMs: number = 0;
+  private touchMapLastMs: number = 0;
+  /** 触屏当鼠标（高级选项，应用级设置；窗口存活期内固定，改后下次开窗生效）。 */
+  private touchAsMouse: boolean = false;
+  /** 触屏转视角倍率（高级选项百分比 / 100；独立于鼠标手感）。 */
+  private touchSens: number = 1;
   private mapOx: number = -1e9;
   private mapOy: number = -1e9;
 
@@ -145,10 +150,60 @@ export class GameInputController {
     return this.nativeGrabInput;
   }
 
+  /**
+   * 注册触屏 filter。
+   * ⚠ 必须挂在**与鼠标无关**的时机（页面挂载）：手机上压根没有鼠标事件，
+   * 若挂在 pushMouseMap（只在 MouseAction.Move 里调）则**永远注册不上** ✗。
+   * 原点/缩放沿用鼠标路径算出的值（纯触屏设备上默认 0/1）；native 侧每次调用都会刷新它。
+   */
+  private ensureTouchFilter(): void {
+    const b = this.bridge;
+    if (b === undefined || b.touchFilterStart === undefined) {
+      return;
+    }
+    const s: number = this.renderScale > 0 ? this.renderScale : 1;
+    const apply = (wid: number): void => {
+      try {
+        const rc = b.touchFilterStart?.(wid, this.mapOx, this.mapOy, s, this.touchAsMouse,
+          this.touchSens) ?? -1;
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStart win=%{public}d -> %{public}d', wid, rc);
+      } catch (e) {
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStart err: %{public}s', JSON.stringify(e));
+      }
+    };
+    if (this.filterWinId > 0) {
+      apply(this.filterWinId);
+    } else {
+      window.getLastWindow(this.ctx).then((w: window.Window) => {
+        try {
+          this.filterWinId = w.getWindowProperties().id;
+          apply(this.filterWinId);
+        } catch (e) {
+          hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStart win err: %{public}s', JSON.stringify(e));
+        }
+      }).catch((e: Error) => {
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStart win err: %{public}s',
+          JSON.stringify(e.message));
+      });
+    }
+  }
+
   /** 启动 grab 轮询 + 采样率 overlay（页面挂载时调用）。 */
   start(showInputRate: boolean): void {
     // 滚轮速度（高级选项，读应用级全局设置）；窗口存活期内固定，改后下次开窗生效。
     this.scrollScale = new SettingsTools(this.ctx).scrollSpeedPercent() / 100;
+    this.touchAsMouse = new SettingsTools(this.ctx).touchAsMouse();
+    this.touchSens = new SettingsTools(this.ctx).touchSensitivityPercent() / 100;
+    // 桥是 async 懒加载（ensureBridge），此刻 this.bridge 多半仍是 undefined；
+    // 直接调 ensureTouchFilter 会被守卫静默 return（2026-09-21 实测踩过）。
+    this.ensureBridge().then((b: JreLibModule | undefined) => {
+      if (b !== undefined) {
+        this.ensureTouchFilter();
+      }
+    }).catch((e: Error) => {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'touch register bridge err: %{public}s',
+        JSON.stringify(e.message));
+    });
     this.grabPollTimer = setInterval(() => {
       this.pollGrabbing();
     }, GRAB_POLL_MS);
@@ -809,6 +864,34 @@ export class GameInputController {
     }
   }
 
+  /**
+   * 用 TouchEvent 反算组件原点并推给 native touch filter。
+   * 与 pushMouseMap 同一公式、同一单位口径（TouchObject.displayX/x 均为 vp，
+   * 乘 frameW/xcVpW 得物理 px；native filter 给的 display 坐标正是物理 px，两边一致）。
+   * 必须存在：原点原本只从**鼠标**事件反算，纯触屏设备上会一直是哨兵 -1e9 ⇒ 光标乱飞。
+   */
+  handleTouchMap(event: TouchEvent): void {
+    const b = this.bridge;
+    if (b === undefined || b.touchFilterStart === undefined || event.touches === undefined) {
+      return;
+    }
+    const t: TouchObject | undefined = event.touches.length > 0 ? event.touches[0] : undefined;
+    if (t === undefined || this.filterWinId <= 0) {
+      return;
+    }
+    const nowMs = Date.now();
+    if (nowMs - this.touchMapLastMs < 100) {
+      return;
+    }
+    this.touchMapLastMs = nowMs;
+    const s: number = this.renderScale > 0 ? this.renderScale : 1;
+    const sx = this.xcVpW > 0 ? this.frameW / this.xcVpW : 1;
+    const sy = this.xcVpH > 0 ? this.frameH / this.xcVpH : 1;
+    this.mapOx = (t.displayX - s * t.x) * sx;
+    this.mapOy = (t.displayY - s * t.y) * sy;
+    b.touchFilterStart(this.filterWinId, this.mapOx, this.mapOy, s, this.touchAsMouse, this.touchSens);
+  }
+
   /** 用 ArkUI 事件换算组件左上角的 display 像素偏移并下发（filter 直通用）。 */
   private pushMouseMap(event: MouseEvent): void {
     const b = this.bridge;
@@ -841,6 +924,9 @@ export class GameInputController {
           'pushMouseMap active win=%{public}d ox=%{public}d oy=%{public}d',
           wid, Math.round(ox), Math.round(oy));
       }
+      // 触屏走同一个窗口 filter 家族（复用同一套原点/缩放口径）。
+      // native 侧缺省只记日志（判"这条 filter 响不响"），MEOW_TOUCH=1 才合成鼠标事件。
+      b.touchFilterStart?.(wid, ox, oy, s, this.touchAsMouse, this.touchSens);
     };
     if (this.filterWinId > 0) {
       apply(this.filterWinId);

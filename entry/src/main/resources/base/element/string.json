@@ -317,6 +317,14 @@
       "value": "游戏窗口右下角显示当前鼠标有效采样率（Hz）"
     },
     {
+      "name": "advanced_touch_as_mouse",
+      "value": "触屏当鼠标"
+    },
+    {
+      "name": "advanced_touch_as_mouse_hint",
+      "value": "单指点按=左键单击；拖动=移动光标；游戏内拖动=转视角；双指点按=右键"
+    },
+    {
       "name": "advanced_cpu_count",
       "value": "CPU 线程数"
     },
@@ -431,6 +439,14 @@
     {
       "name": "advanced_scroll_speed_hint",
       "value": "留空 = 100（正常）；越大越快"
+    },
+    {
+      "name": "advanced_touch_sensitivity",
+      "value": "触屏灵敏度 (%)"
+    },
+    {
+      "name": "advanced_touch_sensitivity_hint",
+      "value": "留空 = 128（正常）；越大转视角越快"
     },
     {
       "name": "advanced_render_scale",

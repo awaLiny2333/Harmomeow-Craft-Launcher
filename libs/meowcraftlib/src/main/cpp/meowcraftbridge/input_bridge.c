@@ -1035,6 +1035,186 @@ void meowGrabDelta(float dx, float dy) {
     meow_rate_tick();
 }
 
+/*
+ * 触屏 → 鼠标（窗口级 touch filter，与上面的 mouse filter 同族；API 15）。
+ *
+ * 语义（"触屏当鼠标"）：
+ *   单指按下 = 光标跳到触点 + 左键按下；单指拖动 = 光标跟随；抬起 = 左键释放
+ *   游戏内(grab) 单指拖动 = 转视角（喂 meowGrabDelta，它自带 grabbing 自检）
+ *   双指点按 = 右键（不做滚轮：MC 里可滚动处都有滚动条）
+ *
+ * 开关由上层以参数传入（启动器「高级选项」，不用 env）；恒 `return false`（不消费），
+ * 与 mouse filter 一致：ArkUI 仍需该事件。
+ */
+static int g_touchEnabled;
+static int g_touchReg;
+static int32_t g_touchWinId;
+static int g_tFingers;
+static int g_tLeftDown;
+static int g_tTwoFinger;
+static double g_tLastX;
+static double g_tLastY;
+static int64_t g_tDownMs;
+/* 触屏转视角倍率（高级选项传入）。**独立于鼠标**：鼠标/node 路径用 g_grabSensitivity，
+ * 两者不能共用，否则调触屏手感会连带改掉鼠标手感。 */
+static float g_touchSens = 1.0f;
+static int64_t g_tLastLogMs;
+
+static const char *meow_touch_action_name(int a) {
+    switch (a) {
+        case TOUCH_ACTION_DOWN: return "DOWN";
+        case TOUCH_ACTION_UP: return "UP";
+        case TOUCH_ACTION_MOVE: return "MOVE";
+        case TOUCH_ACTION_CANCEL: return "CANCEL";
+        default: return "?";
+    }
+}
+
+/* display px → Minecraft framebuffer 空间（与 meow_mouse_filter 同一套原点/缩放口径） */
+static void meow_touch_local(double dx, double dy, double *lx, double *ly) {
+    double s = (g_filterScale > 0.0) ? g_filterScale : 1.0;
+    double x = (dx - g_filterOriginX) / s;
+    double y = (dy - g_filterOriginY) / s;
+    *lx = (x < 0.0) ? 0.0 : x;
+    *ly = (y < 0.0) ? 0.0 : y;
+}
+
+static bool meow_touch_filter(Input_TouchEvent *event) {
+    struct meow_environ_s *env = meow_environ;
+    if (event == NULL) {
+        return false;
+    }
+    int action = OH_Input_GetTouchEventAction(event);
+    int fid = OH_Input_GetTouchEventFingerId(event);
+    double dx = (double)OH_Input_GetTouchEventDisplayX(event);
+    double dy = (double)OH_Input_GetTouchEventDisplayY(event);
+
+    if (action == TOUCH_ACTION_DOWN) {
+        g_tFingers++;
+    } else if (action == TOUCH_ACTION_UP || action == TOUCH_ACTION_CANCEL) {
+        if (g_tFingers > 0) {
+            g_tFingers--;
+        }
+    }
+
+    /* 诊断（节流 200ms；MOVE 可达 150–500Hz，全打会淹掉日志） */
+    int64_t now = meow_now_ms();
+    if (now - g_tLastLogMs >= 200) {
+        g_tLastLogMs = now;
+        MEOWLOGI("touch %{public}s fid=%{public}d x=%{public}d y=%{public}d fingers=%{public}d en=%{public}d",
+                 meow_touch_action_name(action), fid, (int)dx, (int)dy, g_tFingers, g_touchEnabled);
+    }
+
+    if (!g_touchEnabled || env == NULL || !env->isInputReady) {
+        return false;
+    }
+
+    /* 升级为双指：本手势不再走单指逻辑 */
+    if (action == TOUCH_ACTION_DOWN && g_tFingers >= 2) {
+        g_tTwoFinger = 1;
+        g_tLastY = dy;
+        if (g_tLeftDown) { /* 第二指落下 = 取消已按下的左键 */
+            critical_send_mouse_button(0, 0, 0);
+            g_tLeftDown = 0;
+        }
+        return false;
+    }
+
+    if (g_tTwoFinger) {
+        /* 双指不做滚轮（MC 里可滚动处都有滚动条）；只保留「双指点按 = 右键」。 */
+        if ((action == TOUCH_ACTION_UP || action == TOUCH_ACTION_CANCEL) && g_tFingers == 0) {
+            if ((now - g_tDownMs) < 450) {
+                critical_send_mouse_button(1, 1, 0);
+                critical_send_mouse_button(1, 0, 0);
+            }
+            g_tTwoFinger = 0;
+        }
+        return false;
+    }
+
+    /* 单指 */
+    if (action == TOUCH_ACTION_DOWN) {
+        g_tDownMs = now;
+        g_tLastX = dx;
+        g_tLastY = dy;
+        /* 游戏内(grab) **故意不发左键**：那里单指拖动是用来转视角的，若按下即攻击
+         * 会「一转视角就开始挖」（2026-09-21 实测反馈）。⇒ 光标定位与左键按下都只在
+         * 非 grab 做。破坏/攻击的触屏方案以后再定，勿当 bug"修"掉。
+         * 右键（双指点按）不受此限，一直可用。 */
+        if (!env->grabbing) {
+            double lx = 0.0;
+            double ly = 0.0;
+            meow_touch_local(dx, dy, &lx, &ly);
+            critical_send_cursor_pos((float)lx, (float)ly);
+            critical_send_mouse_button(0, 1, 0);
+            g_tLeftDown = 1;
+        }
+        return false;
+    }
+
+    if (action == TOUCH_ACTION_MOVE) {
+        if (env->grabbing) {
+            double s = (g_filterScale > 0.0) ? g_filterScale : 1.0;
+            meowGrabDelta((float)((dx - g_tLastX) / s * g_touchSens),
+                          (float)((dy - g_tLastY) / s * g_touchSens));
+        } else {
+            double lx = 0.0;
+            double ly = 0.0;
+            meow_touch_local(dx, dy, &lx, &ly);
+            critical_send_cursor_pos((float)lx, (float)ly);
+        }
+        g_tLastX = dx;
+        g_tLastY = dy;
+        return false;
+    }
+
+    if (action == TOUCH_ACTION_UP || action == TOUCH_ACTION_CANCEL) {
+        if (g_tLeftDown) {
+            critical_send_mouse_button(0, 0, 0); /* 左键释放 */
+            g_tLeftDown = 0;
+        }
+        if (g_tFingers == 0) {
+            g_tTwoFinger = 0;
+        }
+    }
+    return false;
+}
+
+int meowTouchFilterStart(int32_t windowId, double originX, double originY, double scale, int enable,
+                         double sens) {
+    g_filterOriginX = originX;
+    g_filterOriginY = originY;
+    g_filterScale = (scale > 0.0) ? scale : 1.0;
+    /* 开关由上层（启动器「高级选项」）以参数传入，不用 env（能参数化就不加 env）。 */
+    g_touchEnabled = (enable != 0) ? 1 : 0;
+    g_touchSens = (sens > 0.0) ? (float)sens : 1.0f;
+    if (g_touchReg && g_touchWinId == windowId) {
+        return 0;
+    }
+    int32_t rc = OH_NativeWindowManager_RegisterTouchEventFilter(windowId, meow_touch_filter);
+    if (rc == 0) {
+        g_touchReg = 1;
+        g_touchWinId = windowId;
+        MEOWLOGI("touch filter start window=%{public}d origin=%{public}f,%{public}f scale=%{public}f enabled=%{public}d",
+                 windowId, originX, originY, g_filterScale, g_touchEnabled);
+    } else {
+        MEOWLOGE("touch filter start failed rc=%{public}d", (int)rc);
+    }
+    return (int)rc;
+}
+
+int meowTouchFilterStop(int32_t windowId) {
+    int32_t rc = OH_NativeWindowManager_UnregisterTouchEventFilter(windowId);
+    g_touchReg = 0;
+    g_touchWinId = 0;
+    if (g_tLeftDown) {
+        critical_send_mouse_button(0, 0, 0);
+        g_tLeftDown = 0;
+    }
+    MEOWLOGI("touch filter stop rc=%{public}d", (int)rc);
+    return (int)rc;
+}
+
 /* ------------------------------------------------------------------------- */
 /* input sampling-rate meter (used by the in-game overlay)                   */
 /* ------------------------------------------------------------------------- */

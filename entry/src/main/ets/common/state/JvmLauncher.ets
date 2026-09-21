@@ -43,6 +43,11 @@ export interface JreLibModule {
   unlockCursor?: (windowId: number) => number;
   mouseFilterStart?: (windowId: number, ox: number, oy: number, scale: number) => number;
   mouseFilterStop?: (windowId: number) => number;
+  /** 触屏 → 鼠标：窗口级 touch filter，与 mouseFilter* 同一套「原点 / 缩放」口径。
+   *  enable = 开关；sens = 触屏转视角倍率（独立于鼠标手感）。 */
+  touchFilterStart?: (windowId: number, ox: number, oy: number, scale: number,
+    enable: boolean, sens: number) => number;
+  touchFilterStop?: (windowId: number) => number;
   /** 原生鼠标增量输入：挂 NDK 覆盖节点，grab 时按 rawDelta 驱动虚拟光标。 */
   bindNodeContent?: (content: object, sens: number) => number;
   /** 进入 grab：重置原生虚拟光标到中心并下发一次。 */

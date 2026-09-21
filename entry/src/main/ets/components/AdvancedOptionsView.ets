@@ -3,7 +3,8 @@ import { SettingsTools } from '../common/data/SettingsTools';
 import { exportSettings } from '../common/data/AppSettings';
 import { pickDirectory, authorizeDirectory } from '../common/access/FileAccess';
 import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY,
-  SCROLL_SPEED_DEFAULT_PERCENT, RENDER_SCALE_OPTIONS } from '../common/constants/Constants';
+  SCROLL_SPEED_DEFAULT_PERCENT, TOUCH_SENSITIVITY_DEFAULT_PERCENT,
+  RENDER_SCALE_OPTIONS } from '../common/constants/Constants';
 
 // native 导出（getCpuCount：sysconf 探测本机核数）
 import native from 'libmeowassets.so';
@@ -19,12 +20,16 @@ import native from 'libmeowassets.so';
 export struct AdvancedOptionsView {
   /** 是否显示采样率 overlay。 */
   @Local showInputRate: boolean = false;
+  /** 触屏当鼠标（默认开）。 */
+  @Local touchAsMouse: boolean = true;
   /** CPU 线程数覆盖（空 = 自动）。 */
   @Local cpuCountText: string = '';
   /** 最大堆 MB 覆盖（空 = 自动）。 */
   @Local maxHeapText: string = '';
   /** 滚轮速度百分比（空 = 100 正常）。 */
   @Local scrollSpeedText: string = '';
+  /** 触屏转视角灵敏度百分比（空 = 100 正常）。 */
+  @Local touchSensitivityText: string = '';
   /** 显示缩放档位索引（映射 RENDER_SCALE_OPTIONS；默认 0 = 1x 关闭）。 */
   @Local scaleIndex: number = 0;
   /** 微软登录 client_id（用户自填，不预置；空 = 不可用）。 */
@@ -56,12 +61,15 @@ export struct AdvancedOptionsView {
     const s = new SettingsTools(this.context());
     this.settings = s;
     this.showInputRate = s.showInputRate();
+    this.touchAsMouse = s.touchAsMouse();
     const c = s.cpuCount();
     this.cpuCountText = c > 0 ? `${c}` : '';
     const m = s.maxHeapMb();
     this.maxHeapText = m > 0 ? `${m}` : '';
     const sp = s.scrollSpeedPercent();
     this.scrollSpeedText = sp === SCROLL_SPEED_DEFAULT_PERCENT ? '' : `${sp}`;
+    const ts = s.touchSensitivityPercent();
+    this.touchSensitivityText = ts === TOUCH_SENSITIVITY_DEFAULT_PERCENT ? '' : `${ts}`;
     const si = RENDER_SCALE_OPTIONS.indexOf(s.renderScale());
     this.scaleIndex = si >= 0 ? si : 0;
     this.msClientIdText = s.msClientId();
@@ -190,6 +198,25 @@ export struct AdvancedOptionsView {
       .width('100%')
       .alignItems(VerticalAlign.Center);
 
+      // 触屏当鼠标（默认开）
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.advanced_touch_as_mouse'));
+          Text($r('app.string.advanced_touch_as_mouse_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+
+        Toggle({ type: ToggleType.Switch, isOn: this.touchAsMouse })
+          .onChange((isOn: boolean) => {
+            this.touchAsMouse = isOn;
+            this.settings?.setTouchAsMouse(isOn);
+          });
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
       // CPU 线程数（空 = 自动）
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
@@ -254,6 +281,29 @@ export struct AdvancedOptionsView {
           })
           .onSubmit(() => {
             this.settings?.setScrollSpeedPercent(this.parseCount(this.scrollSpeedText));
+          });
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      // 触屏转视角灵敏度 %（空 = 100 正常）
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.advanced_touch_sensitivity'));
+          Text($r('app.string.advanced_touch_sensitivity_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+
+        TextInput({ text: this.touchSensitivityText, placeholder: `${TOUCH_SENSITIVITY_DEFAULT_PERCENT}` })
+          .type(InputType.Number)
+          .width(120)
+          .onChange((v: string) => {
+            this.touchSensitivityText = v;
+          })
+          .onSubmit(() => {
+            this.settings?.setTouchSensitivityPercent(this.parseCount(this.touchSensitivityText));
           });
       }
       .width('100%')
