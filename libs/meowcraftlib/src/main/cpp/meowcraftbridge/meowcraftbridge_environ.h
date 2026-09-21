@@ -141,7 +141,7 @@ struct meow_environ_s {
                                         * auto-pause). ArkTS publishes windowStageEvent ACTIVE/INACTIVE
                                         * through this; the SDL3 `ohos` driver turns a change into
                                         * SDL_EVENT_WINDOW_FOCUS_GAINED/LOST, which is how MC 26.3
-                                        * decides to auto-pause. See notes 00-current/架构决策与踩坑.md §13.2. */
+                                        * decides to auto-pause. See notes 00-current/架构决策与踩坑.md §22.1. */
     /* 0x27208 */ unsigned char reserved_tail[MEOW_STATE_BYTES - 0x27208];
 };
 
