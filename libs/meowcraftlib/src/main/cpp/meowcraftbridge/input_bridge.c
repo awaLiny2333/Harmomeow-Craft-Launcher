@@ -28,7 +28,9 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include <multimodalinput/oh_input_manager.h>
@@ -1040,11 +1042,12 @@ void meowGrabDelta(float dx, float dy) {
  *
  * 语义（"触屏当鼠标"）：
  *   单指按下 = 光标跳到触点 + 左键按下；单指拖动 = 光标跟随；抬起 = 左键释放
- *   游戏内(grab) 单指拖动 = 转视角（喂 meowGrabDelta，它自带 grabbing 自检）
+ *   游戏内(grab) 单指拖动 = 转视角（喂 meow_touch_grab_delta，自带 grabbing 自检且只受触屏灵敏度）
  *   双指点按 = 右键（不做滚轮：MC 里可滚动处都有滚动条）
  *
- * 开关由上层以参数传入（启动器「高级选项」，不用 env）；恒 `return false`（不消费），
- * 与 mouse filter 一致：ArkUI 仍需该事件。
+ * 开关由上层以参数传入（启动器「高级选项」），不再读任何 env：早先的 MEOW_TOUCH
+ * 环境变量与合成分支已删除，是否触屏当鼠标只看 Start 的 enable 入参。
+ * 恒 `return false`（不消费），与 mouse filter 一致：ArkUI 仍需该事件。
  */
 static int g_touchEnabled;
 static int g_touchReg;
@@ -1059,6 +1062,37 @@ static int64_t g_tDownMs;
  * 两者不能共用，否则调触屏手感会连带改掉鼠标手感。 */
 static float g_touchSens = 1.0f;
 static int64_t g_tLastLogMs;
+/* 触屏自己的原点/缩放（display px -> framebuffer）。**独立于鼠标**：鼠标 filter 用
+ * g_filterOriginX/Y/Scale，触屏若共用，一旦两边取值不同，触屏 Start 会把鼠标定位改坏。 */
+static double g_touchOriginX;
+static double g_touchOriginY;
+static double g_touchScale = 1.0;
+
+/*
+ * 虚拟按键排除区（display px，与 OH_Input_GetTouchEventDisplayX/Y 同空间）。
+ * 命中这些矩形的触点「只按虚拟按键」，不驱动 MC 光标/点击；起手落在排除区的那根
+ * 手指整段手势都跳过，其它手指照常。上限固定，解析失败/超限即跳过。
+ */
+#define MEOW_MAX_EXCLUDE_RECTS 24
+#define MEOW_MAX_EXCLUDE_FINGERS 10
+
+struct meow_exclude_rect {
+    float x;
+    float y;
+    float w;
+    float h;
+};
+/*
+ * 双缓冲 + 原子发布槽位：ArkTS(NAPI) 线程只写「非当前」的那一份，写完整份（含条数）
+ * 后再用 release 语义把 g_tExclActive 换成它；filter 线程先 acquire 读槽位，再只读该份。
+ * 这样读方拿到的永远是一份写完的快照：既不会看到写一半的矩形，也不会有 count 瞬间为 0
+ * 的中间态。两份轮流用，一次发布只搬动一个 int。 */
+static struct meow_exclude_rect g_tExclRects[2][MEOW_MAX_EXCLUDE_RECTS];
+static int g_tExclRectCounts[2];
+static atomic_int g_tExclActive;
+/* 起手落在排除区的手指 id 列表；这些手指的后续事件整体跳过。 */
+static int g_tExclFingers[MEOW_MAX_EXCLUDE_FINGERS];
+static int g_tExclFingerCount;
 
 static const char *meow_touch_action_name(int a) {
     switch (a) {
@@ -1070,13 +1104,142 @@ static const char *meow_touch_action_name(int a) {
     }
 }
 
-/* display px → Minecraft framebuffer 空间（与 meow_mouse_filter 同一套原点/缩放口径） */
+/* display px → Minecraft framebuffer 空间（用触屏自己那组原点/缩放，不碰鼠标的） */
 static void meow_touch_local(double dx, double dy, double *lx, double *ly) {
-    double s = (g_filterScale > 0.0) ? g_filterScale : 1.0;
-    double x = (dx - g_filterOriginX) / s;
-    double y = (dy - g_filterOriginY) / s;
+    double s = (g_touchScale > 0.0) ? g_touchScale : 1.0;
+    double x = (dx - g_touchOriginX) / s;
+    double y = (dy - g_touchOriginY) / s;
     *lx = (x < 0.0) ? 0.0 : x;
     *ly = (y < 0.0) ? 0.0 : y;
+}
+
+/*
+ * 上报虚拟按键排除区。CSV 形如 "x,y,w,h;x,y,w,h"，单位 display px；
+ * 空串 / NULL 清空。逐段解析（允许空格），非 4 字段或宽高非正即跳过该段。
+ */
+void meowTouchSetExcludeRects(const char *csv) {
+    /*
+     * 先原子取「非当前」槽位来写，写完再发布。空串 / NULL 也走同一条发布路径，
+     * 于是「清空」对读方同样是一次完整快照，而不是把正在用的 count 直接清零。
+     */
+    int slot = 1 - atomic_load_explicit(&g_tExclActive, memory_order_relaxed);
+    int n = 0;
+
+    if (csv != NULL && csv[0] != '\0') {
+        const char *p = csv;
+        while (*p != '\0' && n < MEOW_MAX_EXCLUDE_RECTS) {
+            float x = 0.0f;
+            float y = 0.0f;
+            float w = 0.0f;
+            float h = 0.0f;
+            if (sscanf(p, "%f,%f,%f,%f", &x, &y, &w, &h) == 4 && w > 0.0f && h > 0.0f) {
+                struct meow_exclude_rect *r = &g_tExclRects[slot][n];
+                r->x = x;
+                r->y = y;
+                r->w = w;
+                r->h = h;
+                n++;
+            }
+            const char *semi = strchr(p, ';');
+            if (semi == NULL) {
+                break;
+            }
+            p = semi + 1;
+        }
+    }
+
+    g_tExclRectCounts[slot] = n;
+    /*
+     * **不要在这里清 `g_tExclFingerCount`**：ArkTS 会在手势进行中重推排除区（首触标定、
+     * IME/旋转/resize 引起的布局变化），若每次都清手指表，按住虚拟键的那根手指就会被
+     * 中途「解封」⇒ 它的 MOVE 掉进"触屏当鼠标"路径 ⇒ 按虚拟键同时动视角 / 划视角乱飞。
+     * 手指表的清理只属于「手势终结」（UP/CANCEL）与「会话边界」（Start 新窗口 / Stop），
+     * 并且只允许 filter 线程触碰它（避免与 NAPI 线程竞态）。
+     */
+    atomic_store_explicit(&g_tExclActive, slot, memory_order_release);
+    MEOWLOGI("touch exclude rects n=%{public}d", n);
+}
+
+static bool meow_touch_in_exclude(double dx, double dy) {
+    /* acquire 读到已发布的槽位，该槽位内容（含条数）在 release 之前已写完。 */
+    int slot = atomic_load_explicit(&g_tExclActive, memory_order_acquire);
+    int count = g_tExclRectCounts[slot];
+    const struct meow_exclude_rect *rects = g_tExclRects[slot];
+    for (int i = 0; i < count; i++) {
+        const struct meow_exclude_rect *r = &rects[i];
+        if (dx >= (double)r->x && dx < (double)(r->x + r->w) &&
+            dy >= (double)r->y && dy < (double)(r->y + r->h)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool meow_touch_excl_finger_has(int fid) {
+    for (int i = 0; i < g_tExclFingerCount; i++) {
+        if (g_tExclFingers[i] == fid) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void meow_touch_excl_finger_add(int fid) {
+    if (meow_touch_excl_finger_has(fid) || g_tExclFingerCount >= MEOW_MAX_EXCLUDE_FINGERS) {
+        return;
+    }
+    g_tExclFingers[g_tExclFingerCount++] = fid;
+}
+
+static void meow_touch_excl_finger_remove(int fid) {
+    for (int i = 0; i < g_tExclFingerCount; i++) {
+        if (g_tExclFingers[i] == fid) {
+            g_tExclFingers[i] = g_tExclFingers[g_tExclFingerCount - 1];
+            g_tExclFingerCount--;
+            return;
+        }
+    }
+}
+
+/*
+ * 一次触屏会话的全部单次状态复位。Start/Stop 都调：若上一段手势丢了收尾的 UP/CANCEL，
+ * 双指标志 / 手指计数 / 排除手指会一直挂着，导致光标与左键到重启前都失效。复位时若左键
+ * 还按着，先补发一次释放，防粘键。
+ */
+static void meow_touch_reset_gesture(void) {
+    if (g_tLeftDown) {
+        critical_send_mouse_button(0, 0, 0);
+        g_tLeftDown = 0;
+    }
+    g_tFingers = 0;
+    g_tTwoFinger = 0;
+    g_tLastX = 0.0;
+    g_tLastY = 0.0;
+    g_tDownMs = 0;
+    g_tExclFingerCount = 0;
+    g_tLastLogMs = 0;
+}
+
+/*
+ * 触屏专用转视角累加，语义与 meowGrabDelta 相同，但**只**按 g_touchSens 缩放，
+ * 不再被鼠标/node 的 g_grabSensitivity 二次缩放。触点位置仍落在同一个虚拟抓取光标上，
+ * 这样进入 grab 时的 meowGrabReset 对两种输入都生效。dx/dy 为 display px 位移。
+ */
+static void meow_touch_grab_delta(double dx, double dy) {
+    struct meow_environ_s *env = meow_environ;
+    if (env == NULL || !env->grabbing) {
+        return;
+    }
+    double s = (g_touchScale > 0.0) ? g_touchScale : 1.0;
+    /* 手感因子 = 触屏灵敏度设置 × 光标灵敏度基值(g_grabSensitivity)。
+     * 后者是进 grab 时由 ArkTS 设定的**基值**，与鼠标/node 路径共用；触屏只读不写它，
+     * 所以"动触屏设置不影响鼠标手感"仍然成立。**两个因子都要留**：只留前者会让视角
+     * 按 g_grabSensitivity 的倍数突然变快（2026-09-21 实测"划视角乱飞"）。 */
+    double k = (double)g_touchSens * (double)g_grabSensitivity;
+    g_grabCursorX += (float)(dx / s * k);
+    g_grabCursorY += (float)(dy / s * k);
+    critical_send_cursor_pos(g_grabCursorX, g_grabCursorY);
+    meow_rate_tick();
 }
 
 static bool meow_touch_filter(Input_TouchEvent *event) {
@@ -1089,9 +1252,45 @@ static bool meow_touch_filter(Input_TouchEvent *event) {
     double dx = (double)OH_Input_GetTouchEventDisplayX(event);
     double dy = (double)OH_Input_GetTouchEventDisplayY(event);
 
+    /*
+     * 整段手势被取消：一次到位复位。**不能只减一格手指计数** —— 双指场景下 g_tTwoFinger
+     * 不清、计数又回不到 0 ⇒ 之后每次 DOWN 都把它顶回 2 ⇒ 永久卡在双指模式（单指点击与
+     * 拖动全被吞，直到 Stop）。取消事件也未必带有效 fingerId，所以按"整段终结"处理。
+     */
+    if (action == TOUCH_ACTION_CANCEL) {
+        meow_touch_reset_gesture();
+        return false;
+    }
+
+    /*
+     * 虚拟按键排除区：命中即本指整段手势「只按按钮」。在计数之前判定，使落在按键上的
+     * 手指**不参与 g_tFingers**（否则会误触发双指右键，把另一根手指的转视角/光标顶掉）；
+     * 手指计数靠 g_tExclFingers 单独维护，抬手时移除，不会漂移。
+     */
+    bool exclDown = (action == TOUCH_ACTION_DOWN) && meow_touch_in_exclude(dx, dy);
+    /* 一次 DOWN 就是该 id 新手势的起点：若上一段手势漏了 UP、列表里还残留这个 id，
+     * 这里先摘掉，否则「重用的 id 起手在区外」会被整段误跳过。 */
+    if (action == TOUCH_ACTION_DOWN && !exclDown) {
+        meow_touch_excl_finger_remove(fid);
+    }
+    bool exclHeld = meow_touch_excl_finger_has(fid);
+    if (exclDown || exclHeld) {
+        if (exclDown) {
+            meow_touch_excl_finger_add(fid);
+            if (g_tLeftDown) { /* 之前由别的手指按下的左键补一次释放，防粘键 */
+                critical_send_mouse_button(0, 0, 0);
+                g_tLeftDown = 0;
+            }
+        }
+        if (action == TOUCH_ACTION_UP) {
+            meow_touch_excl_finger_remove(fid);
+        }
+        return false;
+    }
+
     if (action == TOUCH_ACTION_DOWN) {
         g_tFingers++;
-    } else if (action == TOUCH_ACTION_UP || action == TOUCH_ACTION_CANCEL) {
+    } else if (action == TOUCH_ACTION_UP) {
         if (g_tFingers > 0) {
             g_tFingers--;
         }
@@ -1154,14 +1353,13 @@ static bool meow_touch_filter(Input_TouchEvent *event) {
 
     if (action == TOUCH_ACTION_MOVE) {
         if (env->grabbing) {
-            double s = (g_filterScale > 0.0) ? g_filterScale : 1.0;
-            meowGrabDelta((float)((dx - g_tLastX) / s * g_touchSens),
-                          (float)((dy - g_tLastY) / s * g_touchSens));
+            meow_touch_grab_delta(dx - g_tLastX, dy - g_tLastY);
         } else {
             double lx = 0.0;
             double ly = 0.0;
             meow_touch_local(dx, dy, &lx, &ly);
             critical_send_cursor_pos((float)lx, (float)ly);
+            meow_rate_tick(); /* 与鼠标路径一致，供速率浮层统计 */
         }
         g_tLastX = dx;
         g_tLastY = dy;
@@ -1182,21 +1380,36 @@ static bool meow_touch_filter(Input_TouchEvent *event) {
 
 int meowTouchFilterStart(int32_t windowId, double originX, double originY, double scale, int enable,
                          double sens) {
-    g_filterOriginX = originX;
-    g_filterOriginY = originY;
-    g_filterScale = (scale > 0.0) ? scale : 1.0;
+    /*
+     * 参数（原点/缩放/开关/灵敏度）可以每次刷新：ArkTS 在触摸过程中会反复重推它们。
+     * **但绝不能在这里复位手势状态** —— 曾把它们放在同一个函数里一起做，于是"每次刷新
+     * 都 reset"在手势进行中每 ~100ms 发生一次，把上次坐标清零 ⇒ 下一个 MOVE 从 0 算增量
+     * （划视角乱飞），并把排除区的手指记忆清掉 ⇒ 按虚拟键不再被排除（按键同时动视角）。
+     * 一个根因，两个症状。复位只在**真正的会话边界**做（窗口变了 / 之前 Stop 过）。
+     */
+    g_touchOriginX = originX;
+    g_touchOriginY = originY;
+    g_touchScale = (scale > 0.0) ? scale : 1.0;
+    /* 开关被关掉（1→0）时若此前按下了左键，**补一次释放**：否则该释放会随下面的门控一起
+     * 被跳过 ⇒ 左键粘住、一直挖/放。门控只该挡"新增输入"，不该挡"收尾"。 */
+    if (g_touchEnabled && enable == 0 && g_tLeftDown) {
+        critical_send_mouse_button(0, 0, 0);
+        g_tLeftDown = 0;
+    }
     /* 开关由上层（启动器「高级选项」）以参数传入，不用 env（能参数化就不加 env）。 */
     g_touchEnabled = (enable != 0) ? 1 : 0;
     g_touchSens = (sens > 0.0) ? (float)sens : 1.0f;
     if (g_touchReg && g_touchWinId == windowId) {
-        return 0;
+        return 0; /* 同一窗口：纯参数刷新，不动手势状态 */
     }
+    /* 新会话：复位，避免把上一段手势的残留（漏收尾的 UP/CANCEL）带进来。 */
+    meow_touch_reset_gesture();
     int32_t rc = OH_NativeWindowManager_RegisterTouchEventFilter(windowId, meow_touch_filter);
     if (rc == 0) {
         g_touchReg = 1;
         g_touchWinId = windowId;
         MEOWLOGI("touch filter start window=%{public}d origin=%{public}f,%{public}f scale=%{public}f enabled=%{public}d",
-                 windowId, originX, originY, g_filterScale, g_touchEnabled);
+                 windowId, originX, originY, g_touchScale, g_touchEnabled);
     } else {
         MEOWLOGE("touch filter start failed rc=%{public}d", (int)rc);
     }
@@ -1207,10 +1420,7 @@ int meowTouchFilterStop(int32_t windowId) {
     int32_t rc = OH_NativeWindowManager_UnregisterTouchEventFilter(windowId);
     g_touchReg = 0;
     g_touchWinId = 0;
-    if (g_tLeftDown) {
-        critical_send_mouse_button(0, 0, 0);
-        g_tLeftDown = 0;
-    }
+    meow_touch_reset_gesture();
     MEOWLOGI("touch filter stop rc=%{public}d", (int)rc);
     return (int)rc;
 }

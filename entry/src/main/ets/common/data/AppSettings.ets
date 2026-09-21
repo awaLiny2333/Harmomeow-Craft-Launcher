@@ -4,12 +4,14 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { GlobalSettings, GlobalSettingsJson, buildGlobalNode, parseGlobalNode }
   from './GlobalSettings';
+import { MEOW_SETTINGS_DIR, TOUCH_CONTROLS_FILE, meowSettingsDir, touchControlsSettingsPath }
+  from '../constants/Paths';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'AppSettings';
 
-/** 应用级设置目录（应用沙箱 filesDir 内，外部不可见；导出是唯一取出口）。 */
-export const APP_SETTINGS_DIR: string = 'meow-settings';
+/** 应用级设置目录（应用沙箱 filesDir 内，外部不可见；导出是唯一取出口）。目录名的唯一来源在 `Paths.MEOW_SETTINGS_DIR`。 */
+export const APP_SETTINGS_DIR: string = MEOW_SETTINGS_DIR;
 /** 目录枚举 + 选中指针 + 全局设置文件名（一个文件装这些）。 */
 const APP_SETTINGS_FILE: string = 'app-settings.json';
 /** 账户列表文件名（含微软 token，导出时须告警）。 */
@@ -47,7 +49,7 @@ export function emptyAppSettings(): AppSettings {
 
 /** `<filesDir>/meow-settings/`。 */
 export function appSettingsDir(ctx: common.Context): string {
-  return `${ctx.filesDir}/${APP_SETTINGS_DIR}`;
+  return meowSettingsDir(ctx.filesDir);
 }
 
 /** `<filesDir>/meow-settings/app-settings.json`。 */
@@ -240,7 +242,7 @@ export function writeAppGlobalSettings(ctx: common.Context, data: GlobalSettings
   return true;
 }
 
-/** 导出结果：`outDir` 为 `null` = 整体失败（两份皆缺 / 皆读不出 / 目标非法 / 写盘失败）；`skipped` = 存在但读不出、被跳过的文件名。 */
+/** 导出结果：`outDir` 为 `null` = 整体失败（三份皆缺 / 皆读不出 / 目标非法 / 写盘失败）；`skipped` = 存在但读不出、被跳过的文件名。 */
 export interface ExportResult {
   outDir: string | null;
   skipped: string[];
@@ -248,10 +250,10 @@ export interface ExportResult {
 
 /**
  * 导出设置 JSON 到用户选择目录下的 `meow-settings-backup-<yyyyMMdd-HHmmss>/`。
- * **原文拷贝**：直接读磁盘上两份 JSON 原文（不经对象重建），解析后经 `writeJsonAtomic` 原样写出
- * （保持多行缩进与未知键）——哪份存在导哪份，缺 `accounts.json` 不影响 `app-settings.json` 导出；
- * **单份存在但读不出**（坏 / 异格式）→ 计入 `skipped` 并跳过该份；两份都缺失（或都读不出）→
- * `outDir` 为 `null`（调用方给可读错误）。一次性导出，不持久化授权。
+ * **原文拷贝**：直接读磁盘上三份 JSON 原文（`app-settings.json` / `accounts.json` / `touch-controls.json`，
+ * 不经对象重建），解析后经 `writeJsonAtomic` 原样写出（保持多行缩进与未知键）——哪份存在导哪份，
+ * 缺任一份不影响其余导出（含触控布局）；**单份存在但读不出**（坏 / 异格式）→ 计入 `skipped` 并跳过该份；
+ * 三份都缺失（或都读不出）→ `outDir` 为 `null`（调用方给可读错误）。一次性导出，不持久化授权。
  */
 export function exportSettings(ctx: common.Context, targetDirUri: string): ExportResult {
   const skipped: string[] = [];
@@ -261,8 +263,10 @@ export function exportSettings(ctx: common.Context, targetDirUri: string): Expor
   }
   const appPath = appSettingsPath(ctx);
   const acctPath = accountsPath(ctx);
+  const touchPath = touchControlsSettingsPath(ctx.filesDir);
   const appRaw = readSettingsFileRaw(appPath);
   const accountsRaw = readSettingsFileRaw(acctPath);
+  const touchRaw = readSettingsFileRaw(touchPath);
   // 存在但读不出（坏 / 异格式）→ 记入 skipped，导出时跳过该份（文件缺失不算 skipped）。
   if (appRaw === null && existsNonEmpty(appPath)) {
     skipped.push(APP_SETTINGS_FILE);
@@ -270,7 +274,10 @@ export function exportSettings(ctx: common.Context, targetDirUri: string): Expor
   if (accountsRaw === null && existsNonEmpty(acctPath)) {
     skipped.push(ACCOUNTS_FILE);
   }
-  if (appRaw === null && accountsRaw === null) {
+  if (touchRaw === null && existsNonEmpty(touchPath)) {
+    skipped.push(TOUCH_CONTROLS_FILE);
+  }
+  if (appRaw === null && accountsRaw === null && touchRaw === null) {
     hilog.error(LOG_DOMAIN, LOG_TAG, 'export aborted: no settings files on disk');
     return { outDir: null, skipped };
   }
@@ -279,6 +286,9 @@ export function exportSettings(ctx: common.Context, targetDirUri: string): Expor
     return { outDir: null, skipped };
   }
   if (accountsRaw !== null && !writeJsonAtomic(outDir, `${outDir}/${ACCOUNTS_FILE}`, accountsRaw)) {
+    return { outDir: null, skipped };
+  }
+  if (touchRaw !== null && !writeJsonAtomic(outDir, `${outDir}/${TOUCH_CONTROLS_FILE}`, touchRaw)) {
     return { outDir: null, skipped };
   }
   hilog.info(LOG_DOMAIN, LOG_TAG, 'settings exported to %{public}s', outDir);

@@ -32,6 +32,15 @@ export const MEOW_HOME_DIR: string = 'meow-home';
 /** "打开链接"请求文件（native 写、ArkTS 取走；见 GameWindow.pollOpenUrl）。 */
 export const OPEN_URL_REQUEST_FILE: string = 'meow-open-url.txt';
 
+/** 应用级设置目录名（filesDir 下）；**唯一来源**，AppSettings.APP_SETTINGS_DIR 引用本常量，不得再写同值字面量。 */
+export const MEOW_SETTINGS_DIR: string = 'meow-settings';
+
+/** 触控设置文件名（独立成整份：整份替换即可换一套触控布局）。 */
+export const TOUCH_CONTROLS_FILE: string = 'touch-controls.json';
+
+/** 解析失败文件的后缀（原文件改名加此后缀备份，供用户找回手改内容）。 */
+export const BAD_FILE_SUFFIX: string = '.bad';
+
 /** 版本 jar 平铺目录（cacheDir 下）。 */
 export const MC_CP_DIR: string = 'mc-cp';
 
@@ -89,6 +98,21 @@ export const NEO_JVM_RESULT: string = 'meow-neo-jvm-result.txt';
 /** <filesDir>/meow-jres/<id>（java.home 数据目录）。 */
 export function jreHomeDir(filesDir: string, id: string = JRE_ID_MEOW): string {
   return `${filesDir}/${JRES_ROOT}/${id}`;
+}
+
+/** `<filesDir>/meow-settings`（应用级设置目录）。 */
+export function meowSettingsDir(filesDir: string): string {
+  return `${filesDir}/${MEOW_SETTINGS_DIR}`;
+}
+
+/** `<filesDir>/meow-settings/touch-controls.json`（触控设置，整份可替换）。 */
+export function touchControlsSettingsPath(filesDir: string): string {
+  return `${meowSettingsDir(filesDir)}/${TOUCH_CONTROLS_FILE}`;
+}
+
+/** `<filesDir>/meow-settings/touch-controls.json.bad`（解析失败的原文件备份）。 */
+export function touchControlsBadPath(filesDir: string): string {
+  return `${touchControlsSettingsPath(filesDir)}${BAD_FILE_SUFFIX}`;
 }
 
 /** <bundleCodeDir>/meowjre/libs/arm64（JRE/桥 el1 native libs）。 */

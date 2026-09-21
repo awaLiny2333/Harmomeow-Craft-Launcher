@@ -132,6 +132,12 @@ export const touchFilterStart: (windowId: number, ox: number, oy: number, scale:
 export const touchFilterStop: (windowId: number) => number;
 
 /**
+ * 上报虚拟按键排除区：CSV（display px，"x,y,w,h;x,y,w,h"）；空串清空。
+ * 命中这些矩形的触点只按虚拟按键，不驱动 MC 光标/点击。
+ */
+export const touchSetExcludeRects: (csv: string) => void;
+
+/**
  * 把 ArkTS 侧 ContentSlot 的 NodeContent 交给 native，挂一个 NDK 创建的透明覆盖节点
  * （HitTestMode.Transparent，不挡下层 XComponent），注册 NODE_ON_MOUSE。
  * grab 时原生按 rawDelta 驱动虚拟光标（采样率 = 显示帧率）。

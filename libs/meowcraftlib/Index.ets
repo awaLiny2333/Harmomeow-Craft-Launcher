@@ -28,6 +28,8 @@ export const mouseFilterStop = bridge.mouseFilterStop;
 // 触屏 -> 鼠标：窗口级 touch filter（与 mouseFilter* 同一套原点/缩放口径）。
 export const touchFilterStart = bridge.touchFilterStart;
 export const touchFilterStop = bridge.touchFilterStop;
+// 虚拟按键排除区（display px CSV）：命中区内的手指只按按钮，不驱动光标/点击。
+export const touchSetExcludeRects = bridge.touchSetExcludeRects;
 // 原生鼠标增量输入：挂 NDK 覆盖节点收 NODE_ON_MOUSE（grab 视角驱动）。
 export const bindNodeContent = bridge.bindNodeContent;
 export const meowGrabReset = bridge.meowGrabReset;

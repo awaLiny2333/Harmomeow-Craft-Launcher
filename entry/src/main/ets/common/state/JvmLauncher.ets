@@ -48,6 +48,8 @@ export interface JreLibModule {
   touchFilterStart?: (windowId: number, ox: number, oy: number, scale: number,
     enable: boolean, sens: number) => number;
   touchFilterStop?: (windowId: number) => number;
+  /** 虚拟按键排除区（display px CSV "x,y,w,h;..."）；命中区内的手指只按按钮，空串清空。 */
+  touchSetExcludeRects?: (csv: string) => void;
   /** 原生鼠标增量输入：挂 NDK 覆盖节点，grab 时按 rawDelta 驱动虚拟光标。 */
   bindNodeContent?: (content: object, sens: number) => number;
   /** 进入 grab：重置原生虚拟光标到中心并下发一次。 */

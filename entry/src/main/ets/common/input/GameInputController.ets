@@ -8,7 +8,7 @@ import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H } from '../constants/LaunchDefaults'
 import { SCROLL_VP_PER_NOTCH } from '../constants/Constants';
 import { GLFW_RELEASE, GLFW_PRESS, GLFW_REPEAT, GLFW_MOD_SHIFT, GLFW_MOD_CTRL, GLFW_MOD_ALT,
   GLFW_MOD_SUPER, GLFW_KEY_ESCAPE, GLFW_KEY_ENTER, GLFW_KEY_BACKSPACE, GLFW_KEY_T,
-  GLFW_KEY_SLASH, toGlfwKey, glfwMouseButton, keyModFlag } from './GlfwInput';
+  GLFW_KEY_SPACE, GLFW_KEY_SLASH, toGlfwKey, glfwMouseButton, keyModFlag } from './GlfwInput';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'GameInput';
@@ -60,6 +60,13 @@ export class GameInputController {
   private touchSens: number = 1;
   private mapOx: number = -1e9;
   private mapOy: number = -1e9;
+  /** 触屏 filter 原点：与鼠标 mapOx/mapOy 分离，避免任一路径的 <0.5 去重误伤另一路。
+   *  未标定时 valid=false（native 无法表达"未标定"，注册时按 0 处理，而不是传 -1e9 哨兵）。 */
+  private touchOriginX: number = 0;
+  private touchOriginY: number = 0;
+  private touchOriginValid: boolean = false;
+  /** dispose 后置 true：异步回调不再给已关窗口注册/上报 filter。 */
+  private disposed: boolean = false;
 
   // ---- 原生鼠标增量输入（NDK 覆盖节点）----
   private nativeGrabInput: boolean = false;
@@ -152,19 +159,28 @@ export class GameInputController {
 
   /**
    * 注册触屏 filter。
-   * ⚠ 必须挂在**与鼠标无关**的时机（页面挂载）：手机上压根没有鼠标事件，
+   * 必须挂在**与鼠标无关**的时机（页面挂载）：手机上压根没有鼠标事件，
    * 若挂在 pushMouseMap（只在 MouseAction.Move 里调）则**永远注册不上** ✗。
-   * 原点/缩放沿用鼠标路径算出的值（纯触屏设备上默认 0/1）；native 侧每次调用都会刷新它。
+   * 原点/缩放由触屏路径独立标定（handleTouchMap）；触屏原点尚未标定时 native 无法表达
+   * "未标定"，故按 0 处理，而不是把 -1e9 哨兵当合法值传下去（否则首手势坐标被打成极端值）。
    */
   private ensureTouchFilter(): void {
+    if (this.disposed) {
+      return;
+    }
     const b = this.bridge;
     if (b === undefined || b.touchFilterStart === undefined) {
       return;
     }
     const s: number = this.renderScale > 0 ? this.renderScale : 1;
     const apply = (wid: number): void => {
+      if (this.disposed) {
+        return;
+      }
+      const ox: number = this.touchOriginValid ? this.touchOriginX : 0;
+      const oy: number = this.touchOriginValid ? this.touchOriginY : 0;
       try {
-        const rc = b.touchFilterStart?.(wid, this.mapOx, this.mapOy, s, this.touchAsMouse,
+        const rc = b.touchFilterStart?.(wid, ox, oy, s, this.touchAsMouse,
           this.touchSens) ?? -1;
         hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStart win=%{public}d -> %{public}d', wid, rc);
       } catch (e) {
@@ -175,6 +191,9 @@ export class GameInputController {
       apply(this.filterWinId);
     } else {
       window.getLastWindow(this.ctx).then((w: window.Window) => {
+        if (this.disposed) {
+          return;
+        }
         try {
           this.filterWinId = w.getWindowProperties().id;
           apply(this.filterWinId);
@@ -197,7 +216,7 @@ export class GameInputController {
     // 桥是 async 懒加载（ensureBridge），此刻 this.bridge 多半仍是 undefined；
     // 直接调 ensureTouchFilter 会被守卫静默 return（2026-09-21 实测踩过）。
     this.ensureBridge().then((b: JreLibModule | undefined) => {
-      if (b !== undefined) {
+      if (b !== undefined && !this.disposed) {
         this.ensureTouchFilter();
       }
     }).catch((e: Error) => {
@@ -224,8 +243,9 @@ export class GameInputController {
     }, RATE_POLL_MS);
   }
 
-  /** 页面销毁：清定时器 + 兜底解锁/补键。 */
+  /** 页面销毁：清定时器 + 兜底解锁/补键 + 注销窗口级触屏 filter。 */
   dispose(): void {
+    this.disposed = true;
     this.clearPendingReleases();
     if (this.grabPollTimer >= 0) {
       clearInterval(this.grabPollTimer);
@@ -869,8 +889,12 @@ export class GameInputController {
    * 与 pushMouseMap 同一公式、同一单位口径（TouchObject.displayX/x 均为 vp，
    * 乘 frameW/xcVpW 得物理 px；native filter 给的 display 坐标正是物理 px，两边一致）。
    * 必须存在：原点原本只从**鼠标**事件反算，纯触屏设备上会一直是哨兵 -1e9 ⇒ 光标乱飞。
+   * 结果写入触屏专用 touchOriginX/Y（与鼠标 mapOx/mapOy 分离），避免干扰鼠标路径的去重。
    */
   handleTouchMap(event: TouchEvent): void {
+    if (this.disposed) {
+      return;
+    }
     const b = this.bridge;
     if (b === undefined || b.touchFilterStart === undefined || event.touches === undefined) {
       return;
@@ -887,9 +911,39 @@ export class GameInputController {
     const s: number = this.renderScale > 0 ? this.renderScale : 1;
     const sx = this.xcVpW > 0 ? this.frameW / this.xcVpW : 1;
     const sy = this.xcVpH > 0 ? this.frameH / this.xcVpH : 1;
-    this.mapOx = (t.displayX - s * t.x) * sx;
-    this.mapOy = (t.displayY - s * t.y) * sy;
-    b.touchFilterStart(this.filterWinId, this.mapOx, this.mapOy, s, this.touchAsMouse, this.touchSens);
+    const ox: number = (t.displayX - s * t.x) * sx;
+    const oy: number = (t.displayY - s * t.y) * sy;
+    /* 去重（与 pushMouseMap 同口径）：原点没变就不重推。native 的 touchFilterStart 是
+     * "参数刷新"入口，少推一次就少一份"刷新路径参与手势"的风险。 */
+    if (this.touchOriginValid && Math.abs(ox - this.touchOriginX) < 0.5 &&
+      Math.abs(oy - this.touchOriginY) < 0.5) {
+      return;
+    }
+    this.touchOriginX = ox;
+    this.touchOriginY = oy;
+    this.touchOriginValid = true;
+    try {
+      b.touchFilterStart(this.filterWinId, ox, oy, s, this.touchAsMouse, this.touchSens);
+    } catch (e) {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStart err: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  /**
+   * 上报虚拟按键排除区（display px CSV "x,y,w,h;..."；空串清空）给 native touch filter。
+   * 静态：TouchControlsView 只有回调、拿不到控制器实例，故自行懒加载桥后转调。
+   * 命中区内的手指只按虚拟按键，不驱动 MC 光标/点击。
+   */
+  static setTouchExcludeRects(csv: string): void {
+    const run = async (): Promise<void> => {
+      try {
+        const b = await import('meowjre') as JreLibModule;
+        b.touchSetExcludeRects?.(csv);
+      } catch (e) {
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'setTouchExcludeRects fail: %{public}s', JSON.stringify(e));
+      }
+    };
+    run();
   }
 
   /** 用 ArkUI 事件换算组件左上角的 display 像素偏移并下发（filter 直通用）。 */
@@ -917,21 +971,31 @@ export class GameInputController {
     this.mapOx = ox;
     this.mapOy = oy;
     const apply = (wid: number): void => {
-      const rc = b.mouseFilterStart?.(wid, ox, oy, s) ?? -1;
-      if (rc === 0 && !this.filterActive) {
-        this.filterActive = true;
-        hilog.info(LOG_DOMAIN, LOG_TAG,
-          'pushMouseMap active win=%{public}d ox=%{public}d oy=%{public}d',
-          wid, Math.round(ox), Math.round(oy));
+      if (this.disposed) {
+        return;
       }
-      // 触屏走同一个窗口 filter 家族（复用同一套原点/缩放口径）。
-      // native 侧缺省只记日志（判"这条 filter 响不响"），MEOW_TOUCH=1 才合成鼠标事件。
-      b.touchFilterStart?.(wid, ox, oy, s, this.touchAsMouse, this.touchSens);
+      try {
+        const rc = b.mouseFilterStart?.(wid, ox, oy, s) ?? -1;
+        if (rc === 0 && !this.filterActive) {
+          this.filterActive = true;
+          hilog.info(LOG_DOMAIN, LOG_TAG,
+            'pushMouseMap active win=%{public}d ox=%{public}d oy=%{public}d',
+            wid, Math.round(ox), Math.round(oy));
+        }
+        // 触屏走同一个窗口 filter 家族（复用同一套原点/缩放口径）。是否把触屏合成鼠标事件
+        // 由应用级设置 touchAsMouse 经参数 enable 传入（旧的 MEOW_TOUCH env 门控早已删除）。
+        b.touchFilterStart?.(wid, ox, oy, s, this.touchAsMouse, this.touchSens);
+      } catch (e) {
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'pushMouseMap filter err: %{public}s', JSON.stringify(e));
+      }
     };
     if (this.filterWinId > 0) {
       apply(this.filterWinId);
     } else {
       window.getLastWindow(this.ctx).then((w: window.Window) => {
+        if (this.disposed) {
+          return;
+        }
         this.filterWinId = w.getWindowProperties().id;
         apply(this.filterWinId);
       }).catch((e: Error) => {
@@ -1004,6 +1068,115 @@ export class GameInputController {
         }
       }
     }
+    this.stopWindowFilters();
     this.releaseAllKeysUp();
+  }
+
+  /** 注销窗口级触屏 filter 并复位触屏状态（窗口重开时可重新注册）。 */
+  private stopWindowFilters(): void {
+    const wid: number = this.filterWinId;
+    this.filterWinId = 0;
+    this.touchOriginX = 0;
+    this.touchOriginY = 0;
+    this.touchOriginValid = false;
+    this.touchMapLastMs = 0;
+    if (wid <= 0) {
+      return;
+    }
+    const b = this.bridge;
+    if (b === undefined) {
+      return;
+    }
+    /* 两个窗口级 filter 一起收尾：只停一个会留下不对称，窗口重开时的行为不可预期。 */
+    try {
+      if (b.mouseFilterStop !== undefined) {
+        b.mouseFilterStop(wid);
+      }
+      if (b.touchFilterStop !== undefined) {
+        const rc: number = b.touchFilterStop(wid);
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStop win=%{public}d -> %{public}d', wid, rc);
+      }
+    } catch (e) {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'stopWindowFilters err: %{public}s', JSON.stringify(e));
+    }
+    this.filterActive = false;
+  }
+
+  /**
+   * 虚拟触屏按键：把覆盖层按钮转成既有的桥原语（与物理输入同一套 meowSendKey /
+   * meowSendMouseButton）。down=true 按下（GLFW_PRESS），false 抬起（GLFW_RELEASE）。
+   * 键盘键经 glfwToHmKey 反查 HM KeyCode 记入 pressed：这样 currentMods() 能与物理修饰键
+   * 叠加、releaseAllKeysUp()（blur/dispose）能兜底释放；覆盖层对每根手指的 Up/Cancel 都会
+   * 回调一次，正常路径不粘键。鼠标键 mods 同样取 currentMods()。
+   */
+  pressVirtual(code: number, isMouse: boolean, down: boolean): void {
+    const b = this.bridge;
+    if (b === undefined) {
+      return;
+    }
+    const action: number = down ? GLFW_PRESS : GLFW_RELEASE;
+    if (isMouse) {
+      if (b.meowSendMouseButton === undefined) {
+        return;
+      }
+      b.meowSendMouseButton(code, action, this.currentMods());
+      return;
+    }
+    if (b.meowSendKey === undefined) {
+      return;
+    }
+    const kc: number = this.glfwToHmKey(code);
+    if (kc !== 0) {
+      if (down) {
+        this.pressed.add(kc);
+      } else {
+        this.pressed.delete(kc);
+      }
+    }
+    this.sendKey(code, action);
+  }
+
+  /**
+   * GLFW 键码 -> HarmonyOS KeyCode（仅覆盖虚拟覆盖层用到的键：字母 / 空格 / Esc / 修饰键；
+   * 只做本文件需要的反向，未知返回 0 = 仅发送、不记 pressed，不做全表反向）。
+   */
+  private glfwToHmKey(gk: number): number {
+    if (gk >= 65 && gk <= 90) {
+      return gk + 1952;
+    }
+    switch (gk) {
+      case GLFW_KEY_SPACE:
+        return KeyCode.KEYCODE_SPACE;
+      case GLFW_KEY_ESCAPE:
+        return KeyCode.KEYCODE_ESCAPE;
+      case 340:
+        return KeyCode.KEYCODE_SHIFT_LEFT;
+      case 341:
+        return KeyCode.KEYCODE_CTRL_LEFT;
+      case 342:
+        return KeyCode.KEYCODE_ALT_LEFT;
+      case 343:
+        return KeyCode.KEYCODE_META_LEFT;
+      case 344:
+        return KeyCode.KEYCODE_SHIFT_RIGHT;
+      case 345:
+        return KeyCode.KEYCODE_CTRL_RIGHT;
+      case 346:
+        return KeyCode.KEYCODE_ALT_RIGHT;
+      case 347:
+        return KeyCode.KEYCODE_META_RIGHT;
+      default:
+        return 0;
+    }
+  }
+
+  /**
+   * 虚拟滚轮按键（左 / 右切物品栏格）：按一下发一格。
+   * notches 的符号沿用既有滚轮约定（与 handleAxis/pushScroll 一致）：正 = 向上滚（GLFW +y），负 = 向下滚。
+   * 与既有滚轮路径一致：先乘滚轮速度倍率，再经 pushScroll 累计成整格下发（handleAxis 也是
+   * 先乘 scrollScale 再 pushScroll；pushScroll 自身不乘）。
+   */
+  scrollVirtual(notches: number): void {
+    this.pushScroll(0, notches * this.scrollScale);
   }
 }

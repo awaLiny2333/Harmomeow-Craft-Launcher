@@ -3,7 +3,8 @@ import { SettingsTools } from '../common/data/SettingsTools';
 import { exportSettings } from '../common/data/AppSettings';
 import { pickDirectory, authorizeDirectory } from '../common/access/FileAccess';
 import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY,
-  SCROLL_SPEED_DEFAULT_PERCENT, TOUCH_SENSITIVITY_DEFAULT_PERCENT,
+  SCROLL_SPEED_DEFAULT_PERCENT, TOUCH_SENSITIVITY_DEFAULT_PERCENT, TOUCH_AS_MOUSE_DEFAULT,
+  TOUCH_CONTROLS_DEFAULT, TOUCH_CONTROLS_INSET_DEFAULT, TOUCH_CONTROLS_SCALE_DEFAULT_PERCENT,
   RENDER_SCALE_OPTIONS } from '../common/constants/Constants';
 
 // native 导出（getCpuCount：sysconf 探测本机核数）
@@ -21,15 +22,27 @@ export struct AdvancedOptionsView {
   /** 是否显示采样率 overlay。 */
   @Local showInputRate: boolean = false;
   /** 触屏当鼠标（默认开）。 */
-  @Local touchAsMouse: boolean = true;
+  @Local touchAsMouse: boolean = TOUCH_AS_MOUSE_DEFAULT;
+  /** 触屏虚拟按键（默认关）。 */
+  @Local touchControls: boolean = TOUCH_CONTROLS_DEFAULT;
   /** CPU 线程数覆盖（空 = 自动）。 */
   @Local cpuCountText: string = '';
   /** 最大堆 MB 覆盖（空 = 自动）。 */
   @Local maxHeapText: string = '';
   /** 滚轮速度百分比（空 = 100 正常）。 */
   @Local scrollSpeedText: string = '';
-  /** 触屏转视角灵敏度百分比（空 = 100 正常）。 */
+  /** 触屏转视角灵敏度百分比（空 = 默认 128 正常）。 */
   @Local touchSensitivityText: string = '';
+  /** 虚拟触屏按键覆盖层上边距（空 = 默认 12vp）。 */
+  @Local touchControlsInsetTopText: string = '';
+  /** 虚拟触屏按键覆盖层右边距（空 = 默认 12vp）。 */
+  @Local touchControlsInsetRightText: string = '';
+  /** 虚拟触屏按键覆盖层下边距（空 = 默认 12vp）。 */
+  @Local touchControlsInsetBottomText: string = '';
+  /** 虚拟触屏按键覆盖层左边距（空 = 默认 12vp）。 */
+  @Local touchControlsInsetLeftText: string = '';
+  /** 虚拟触屏按键覆盖层整体缩放百分比（空 = 默认 100）。 */
+  @Local touchControlsScaleText: string = '';
   /** 显示缩放档位索引（映射 RENDER_SCALE_OPTIONS；默认 0 = 1x 关闭）。 */
   @Local scaleIndex: number = 0;
   /** 微软登录 client_id（用户自填，不预置；空 = 不可用）。 */
@@ -62,6 +75,7 @@ export struct AdvancedOptionsView {
     this.settings = s;
     this.showInputRate = s.showInputRate();
     this.touchAsMouse = s.touchAsMouse();
+    this.touchControls = s.touchControls();
     const c = s.cpuCount();
     this.cpuCountText = c > 0 ? `${c}` : '';
     const m = s.maxHeapMb();
@@ -70,6 +84,16 @@ export struct AdvancedOptionsView {
     this.scrollSpeedText = sp === SCROLL_SPEED_DEFAULT_PERCENT ? '' : `${sp}`;
     const ts = s.touchSensitivityPercent();
     this.touchSensitivityText = ts === TOUCH_SENSITIVITY_DEFAULT_PERCENT ? '' : `${ts}`;
+    const it = s.touchControlsInsetTop();
+    this.touchControlsInsetTopText = it === TOUCH_CONTROLS_INSET_DEFAULT ? '' : `${it}`;
+    const ir = s.touchControlsInsetRight();
+    this.touchControlsInsetRightText = ir === TOUCH_CONTROLS_INSET_DEFAULT ? '' : `${ir}`;
+    const ib = s.touchControlsInsetBottom();
+    this.touchControlsInsetBottomText = ib === TOUCH_CONTROLS_INSET_DEFAULT ? '' : `${ib}`;
+    const il = s.touchControlsInsetLeft();
+    this.touchControlsInsetLeftText = il === TOUCH_CONTROLS_INSET_DEFAULT ? '' : `${il}`;
+    const tsc = s.touchControlsScalePercent();
+    this.touchControlsScaleText = tsc === TOUCH_CONTROLS_SCALE_DEFAULT_PERCENT ? '' : `${tsc}`;
     const si = RENDER_SCALE_OPTIONS.indexOf(s.renderScale());
     this.scaleIndex = si >= 0 ? si : 0;
     this.msClientIdText = s.msClientId();
@@ -90,6 +114,16 @@ export struct AdvancedOptionsView {
     }
     const n = parseInt(t, 10);
     return Number.isNaN(n) || n < 0 ? 0 : n;
+  }
+
+  /** 解析覆盖层内边距（vp，允许小数）；空/非法 → -1 哨兵，交给设置层归一化回默认值（0 是合法值）。 */
+  private parseInset(v: string): number {
+    const t = v.trim();
+    if (t.length === 0) {
+      return -1;
+    }
+    const n = parseFloat(t);
+    return Number.isNaN(n) ? -1 : n;
   }
 
   private cpuPlaceholder(): string | Resource {
@@ -116,7 +150,7 @@ export struct AdvancedOptionsView {
 
   /**
    * 导出设置入口：先弹窗确认（文案明确提示含微软登录凭据、勿分享），确认后选目录并导出。
-   * 导出的是**应用级数据**（目录列表 + 账户列表 + 高级选项；账户含 token）——故放在本区（应用级设置区）最下面。
+   * 导出的是**应用级数据**（目录列表 + 账户列表 + 高级选项 + 触控布局；账户含 token）——故放在本区（应用级设置区）最下面。
    */
   private confirmExport(): void {
     this.getUIContext().showAlertDialog({
@@ -140,7 +174,7 @@ export struct AdvancedOptionsView {
     });
   }
 
-  /** 选目标目录（授权一次，一次性导出不持久化）→ 写两份 JSON 到带时间戳子目录；取消静默；部分读不出则提示跳过。 */
+  /** 选目标目录（授权一次，一次性导出不持久化）→ 写三份 JSON（设置 + 账户 + 触控布局）到带时间戳子目录；取消静默；部分读不出则提示跳过。 */
   private async doExport(): Promise<void> {
     const ctx = this.context();
     const picked = await pickDirectory(ctx);
@@ -217,6 +251,140 @@ export struct AdvancedOptionsView {
       .width('100%')
       .alignItems(VerticalAlign.Center);
 
+      // 触屏虚拟按键（默认关）
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.advanced_touch_controls'));
+          Text($r('app.string.advanced_touch_controls_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+
+        Toggle({ type: ToggleType.Switch, isOn: this.touchControls })
+          .onChange((isOn: boolean) => {
+            this.touchControls = isOn;
+            this.settings?.setTouchControls(isOn);
+          });
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      // 触屏虚拟按键覆盖层：上边距 vp（空 = 默认 12）
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.advanced_touch_inset_top'));
+          Text($r('app.string.advanced_touch_inset_top_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+
+        TextInput({ text: this.touchControlsInsetTopText, placeholder: `${TOUCH_CONTROLS_INSET_DEFAULT}` })
+          .type(InputType.Number)
+          .width(120)
+          .onChange((v: string) => {
+            this.touchControlsInsetTopText = v;
+          })
+          .onSubmit(() => {
+            this.settings?.setTouchControlsInsetTop(this.parseInset(this.touchControlsInsetTopText));
+          });
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      // 触屏虚拟按键覆盖层：右边距 vp（空 = 默认 12）
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.advanced_touch_inset_right'));
+          Text($r('app.string.advanced_touch_inset_right_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+
+        TextInput({ text: this.touchControlsInsetRightText, placeholder: `${TOUCH_CONTROLS_INSET_DEFAULT}` })
+          .type(InputType.Number)
+          .width(120)
+          .onChange((v: string) => {
+            this.touchControlsInsetRightText = v;
+          })
+          .onSubmit(() => {
+            this.settings?.setTouchControlsInsetRight(this.parseInset(this.touchControlsInsetRightText));
+          });
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      // 触屏虚拟按键覆盖层：下边距 vp（空 = 默认 12）
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.advanced_touch_inset_bottom'));
+          Text($r('app.string.advanced_touch_inset_bottom_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+
+        TextInput({ text: this.touchControlsInsetBottomText, placeholder: `${TOUCH_CONTROLS_INSET_DEFAULT}` })
+          .type(InputType.Number)
+          .width(120)
+          .onChange((v: string) => {
+            this.touchControlsInsetBottomText = v;
+          })
+          .onSubmit(() => {
+            this.settings?.setTouchControlsInsetBottom(this.parseInset(this.touchControlsInsetBottomText));
+          });
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      // 触屏虚拟按键覆盖层：左边距 vp（空 = 默认 12）
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.advanced_touch_inset_left'));
+          Text($r('app.string.advanced_touch_inset_left_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+
+        TextInput({ text: this.touchControlsInsetLeftText, placeholder: `${TOUCH_CONTROLS_INSET_DEFAULT}` })
+          .type(InputType.Number)
+          .width(120)
+          .onChange((v: string) => {
+            this.touchControlsInsetLeftText = v;
+          })
+          .onSubmit(() => {
+            this.settings?.setTouchControlsInsetLeft(this.parseInset(this.touchControlsInsetLeftText));
+          });
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
+      // 触屏虚拟按键覆盖层：整体缩放 %（空 = 默认 100；只缩放按键尺寸与间隔，不影响四周边距）
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.advanced_touch_scale'));
+          Text($r('app.string.advanced_touch_scale_hint'))
+            .opacity(OPACITY_SECONDARY);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+
+        TextInput({ text: this.touchControlsScaleText, placeholder: `${TOUCH_CONTROLS_SCALE_DEFAULT_PERCENT}` })
+          .type(InputType.Number)
+          .width(120)
+          .onChange((v: string) => {
+            this.touchControlsScaleText = v;
+          })
+          .onSubmit(() => {
+            this.settings?.setTouchControlsScalePercent(this.parseCount(this.touchControlsScaleText));
+          });
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
       // CPU 线程数（空 = 自动）
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
@@ -286,7 +454,7 @@ export struct AdvancedOptionsView {
       .width('100%')
       .alignItems(VerticalAlign.Center);
 
-      // 触屏转视角灵敏度 %（空 = 100 正常）
+      // 触屏转视角灵敏度 %（空 = 默认 128 正常）
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
           Text($r('app.string.advanced_touch_sensitivity'));

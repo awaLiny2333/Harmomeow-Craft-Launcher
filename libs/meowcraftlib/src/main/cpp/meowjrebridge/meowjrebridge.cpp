@@ -1055,7 +1055,7 @@ static napi_value MouseFilterStop(napi_env env, napi_callback_info info) {
 }
 
 /* 触屏 → 鼠标：窗口级 touch filter（与 MouseFilter* 同一套 原点/缩放 口径）。
- * native 侧缺省只记日志（探针），MEOW_TOUCH=1 才合成鼠标事件。 */
+ * 开关与灵敏度由 ArkTS 以参数传入（启动器「高级选项」的设置），不看任何 env。 */
 static napi_value TouchFilterStart(napi_env env, napi_callback_info info) {
     size_t argc = 6;
     napi_value args[6] = {nullptr};
@@ -1119,6 +1119,34 @@ static napi_value TouchFilterStop(napi_env env, napi_callback_info info) {
     OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
                  "touchFilterStop(win=%{public}d) -> %{public}d", windowId, rc);
     return MkInt32(env, rc);
+}
+
+/* 虚拟按键排除区：CSV（display px，"x,y,w,h;..."）交 native touch filter；空串清空。
+ * 字符串参数两段式（先长度再内容），固定 buffer 会静默截断长 CSV。 */
+static napi_value TouchSetExcludeRects(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    std::string csv;
+    if (argc >= 1 && args[0] != nullptr) {
+        size_t n = 0;
+        if (napi_get_value_string_utf8(env, args[0], nullptr, 0, &n) == napi_ok) {
+            std::string buf(n + 1, '\0');
+            size_t written = 0;
+            if (napi_get_value_string_utf8(env, args[0], &buf[0], buf.size(), &written) == napi_ok) {
+                csv.assign(buf, 0, written);
+            }
+        }
+    }
+    void* lib = MeowCraftBridgeLib();
+    if (lib != nullptr) {
+        typedef void (*Fn)(const char*);
+        auto* fn = reinterpret_cast<Fn>(dlsym(lib, "meowTouchSetExcludeRects"));
+        if (fn != nullptr) {
+            fn(csv.c_str());
+        }
+    }
+    return nullptr;
 }
 
 /* ===== 原生鼠标增量输入（NDK 覆盖节点）=====
@@ -1313,6 +1341,8 @@ napi_value Init(napi_env env, napi_value exports) {
          nullptr},
         {"touchFilterStop", nullptr, TouchFilterStop, nullptr, nullptr, nullptr, napi_default,
          nullptr},
+        {"touchSetExcludeRects", nullptr, TouchSetExcludeRects, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
         {"bindNodeContent", nullptr, BindNodeContent, nullptr, nullptr, nullptr, napi_default,
          nullptr},
         {"meowGrabReset", nullptr, MeowGrabReset, nullptr, nullptr, nullptr, napi_default,

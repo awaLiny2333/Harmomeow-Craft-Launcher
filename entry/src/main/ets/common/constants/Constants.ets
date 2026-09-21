@@ -43,14 +43,38 @@ export const LAYOUT_ACCOUNT_PANEL_W: number = 320;
 // 采样率 overlay 底色（半透明黑，保证游戏画面上可读）。
 export const OVERLAY_BG: string = '#80000000';
 
+// 虚拟触屏按键覆盖层：全部按钮统一为「一个方块边长 + 一个间隔」，只靠屏幕分区锚点摆放
+// （不随窗口 resize / 折叠屏动态切换拉伸变形）；半透明黑底以免遮挡游戏画面。
+// 实际渲染边长 / 间隔 = 基准值 × 整体缩放百分比（见 TouchControlsView）；四周边距独立、不参与缩放。
+export const TOUCH_CONTROL_BUTTON_SIZE: number = 52;
+export const TOUCH_CONTROL_GAP: number = 6;
+export const TOUCH_CONTROL_BG: string = '#73000000';
+export const TOUCH_CONTROL_BORDER_RADIUS: number = 10;
+// 整体缩放默认值（百分比；100 = 1.0 倍，即按上面的基准尺寸 / 间隔渲染）。
+export const TOUCH_CONTROLS_SCALE_DEFAULT_PERCENT: number = 100;
+// 整体缩放的钳制区间（百分比）：下界 50 保证单键仍可稳定点按（26vp，已接近可靠触控目标的下限）；
+// 上界 200 防止 3x3 方向簇在常见手机横屏宽度内越界 / 与动作簇挤占。
+export const TOUCH_CONTROLS_SCALE_MIN_PERCENT: number = 50;
+export const TOUCH_CONTROLS_SCALE_MAX_PERCENT: number = 200;
+
 // 鼠标滚轮：ArkUI 的 AxisEvent 轴值单位是 vp，一个物理滚轮"格"约这么多 vp；
 // 归一化到 GLFW/桌面约定（一格 ≈ ±1），避免 MC 里"一滚飞走"。按手感微调此值即可。
 export const SCROLL_VP_PER_NOTCH: number = 15;
 // 滚轮速度百分比的默认值（100 = 正常，即乘 1.0）。
 export const SCROLL_SPEED_DEFAULT_PERCENT: number = 100;
 
-// 触屏转视角灵敏度百分比的默认值（100 = 正常，即乘 1.0）。
+// 触屏转视角灵敏度百分比的默认值（= 乘 1.28；由用户实机调出的手感值）。
 export const TOUCH_SENSITIVITY_DEFAULT_PERCENT: number = 128;
+
+// "触屏当鼠标"默认开启。
+export const TOUCH_AS_MOUSE_DEFAULT: boolean = true;
+
+// 虚拟触屏按键覆盖层默认关闭（独立于"触屏当鼠标"）。
+export const TOUCH_CONTROLS_DEFAULT: boolean = false;
+
+// 虚拟触屏按键覆盖层四边内边距默认值（vp）：把三簇按钮从屏幕四边推开，避开系统手势区 /
+// 圆角 / 挖孔。默认 12 = 覆盖层原先写死的 LAYOUT_PADDING，保证默认行为与现状逐像素一致。
+export const TOUCH_CONTROLS_INSET_DEFAULT: number = 12;
 
 // 下载面板远程版本列表高度（vp）：List 需定高才能用 Repeat.virtualScroll 懒加载，
 // 否则长列表（几百个版本）会一次性铺满界面并在加载瞬间卡顿。

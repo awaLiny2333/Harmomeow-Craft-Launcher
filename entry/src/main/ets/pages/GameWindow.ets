@@ -8,10 +8,12 @@ import { JreLibModule, FullscreenRequest } from '../common/state/JvmLauncher';
 import { gameLaunchParams } from '../common/state/GameLaunchParams';
 import { isLegacyLwjgl, setWindowDisplaySize } from '../common/data/MinecraftLauncher';
 import { readAppGlobalSettings } from '../common/data/AppSettings';
+import { SettingsTools } from '../common/data/SettingsTools';
 import { LAYOUT_SPACE, OVERLAY_BG, LAUNCH_FALLBACK_MS } from '../common/constants/Constants';
 import { OPEN_URL_REQUEST_FILE } from '../common/constants/Paths';
 import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H } from '../common/constants/LaunchDefaults';
 import { GameInputController } from '../common/input/GameInputController';
+import { TouchControlsView } from '../components/TouchControlsView';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'GameWindow';
@@ -78,6 +80,8 @@ struct GameWindow {
   @Local showInputRate: boolean = false;
   /** 应用级高级选项：显示缩放 N（渲染分辨率 = 窗口/N；挂载时从应用沙箱全局设置读入，1=关闭）。 */
   @Local renderScale: number = 1;
+  /** 应用级高级选项：虚拟触屏按键覆盖层（挂载时从应用沙箱全局设置读入；默认关）。 */
+  @Local touchControls: boolean = false;
   /** 隐形 TextInput 文本（绑定 id('ime-input')；由 GameInputController 回写）。 */
   @Local imeText: string = '';
 
@@ -129,6 +133,7 @@ struct GameWindow {
     const gs = readAppGlobalSettings(ctx);
     this.showInputRate = gs.showInputRate;
     this.renderScale = gs.renderScale;
+    this.touchControls = new SettingsTools(ctx).touchControls();
     this.input.setRenderScale(this.renderScale);
     this.input.start(this.showInputRate);
     // 轮询 MC 的全屏切换请求（GLFW stub → native 桥 → 这里驱动真实窗口）：100 ms 保响应。
@@ -396,6 +401,19 @@ struct GameWindow {
           this.input?.preImeKey(event);
           return false;
         });
+
+      // 虚拟触屏按键覆盖层：设置 touchControls 开启时渲染，叠在 XComponent 之上。
+      // 每个按钮的按下 / 抬起（含取消）都转交控制器的同一套键鼠桥原语。
+      if (this.touchControls) {
+        TouchControlsView({
+          onVirtual: (code: number, isMouse: boolean, down: boolean) => {
+            this.input?.pressVirtual(code, isMouse, down);
+          },
+          onScroll: (notches: number) => {
+            this.input?.scrollVirtual(notches);
+          },
+        });
+      }
 
       // 右下角：当前鼠标有效采样率（不拦截输入；由高级选项控制）。
       if (this.showInputRate) {

@@ -50,7 +50,7 @@
     },
     {
       "name": "settings_export_confirm_message",
-      "value": "将把应用设置（游戏目录、账户列表与高级选项）导出到你选择的目录。其中包含微软登录凭据（access/refresh token），请妥善保管、勿分享给他人。"
+      "value": "将把应用设置（游戏目录、账户列表、高级选项与触控布局）导出到你选择的目录。其中包含微软登录凭据（access/refresh token），请妥善保管、勿分享给他人。"
     },
     {
       "name": "settings_export_success",
@@ -446,7 +446,47 @@
     },
     {
       "name": "advanced_touch_sensitivity_hint",
-      "value": "留空 = 128（正常）；越大转视角越快"
+      "value": "留空 = 默认（正常）；越大转视角越快"
+    },
+    {
+      "name": "advanced_touch_inset_top",
+      "value": "上边距 (vp)"
+    },
+    {
+      "name": "advanced_touch_inset_top_hint",
+      "value": "把顶部按键从屏幕上边推开；避让挖孔 / 圆角；留空 = 默认"
+    },
+    {
+      "name": "advanced_touch_inset_right",
+      "value": "右边距 (vp)"
+    },
+    {
+      "name": "advanced_touch_inset_right_hint",
+      "value": "把右侧按键从屏幕右边推开；避让系统手势区 / 圆角；留空 = 默认"
+    },
+    {
+      "name": "advanced_touch_inset_bottom",
+      "value": "下边距 (vp)"
+    },
+    {
+      "name": "advanced_touch_inset_bottom_hint",
+      "value": "把底部按键从屏幕下边推开；避让系统手势区 / 圆角；留空 = 默认"
+    },
+    {
+      "name": "advanced_touch_inset_left",
+      "value": "左边距 (vp)"
+    },
+    {
+      "name": "advanced_touch_inset_left_hint",
+      "value": "把左侧按键从屏幕左边推开；避让系统手势区 / 圆角；留空 = 默认"
+    },
+    {
+      "name": "advanced_touch_scale",
+      "value": "虚拟按键缩放 (%)"
+    },
+    {
+      "name": "advanced_touch_scale_hint",
+      "value": "越大按钮越大；留空 = 默认"
     },
     {
       "name": "advanced_render_scale",
@@ -671,6 +711,82 @@
     {
       "name": "loader_stable",
       "value": "稳定版"
+    },
+    {
+      "name": "advanced_touch_controls",
+      "value": "触屏虚拟按键"
+    },
+    {
+      "name": "advanced_touch_controls_hint",
+      "value": "方向键在左下；右下攻击/交互/跳/蹲/包/左/右；顶部暂停/输入"
+    },
+    {
+      "name": "touch_btn_attack",
+      "value": "攻击"
+    },
+    {
+      "name": "touch_btn_interact",
+      "value": "交互"
+    },
+    {
+      "name": "touch_btn_jump",
+      "value": "跳"
+    },
+    {
+      "name": "touch_btn_sneak",
+      "value": "蹲"
+    },
+    {
+      "name": "touch_btn_hotbar_left",
+      "value": "左"
+    },
+    {
+      "name": "touch_btn_hotbar_right",
+      "value": "右"
+    },
+    {
+      "name": "touch_btn_pause",
+      "value": "暂停"
+    },
+    {
+      "name": "touch_btn_chat",
+      "value": "输入"
+    },
+    {
+      "name": "touch_btn_inventory",
+      "value": "包"
+    },
+    {
+      "name": "touch_dir_up",
+      "value": "W"
+    },
+    {
+      "name": "touch_dir_down",
+      "value": "S"
+    },
+    {
+      "name": "touch_dir_left",
+      "value": "A"
+    },
+    {
+      "name": "touch_dir_right",
+      "value": "D"
+    },
+    {
+      "name": "touch_dir_up_left",
+      "value": "W+A"
+    },
+    {
+      "name": "touch_dir_up_right",
+      "value": "W+D"
+    },
+    {
+      "name": "touch_dir_down_left",
+      "value": "A+S"
+    },
+    {
+      "name": "touch_dir_down_right",
+      "value": "D+S"
     }
   ]
 }
