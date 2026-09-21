@@ -44,6 +44,8 @@ git -C ref/SDL worktree add --detach "$PWD/ref/SDL-3.4.14" release-3.4.14   # �
 | `SDL_ohosgl.c/.h` | EGL context/surface/swap + **GL entry-point resolution via `dlopen`+`dlsym`** (pointer identity with LWJGL) |
 | `SDL_ohosvulkan.c/.h` | **Vulkan support**: the `Vulkan_LoadLibrary`/`UnloadLibrary`/`GetInstanceExtensions`/`CreateSurface`/`DestroySurface` entries SDL core needs (without them `SDL_Vulkan_LoadLibrary` fails with *“No dynamic Vulkan support in current SDL video driver (ohos)”*). See §6. |
 | `SDL_ohosmouse.c/.h` | **`SDL_Mouse` hooks** (relative mode / warp) → `env->grabbing` |
+| `SDL_ohosclipboard.c/.h` | **Clipboard write** (`SetClipboardText`) via the platform pasteboard NDK (`libpasteboard.so`/`libudmf.so`, resolved with `dlopen` so `DT_NEEDED` stays clean). Read/paste is deliberately absent: it needs `ohos.permission.READ_PASTEBOARD`. |
+| `../misc/ohos/SDL_sysurl.c` | **URL opener** (`SDL_SYS_OpenURL`) — writes the URL to `$HOME/meow-open-url.txt`; the ArkTS side picks it up and does `startAbility`. Copied to `src/misc/ohos/` (not `src/video/ohos/`), see §3. |
 | `ohos_meow_environ.h` | vendored, trimmed copy of the bridge ABI struct (ring + cursor slots) |
 
 Key behaviours (all reasoned from Minecraft 26.3 + on-device findings):
@@ -138,6 +140,10 @@ loudly if an anchor is missing. It applies:
 7. `src/video/SDL_egl.c`: OHOS branch — `libEGL.so` + desktop `libGLv4.so` (+ `libGLESv2.so`).
 8. `src/video/khronos/EGL/eglplatform.h`: `#elif defined(__OHOS__)` with
    `typedef struct OHNativeWindow *EGLNativeWindowType;` + `#include <native_window/external_window.h>`.
+9. `src/misc/ohos/SDL_sysurl.c`: copied in, and `src/misc/unix/SDL_sysurl.c` gets
+   `#if !defined(__OHOS__)` around its body — otherwise two `SDL_SYS_OpenURL` definitions
+   would be compiled (the unix one opens URLs by forking `xdg-open`, which OHOS lacks).
+   The OHOS CMake block globs `src/misc/ohos/*` accordingly.
 
 **Reverting a patcher change does not revert it.** The patcher is check-then-insert
 (add-only), so a tree that was already patched keeps the edit and the next run merely
@@ -158,7 +164,7 @@ git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.
 | Exports | 1270 `SDL_*` dynamic symbols |
 | Driver present | `SDL OpenHarmony (OHOS) video driver`; `OHOS_bootstrap` in `libSDL3.so` |
 | Artifact | `stuffs/research/sdl/out/libSDL3.so` (→ installed as `libSDL3.so`, manifest tag `common`) |
-| sha256 | `e696d8b25beaf6fb94df7bb46e772d28ff453a223a2d350461b8a34669536d56` (2,050,560 bytes; re-verified 2026-09-19 together with the Vulkan support and the window-focus events — see §4b) |
+| sha256 | `db255b257b9310604b3b9eed0cc776bea6b8ad4020eeb12230e87f457949e54d` (2,050,560 bytes; re-verified 2026-09-21 together with the clipboard write and the URL opener — see §4b) |
 
 > Reproducibility: like all our native builds, the digest corresponds to the
 > recorded `--src`/`--out` paths; rebuilds at other paths are functionally
@@ -169,11 +175,12 @@ git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.
 **3× from-scratch rebuilds (`cmp` byte-identical) at the current source state**: each one
 re-creates the worktree (`git worktree remove/add`, i.e. a pristine `release-3.4.14`) *and*
 wipes the build dir, so the patcher is exercised every time. Same `--src`/`--out` paths:
-`libSDL3.so` sha256 `e696d8b25beaf6fb94df7bb46e772d28ff453a223a2d350461b8a34669536d56`, 2,050,560 bytes.
+`libSDL3.so` sha256 `db255b257b9310604b3b9eed0cc776bea6b8ad4020eeb12230e87f457949e54d`, 2,050,560 bytes.
 (Same-path caveat as all our natives: the linker embeds the output path in `.dynstr`.)
 Twelve such builds in four rounds so far (three rounds for the Vulkan work, one for the
 window-focus events); every round was byte-identical within itself, and this round also
-matches the shipped artifact and the digested value above.
+matches the shipped artifact and the digested value above. (A fifth round covered the
+clipboard write and the URL opener.)
 
 Contract checked on the artifact: 1270 `SDL_*` dynamic symbols, `DT_NEEDED` = `libnative_window.so libc.so`
 only (EGL/GL/Vulkan/hilog are resolved at run time), `ohos` driver present.
@@ -202,7 +209,16 @@ devecocli run --module entry meowjre --device <serial>
   posts the ENTER/LEAVE events, and the real pixel size arrives via
   `OHOS_SyncSurfaceSize` (`device_caps |= VIDEO_DEVICE_CAPS_SENDS_FULLSCREEN_DIMENSIONS`).
   Exclusive mode degrades to borderless (display-mode list is empty).
-- **Clipboard / messagebox / tray**: not implemented by this driver.
+- **Clipboard**: **write implemented** (2026-09-21) — MC 26.3 copies through
+  `SDLClipboard.SDL_SetClipboardText` → `SDL_ohosclipboard.c` (the platform pasteboard NDK).
+  Reading/pasting is not implemented on purpose (it needs `ohos.permission.READ_PASTEBOARD`,
+  and the no-dialog alternative, the paste control, only exists in ArkTS UI).
+- **Opening links**: **implemented** (2026-09-21) — MC >= 26.3 calls `SDLMisc.SDL_OpenURL`,
+  which `src/misc/ohos/SDL_sysurl.c` turns into a request file that the ArkTS side picks up
+  (see notes `00-current/架构决策与踩坑.md` §13.3). **MC <= 26.2 is not supported**: there MC
+  bypasses every library and runs `xdg-open` itself through `Runtime.exec`, and OHOS exposes
+  no native "open a link / start another app" API (see `已知限制与待解.md` §H6).
+- **messagebox / tray**: not implemented by this driver.
 - **Vulkan**: implemented (2026-09-19). `SDL_Vulkan_LoadLibrary` takes the caller's
   library path, else `SDL_HINT_VULKAN_LIBRARY` (which `SDL_GetHint` reads from the
   environment, so `SDL_VULKAN_LIBRARY=libmeowvulkan.so` switches loader with no
