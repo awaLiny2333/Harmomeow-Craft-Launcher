@@ -1,7 +1,7 @@
 import { mediaquery } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import {
-  LAYOUT_ACCOUNT_PANEL_W, LAYOUT_PADDING, LAYOUT_SPACE, LAYOUT_WIDE_MIN_W
+  LAYOUT_ACCOUNT_PANEL_W, LAYOUT_PADDING, LAYOUT_SPACE, LAYOUT_SPACE_SMALL, LAYOUT_WIDE_MIN_W
 } from '../common/constants/Constants';
 import { GameVersion } from '../common/data/VersionScanner';
 import {
@@ -137,7 +137,9 @@ struct Index {
             this.launchLast();
           });
       }
-      .padding(this.wide ? 0 : { left: LAYOUT_PADDING, right: LAYOUT_PADDING, bottom: LAYOUT_PADDING });
+      .padding(this.wide
+        ? { left: LAYOUT_PADDING, bottom: LAYOUT_PADDING }
+        : { left: LAYOUT_PADDING, right: LAYOUT_PADDING, bottom: LAYOUT_PADDING });
     }
   }
 
@@ -149,8 +151,10 @@ struct Index {
           Column({ space: LAYOUT_SPACE }) {
             Scroll() {
               Column({ space: LAYOUT_SPACE }) {
+                Row().height(LAYOUT_SPACE_SMALL); // Spacing
                 AccountView();
               }
+              .padding({ left: LAYOUT_PADDING, top: LAYOUT_PADDING, bottom: LAYOUT_PADDING })
               .width('100%')
               .alignItems(HorizontalAlign.Start);
             }
@@ -160,7 +164,6 @@ struct Index {
             .align(Alignment.TopStart);
             this.continueLastButton();
           }
-          .padding({ left: LAYOUT_PADDING, top: LAYOUT_PADDING, bottom: LAYOUT_PADDING })
           .width(LAYOUT_ACCOUNT_PANEL_W)
           .height('100%');
         }
@@ -168,6 +171,7 @@ struct Index {
         Column({ space: LAYOUT_SPACE }) {
           Scroll() {
             Column({ space: LAYOUT_SPACE }) {
+              Row().height(LAYOUT_SPACE_SMALL); // Spacing
               this.mainSections();
             }
             .padding(LAYOUT_PADDING)

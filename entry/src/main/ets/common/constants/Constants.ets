@@ -26,6 +26,8 @@ export const LAYOUT_PADDING_SMALL: number = 8;
 export const OPACITY_SECONDARY: number = 0.6;
 export const BORDER_RADIUS: number = 14;
 export const BORDER_RADIUS_SMALL: number = 8;
+export const WINDOW_DECOR_HEIGHT: number = 50;
+export const IMMERSIVE_STATE: boolean = true;
 // 极细外边距（1vp）：修 TextInput layoutWeight(1) 的轻微布局抖动（账户区输入框用）。
 export const LAYOUT_MARGIN_HAIRLINE: number = 1;
 

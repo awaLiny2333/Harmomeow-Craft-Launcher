@@ -17,7 +17,7 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { window, ThemeControl } from '@kit.ArkUI';
-import { LOG_DOMAIN, ROUTE_INDEX } from '../common/constants/Constants';
+import { IMMERSIVE_STATE, LOG_DOMAIN, ROUTE_INDEX, WINDOW_DECOR_HEIGHT } from '../common/constants/Constants';
 import { MEOW_THEME } from '../common/theme/AppTheme';
 import { windowHolder } from '../common/state/WindowHolder';
 
@@ -74,8 +74,9 @@ export default class EntryAbility extends UIAbility {
       // Set immersive
       try {
         const mainWindow = windowStage.getMainWindowSync();
-        mainWindow.setImmersiveModeEnabledState(true);
-        mainWindow.setWindowDecorVisible(false);
+        mainWindow.setWindowDecorHeight(WINDOW_DECOR_HEIGHT);
+        mainWindow.setImmersiveModeEnabledState(IMMERSIVE_STATE);
+        mainWindow.setWindowDecorVisible(!IMMERSIVE_STATE);
         mainWindow.setWindowSystemBarEnable([]).catch((err: BusinessError) => {
           hilog.error(LOG_DOMAIN, LOG_TAG, 'Failed to setWindowSystemBarEnable. code: %{public}s, message: %{public}s',
             err.code, err.message);
