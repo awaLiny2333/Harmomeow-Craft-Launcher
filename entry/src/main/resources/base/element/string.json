@@ -293,6 +293,10 @@
       "value": "令牌 %s → %s"
     },
     {
+      "name": "reason_allow_writable_code_memory",
+      "value": "用于驱动 Java 游戏"
+    },
+    {
       "name": "reason_lock_cursor",
       "value": "用于锁定游戏窗口内的鼠标以支持视角控制"
     },

@@ -19,7 +19,14 @@
         "name": "ohos.permission.FILE_ACCESS_PERSIST"
       },
       {
-        "name": "ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY"
+        "name": "ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY",
+        "reason": "$string:reason_allow_writable_code_memory",
+        "usedScene": {
+          "abilities": [
+            "GameAbility"
+          ],
+          "when": "inuse"
+        }
       },
       {
         "name": "ohos.permission.LOCK_WINDOW_CURSOR",
