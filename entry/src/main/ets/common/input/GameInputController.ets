@@ -577,6 +577,11 @@ export class GameInputController {
     this.setGrab(this.grabNative);
   }
 
+  /** 供 UI（虚拟按键覆盖层）查询当前是否 grab；复用既有 pollGrabbing 的轮询结果，不另设轮询。 */
+  isGrabbing(): boolean {
+    return this.grabNative;
+  }
+
   private async setGrab(target: boolean): Promise<void> {
     if (this.grabApplied === target || this.grabBusy) {
       return;
@@ -1149,6 +1154,10 @@ export class GameInputController {
         return KeyCode.KEYCODE_SPACE;
       case GLFW_KEY_ESCAPE:
         return KeyCode.KEYCODE_ESCAPE;
+      // 258 = GLFW_KEY_TAB：GlfwInput 有 KEYCODE_TAB -> 258 映射但未导出具名常量，故按本文件
+      // 既有修饰键写法直接用数值（340/341… 同此），让虚拟 Tab 记入 pressed 以便兜底释放。
+      case 258:
+        return KeyCode.KEYCODE_TAB;
       case 340:
         return KeyCode.KEYCODE_SHIFT_LEFT;
       case 341:

@@ -718,7 +718,7 @@
     },
     {
       "name": "advanced_touch_controls_hint",
-      "value": "方向键在左下；右下攻击/交互/跳/蹲/包/左/右；顶部暂停/输入"
+      "value": "方向键在左下；右下攻击/交互/跳/蹲/包/左/右；顶部 ESC/输入/TAB"
     },
     {
       "name": "touch_btn_attack",
@@ -746,11 +746,15 @@
     },
     {
       "name": "touch_btn_pause",
-      "value": "暂停"
+      "value": "ESC"
     },
     {
       "name": "touch_btn_chat",
       "value": "输入"
+    },
+    {
+      "name": "touch_btn_tab",
+      "value": "TAB"
     },
     {
       "name": "touch_btn_inventory",

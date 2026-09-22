@@ -14,6 +14,9 @@ const GLFW_KEY_S: number = 83;
 const GLFW_KEY_D: number = 68;
 const GLFW_KEY_E: number = 69;
 const GLFW_KEY_LEFT_SHIFT: number = 340;
+// Tab 键：GlfwInput.ets 有 KEYCODE_TAB -> 258 的映射但未导出具名常量，故本地补一个。
+// 依据同一映射表：ESCAPE=256 / ENTER=257 / BACKSPACE=259 ⇒ TAB=258。
+const GLFW_KEY_TAB: number = 258;
 
 // 虚拟滚轮格方向：数值即 GLFW yoffset 符号（工程约定：正 = 向上滚 = GLFW +y，见 GameInputController.handleAxis）。
 // 左键 = 下一个物品（等价鼠标向上滚）= 正；右键 = 前一个物品（等价鼠标向下滚）= 负。
@@ -106,8 +109,12 @@ class RegionRect {
   valid: boolean = false;
 }
 
-// 需要排除的触摸区数量：0 方向键网格、1 右下动作键簇（含背包）、2/3 顶部暂停/输入。
-const EXCLUDE_REGION_COUNT: number = 4;
+// 需要排除的触摸区数量：0 方向键网格、1 右下动作键簇（含背包）、2/3/4 顶部 ESC/输入/Tab。
+const EXCLUDE_REGION_COUNT: number = 5;
+
+// 仅在 grab（游戏内锁视角）时渲染的簇对应排除区索引：0 左下方向键网格、1 右下动作/物品栏键簇。
+// 顶部（2 ESC / 3 输入 / 4 Tab）不在其中，始终渲染与上报。
+const GATED_REGION_INDICES: number[] = [0, 1];
 
 /**
  * 虚拟触屏按键覆盖层（游戏画面上的半透明按钮）。
@@ -116,7 +123,7 @@ const EXCLUDE_REGION_COUNT: number = 4;
  * 刻意不用百分比 / 自适应拉伸 —— 窗口 resize 或折叠屏动态切换时按钮物理大小不变，
  * 只随锚点（左下 / 右下 / 上中）重新贴合屏幕边角。
  * 分区：左下 3x3 八向方向键（中格留空），右下 3x3 动作区（上两行左格留空、右对齐，第三行 包 / 左 / 右），
- * 上区中间 暂停 / 输入（同为方块，不再用矮条）。
+ * 上区中间 ESC / 输入 / Tab（同为方块，不再用矮条）。
  *
  * 交互：方向键整块 3x3 当作一个触摸区，一次 onTouch 挂在网格容器上。触点在网格内时按就近格判定；
  * 滑出网格后按触点到网格中心的向量极角量化到最近八向（像摇杆一样绕动持续换向）。中心格内不改变
@@ -142,10 +149,13 @@ export struct TouchControlsView {
   @Param onScroll: (notches: number) => void = () => {
   };
 
+  /** 是否处于 grab（游戏内锁视角）：由父组件 GameWindow 传入，仅此时渲染左右两簇；顶部始终渲染。 */
+  @Param grabbing: boolean = false;
+
   /** 当前按下中的方向（引用 DIR_GRID 里某一项，DIR_NONE 表示无方向）。 */
   @Local private activeDir: number[] = DIR_NONE;
 
-  /** 各独立按键（右下七个 + 顶部两个）当前按下的 GLFW 键码，仅用于高亮。 */
+  /** 各独立按键（右下七个 + 顶部三个）当前按下的 GLFW 键码，仅用于高亮。 */
   @Local private pressedCodes: number[] = [];
 
   /** 滚轮按键（右下左 / 右）当前按下的格数（+1 上 / -1 下），仅用于高亮。 */
@@ -205,6 +215,8 @@ export struct TouchControlsView {
     this.dirGridStride = this.buttonSize + this.gap;
     this.dirGridSize = this.buttonSize * 3 + this.gap * 2;
     this.dirGridCenter = this.dirGridSize / 2;
+    // 初值同步一次：非 grab 时两簇本就不渲染，对应排除区保持无效。
+    this.syncGatedRegionVisibility();
   }
 
   aboutToDisappear(): void {
@@ -480,6 +492,30 @@ export struct TouchControlsView {
     this.scheduleReport();
   }
 
+  /**
+   * grab 状态变化：不渲染的簇对应排除区立即失效，并触发一次重报（既有实现会延后到手势结束后），
+   * 避免把一片没有按钮的区域继续上报给 native 当排除区。回到 grab 时由 onAreaChange 重新置有效。
+   */
+  @Monitor('grabbing')
+  syncGatedRegionVisibility(): void {
+    if (this.grabbing) {
+      return;
+    }
+    // 先释放本组件所有按下态：两簇卸载后其 Up/Cancel 不再回调，否则原生键卡死，
+    // 且 dirFingerId/pressedCodes 不清会令 scheduleReport 的"手势中延后"守卫永不放行、失效区永不重报。
+    this.releaseAll();
+    let changed: boolean = false;
+    for (const index of GATED_REGION_INDICES) {
+      if (this.regions[index].valid) {
+        this.regions[index].valid = false;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.scheduleReport();
+    }
+  }
+
   /** 合并短时间内的多次布局变化，只上报一次。 */
   private scheduleReport(): void {
     if (this.reportTimer >= 0) {
@@ -621,10 +657,11 @@ export struct TouchControlsView {
   build() {
     Stack() {
       Column() {
-        // 上区中间：暂停 / 输入（水平居中）。
+        // 上区中间：ESC / 输入 / Tab（水平居中，三个同尺寸方块）。
         Row({ space: this.gap }) {
           this.topButton(GLFW_KEY_ESCAPE, $r('app.string.touch_btn_pause'), 2);
           this.topButton(GLFW_KEY_T, $r('app.string.touch_btn_chat'), 3);
+          this.topButton(GLFW_KEY_TAB, $r('app.string.touch_btn_tab'), 4);
         }
         .width('100%')
         .justifyContent(FlexAlign.Center)
@@ -638,65 +675,69 @@ export struct TouchControlsView {
 
         // 下区：左下方向键 + 右下动作键，两端锚定。
         Row() {
-          Column({ space: this.gap }) {
-            Row({ space: this.gap }) {
-              this.dirButton($r('app.string.touch_dir_up_left'), DIR_UP_LEFT);
-              this.dirButton($r('app.string.touch_dir_up'), DIR_UP);
-              this.dirButton($r('app.string.touch_dir_up_right'), DIR_UP_RIGHT);
-            }
+          if (this.grabbing) {
+            Column({ space: this.gap }) {
+              Row({ space: this.gap }) {
+                this.dirButton($r('app.string.touch_dir_up_left'), DIR_UP_LEFT);
+                this.dirButton($r('app.string.touch_dir_up'), DIR_UP);
+                this.dirButton($r('app.string.touch_dir_up_right'), DIR_UP_RIGHT);
+              }
 
-            Row({ space: this.gap }) {
-              this.dirButton($r('app.string.touch_dir_left'), DIR_LEFT);
-              // 3x3 正中间留空（DIR_NONE，永不参与高亮）。
-              Column()
-                .width(this.buttonSize)
-                .height(this.buttonSize)
-                .hitTestBehavior(HitTestMode.None);
-              this.dirButton($r('app.string.touch_dir_right'), DIR_RIGHT);
-            }
+              Row({ space: this.gap }) {
+                this.dirButton($r('app.string.touch_dir_left'), DIR_LEFT);
+                // 3x3 正中间留空（DIR_NONE，永不参与高亮）。
+                Column()
+                  .width(this.buttonSize)
+                  .height(this.buttonSize)
+                  .hitTestBehavior(HitTestMode.None);
+                this.dirButton($r('app.string.touch_dir_right'), DIR_RIGHT);
+              }
 
-            Row({ space: this.gap }) {
-              this.dirButton($r('app.string.touch_dir_down_left'), DIR_DOWN_LEFT);
-              this.dirButton($r('app.string.touch_dir_down'), DIR_DOWN);
-              this.dirButton($r('app.string.touch_dir_down_right'), DIR_DOWN_RIGHT);
+              Row({ space: this.gap }) {
+                this.dirButton($r('app.string.touch_dir_down_left'), DIR_DOWN_LEFT);
+                this.dirButton($r('app.string.touch_dir_down'), DIR_DOWN);
+                this.dirButton($r('app.string.touch_dir_down_right'), DIR_DOWN_RIGHT);
+              }
             }
+            // 整个 3x3 网格 = 一个触摸区，坐标以本容器为基准。
+            .onAreaChange((oldValue: Area, newValue: Area) => {
+              this.onRegionArea(0, oldValue, newValue);
+            })
+            .onTouch((event: TouchEvent) => {
+              this.onDirGridTouch(event);
+            });
           }
-          // 整个 3x3 网格 = 一个触摸区，坐标以本容器为基准。
-          .onAreaChange((oldValue: Area, newValue: Area) => {
-            this.onRegionArea(0, oldValue, newValue);
-          })
-          .onTouch((event: TouchEvent) => {
-            this.onDirGridTouch(event);
-          });
 
           Column()
             .layoutWeight(1)
             .hitTestBehavior(HitTestMode.None);
 
-          // 右下 3x3 动作区：上两行左格空、右对齐；第三行 包 / 左 / 右。
-          Column({ space: this.gap }) {
-            Row({ space: this.gap }) {
-              this.emptyCell();
-              this.actionButton(GLFW_MOUSE_BUTTON_1, true, $r('app.string.touch_btn_attack'));
-              this.actionButton(GLFW_MOUSE_BUTTON_2, true, $r('app.string.touch_btn_interact'));
-            }
+          // 右下 3x3 动作区：上两行左格空、右对齐；第三行 包 / 左 / 右。仅 grab 时渲染。
+          if (this.grabbing) {
+            Column({ space: this.gap }) {
+              Row({ space: this.gap }) {
+                this.emptyCell();
+                this.actionButton(GLFW_MOUSE_BUTTON_1, true, $r('app.string.touch_btn_attack'));
+                this.actionButton(GLFW_MOUSE_BUTTON_2, true, $r('app.string.touch_btn_interact'));
+              }
 
-            Row({ space: this.gap }) {
-              this.emptyCell();
-              this.actionButton(GLFW_KEY_SPACE, false, $r('app.string.touch_btn_jump'));
-              this.actionButton(GLFW_KEY_LEFT_SHIFT, false, $r('app.string.touch_btn_sneak'));
-            }
+              Row({ space: this.gap }) {
+                this.emptyCell();
+                this.actionButton(GLFW_KEY_SPACE, false, $r('app.string.touch_btn_jump'));
+                this.actionButton(GLFW_KEY_LEFT_SHIFT, false, $r('app.string.touch_btn_sneak'));
+              }
 
-            Row({ space: this.gap }) {
-              this.actionButton(GLFW_KEY_E, false, $r('app.string.touch_btn_inventory'));
-              this.scrollButton(SCROLL_NOTCH_NEXT, $r('app.string.touch_btn_hotbar_left'));
-              this.scrollButton(SCROLL_NOTCH_PREV, $r('app.string.touch_btn_hotbar_right'));
+              Row({ space: this.gap }) {
+                this.actionButton(GLFW_KEY_E, false, $r('app.string.touch_btn_inventory'));
+                this.scrollButton(SCROLL_NOTCH_NEXT, $r('app.string.touch_btn_hotbar_left'));
+                this.scrollButton(SCROLL_NOTCH_PREV, $r('app.string.touch_btn_hotbar_right'));
+              }
             }
+            .onAreaChange((oldValue: Area, newValue: Area) => {
+              this.onRegionArea(1, oldValue, newValue);
+            })
+            .hitTestBehavior(HitTestMode.None);
           }
-          .onAreaChange((oldValue: Area, newValue: Area) => {
-            this.onRegionArea(1, oldValue, newValue);
-          })
-          .hitTestBehavior(HitTestMode.None);
         }
         .width('100%')
         .justifyContent(FlexAlign.SpaceBetween)
