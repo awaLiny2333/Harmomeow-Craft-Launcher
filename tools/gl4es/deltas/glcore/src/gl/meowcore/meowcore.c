@@ -41,6 +41,8 @@ typedef char           mc_char;
 
 #define MC_GL_VERTEX_SHADER   0x8B31
 #define MC_GL_FRAGMENT_SHADER 0x8B30
+#define MC_GL_COMPILE_STATUS  0x8B81
+#define MC_GL_LINK_STATUS     0x8B82
 
 /* desktop-only enums MC uses that ES does not have (see the emulation below) */
 #define MC_GL_PROXY_TEXTURE_2D   0x8064
@@ -54,6 +56,46 @@ typedef char           mc_char;
 #define MC_GL_READ_WRITE         0x88BA
 #define MC_GL_MAP_READ_BIT       0x0001
 #define MC_GL_MAP_WRITE_BIT      0x0002
+
+/* ES 3.x only accepts SIZED depth/stencil internalformats. Desktop GL (and some
+ * lenient ES drivers) also take the unsized GL_DEPTH_COMPONENT / GL_DEPTH_STENCIL
+ * paired with a type. MC's RenderTarget/TextureTarget creates its depth attachment
+ * exactly that way -- evidence, javap-class bytecode of 1.17.1 doy.b(IIZ) @160 and
+ * dov.b(Ldov$b) @19, 1.19.4 efr/efo likewise:
+ *     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, w, h, 0,
+ *                  GL_DEPTH_COMPONENT, GL_FLOAT, NULL)
+ * A strict driver (phone Maleoon, "format, type and internalformat are not a valid
+ * combination") rejects it, so the attachment is never allocated and the FBO ends
+ * up GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT. Sized internalformats below fix that. */
+#define MC_GL_DEPTH_COMPONENT        0x1902
+#define MC_GL_DEPTH_STENCIL          0x84F9
+#define MC_GL_DEPTH_COMPONENT16      0x81A5
+#define MC_GL_DEPTH_COMPONENT24      0x81A6
+#define MC_GL_DEPTH_COMPONENT32      0x81A7  /* desktop legacy size; absent from ES */
+#define MC_GL_DEPTH_COMPONENT32F     0x8CAC
+#define MC_GL_DEPTH24_STENCIL8       0x88F0
+#define MC_GL_DEPTH32F_STENCIL8      0x8CAD
+#define MC_GL_UNSIGNED_SHORT         0x1403
+#define MC_GL_UNSIGNED_INT           0x1405
+#define MC_GL_FLOAT                  0x1406
+#define MC_GL_UNSIGNED_INT_24_8      0x84FA
+#define MC_GL_FLOAT_32_UNSIGNED_INT_24_8_REV 0x8DAD
+
+/* Desktop-only glEnable/glDisable caps MC 1.21.10 sets which do NOT exist in the
+ * ES 3.2 glEnable cap set (checked one by one against the ES 3.2 spec). Passing
+ * them to the driver yields GL_INVALID_ENUM, and 1.21.10 turns any glGetError into
+ * a hard crash. Caps that DO exist in ES 3.2 are deliberately NOT listed:
+ * GL_DEBUG_OUTPUT_SYNCHRONOUS (KHR_debug) and GL_FRAMEBUFFER_SRGB (ES 3.0+). */
+#define MC_GL_TEXTURE_CUBE_MAP_SEAMLESS 0x884F
+#define MC_GL_MULTISAMPLE               0x809D
+#define MC_GL_TEXTURE_2D                0x0DE1
+#define MC_GL_TEXTURE_1D                0x0DE0
+#define MC_GL_TEXTURE_3D                0x806F  /* target, but not an ES enable cap */
+#define MC_GL_ALPHA_TEST                0x0BC0
+#define MC_GL_LINE_SMOOTH               0x0B20
+#define MC_GL_POLYGON_SMOOTH            0x0B41
+#define MC_GL_DEPTH_CLAMP               0x864F
+#define MC_GL_PRIMITIVE_RESTART         0x8F9D
 
 typedef mc_string (*mc_pfn_GetString)(mc_enum);
 typedef mc_string (*mc_pfn_GetStringi)(mc_enum, mc_uint);
@@ -72,6 +114,15 @@ typedef void      (*mc_pfn_ClearDepthf)(float);
 typedef void      (*mc_pfn_DrawBuffers)(mc_int, const mc_enum *);
 typedef void      (*mc_pfn_GetBufferParameteriv)(mc_enum, mc_enum, mc_int *);
 typedef void *    (*mc_pfn_MapBufferRange)(mc_enum, int64_t, int64_t, mc_enum);
+typedef void      (*mc_pfn_TexStorage2D)(mc_enum, mc_int, mc_enum, mc_int, mc_int);
+typedef void      (*mc_pfn_RenderbufferStorage)(mc_enum, mc_enum, mc_int, mc_int);
+typedef void      (*mc_pfn_Enable)(mc_enum);
+typedef void      (*mc_pfn_CompileShader)(mc_uint);
+typedef void      (*mc_pfn_GetShaderiv)(mc_uint, mc_enum, mc_int *);
+typedef void      (*mc_pfn_GetShaderInfoLog)(mc_uint, mc_int, mc_int *, mc_char *);
+typedef void      (*mc_pfn_LinkProgram)(mc_uint);
+typedef void      (*mc_pfn_GetProgramiv)(mc_uint, mc_enum, mc_int *);
+typedef void      (*mc_pfn_GetProgramInfoLog)(mc_uint, mc_int, mc_int *, mc_char *);
 
 /* --- state ------------------------------------------------------------- */
 static int  s_active = -1;   /* -1 unknown, 0 off, 1 on */
@@ -93,6 +144,16 @@ static mc_pfn_ClearDepthf    s_realClearDepthf;
 static mc_pfn_DrawBuffers    s_realDrawBuffers;
 static mc_pfn_GetBufferParameteriv s_realGetBufferParameteriv;
 static mc_pfn_MapBufferRange s_realMapBufferRange;
+static mc_pfn_TexStorage2D   s_realTexStorage2D;
+static mc_pfn_RenderbufferStorage s_realRenderbufferStorage;
+static mc_pfn_Enable         s_realEnable;
+static mc_pfn_Enable         s_realDisable;
+static mc_pfn_CompileShader  s_realCompileShader;
+static mc_pfn_GetShaderiv    s_realGetShaderiv;
+static mc_pfn_GetShaderInfoLog s_realGetShaderInfoLog;
+static mc_pfn_LinkProgram    s_realLinkProgram;
+static mc_pfn_GetProgramiv   s_realGetProgramiv;
+static mc_pfn_GetProgramInfoLog s_realGetProgramInfoLog;
 
 /* GL_PROXY_TEXTURE_2D emulation (ES has no proxy targets): remember the last
  * proxy size MC asked about and answer its glGetTexLevelParameter query from it. */
@@ -553,6 +614,228 @@ static void mc_remap_varying_locations(char *s, int is_vertex, size_t cap)
     }
 }
 
+/* --- name-keyed UBO bindings ------------------------------------------ *
+ * glslang's auto_bind_uniforms numbers uniform BLOCKS per stage, in first-use order,
+ * so the SAME block can land on a different "binding =" in the vsh and the fsh. The
+ * device linker then sees two different block definitions sharing one binding and
+ * rejects the whole program:
+ *   "buffer block with binding `1' has mismatching definitions"
+ * (measured on 1.21.10 core/terrain: vsh binding1 = Projection{mat4 ProjMat}, fsh
+ * binding1 = DynamicTransforms{mat4 ModelViewMat; vec4 ColorModulator; ...}).
+ * MC never reads the declared binding: it binds each block itself with
+ * glUniformBlockBinding before upload, so renumber the blocks from a process-wide
+ * name table -- the same name gets the same binding in both stages. Different names
+ * always get different bindings, so no binding is ever shared by two definitions.
+ * std140 and every member (name/type/order) are untouched, so MC's std140 offsets
+ * stay valid. This mirrors the varying-location remap above. */
+#define MC_BLOCK_MAX 24          /* GL_MAX_UNIFORM_BUFFER_BINDINGS min in ES 3.x is 24 */
+static struct { char name[48]; int binding; } s_blocks[MC_BLOCK_MAX];
+static int s_blocks_n = 0;
+
+/* -1 = table full (caller leaves the declaration untouched, i.e. no corruption). */
+static int mc_block_binding(const char *name)
+{
+    int i;
+    for (i = 0; i < s_blocks_n; ++i)
+        if (strcmp(s_blocks[i].name, name) == 0)
+            return s_blocks[i].binding;
+    if (s_blocks_n >= MC_BLOCK_MAX)
+        return -1;
+    snprintf(s_blocks[s_blocks_n].name, sizeof(s_blocks[0].name), "%s", name);
+    s_blocks[s_blocks_n].binding = s_blocks_n;
+    return s_blocks[s_blocks_n++].binding;
+}
+
+/* Rewrite the binding of ONE uniform-block declaration (a line that names a block and
+ * whose line carries no ';'; plain uniforms/samplers end with ';' and are skipped). */
+static void mc_remap_one_block_binding(char *line, size_t len, char *limit)
+{
+    char *lay, *open, *close, *loc, *uni, *q, *digits, *p, *e, name[48];
+    size_t nlen, oldw;
+    int newb, n;
+    char tmp[8];
+
+    if (mc_line_has_word(line, len, "uniform") == 0) return;
+    if (memchr(line, ';', len) != NULL) return;          /* plain uniform / sampler */
+    lay = memmem(line, len, "layout", 6);
+    open = lay ? strchr(lay, '(') : NULL;
+    close = open ? strchr(open, ')') : NULL;
+    if (open == NULL || close == NULL) return;
+    if ((size_t)(close - line) >= len) return;
+    loc = memmem(open + 1, (size_t)(close - open - 1), "binding", 7);
+    if (loc == NULL) return;
+    /* the block name = identifier right after the "uniform" keyword */
+    uni = memmem(line, len, "uniform", 7);
+    if (uni == NULL) return;
+    p = uni + 7;
+    e = line + len;
+    while (p < e && (*p == ' ' || *p == '\t')) ++p;
+    q = p;
+    while (q < e && ((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+                     (*q >= '0' && *q <= '9') || *q == '_')) ++q;
+    nlen = (size_t)(q - p);
+    if (nlen == 0 || nlen >= sizeof(name)) return;
+    memcpy(name, p, nlen);
+    name[nlen] = '\0';
+    newb = mc_block_binding(name);
+    if (newb < 0) return;
+    q = loc + 7;
+    while (*q == ' ' || *q == '\t') ++q;
+    if (*q != '=') return;
+    ++q;
+    while (*q == ' ' || *q == '\t') ++q;
+    digits = q;
+    while (*digits >= '0' && *digits <= '9') ++digits;
+    if (digits == q) return;                             /* no digits: leave untouched */
+    n = snprintf(tmp, sizeof(tmp), "%d", newb);
+    oldw = (size_t)(digits - q);
+    if ((size_t)n <= oldw) {
+        memcpy(q, tmp, (size_t)n);
+        if ((size_t)n < oldw) memset(q + n, ' ', oldw - (size_t)n);   /* keep length */
+    } else {                                             /* needs more room: shift the tail */
+        size_t diff = (size_t)n - oldw;
+        size_t tail = strlen(digits) + 1;
+        if (digits + diff + tail - 1 > limit) return;    /* never write past the buffer */
+        memmove(digits + diff, digits, tail);
+        memcpy(q, tmp, (size_t)n);
+    }
+}
+
+static void mc_remap_block_bindings(char *s, size_t cap)
+{
+    char *limit = s + cap - 1;
+    char *line = s;
+    while (line != NULL && *line != '\0') {
+        char *nl = strchr(line, '\n');
+        size_t len = nl ? (size_t)(nl - line) : strlen(line);
+        mc_remap_one_block_binding(line, len, limit);
+        nl = strchr(line, '\n');
+        line = nl ? nl + 1 : NULL;
+    }
+}
+
+/* --- name-keyed opaque-uniform (sampler/image) bindings --------------- *
+ * Same defect as the UBO bindings above, one namespace over: glslang's
+ * auto_bind_uniforms numbers opaque uniforms (samplers/images) per stage in
+ * first-use order, so the shared sampler `Sampler2` lands on a different
+ * `layout(binding=)` in the vsh and the fsh and the linker rejects the whole program.
+ * Reproduced on this 2in1's GLES 3.2 with the product chain + probe_local:
+ *   VS: layout(binding = 2) uniform highp sampler2D Sampler2;
+ *   FS: layout(binding = 0) uniform highp sampler2D Sampler2;
+ *   link: FAIL L0001 The fragment sampler variable Sampler2 does not match the
+ *         vertex variable Sampler2.  The binding does not match.
+ * Texture-image-unit bindings are a SEPARATE namespace from UBO binding points, so
+ * this keeps its own name table (never shares numbers with s_blocks). MC binds every
+ * sampler itself with glUniform1i and never reads the declared binding, and the class
+ * of the uniform (type/name/array-ness) is untouched, so renumbering by name is safe.
+ * Plain numeric uniforms are not opaque and are skipped (their location strip is the
+ * existing mc_strip_uniform_locations path). */
+#define MC_UNI_MAX 128
+static struct { char name[48]; int binding; } s_unis[MC_UNI_MAX];
+static int s_unis_n = 0;
+
+/* -1 = table full (caller leaves the declaration untouched, i.e. no corruption). */
+static int mc_opaque_binding(const char *name)
+{
+    int i;
+    for (i = 0; i < s_unis_n; ++i)
+        if (strcmp(s_unis[i].name, name) == 0)
+            return s_unis[i].binding;
+    if (s_unis_n >= MC_UNI_MAX)
+        return -1;
+    snprintf(s_unis[s_unis_n].name, sizeof(s_unis[0].name), "%s", name);
+    s_unis[s_unis_n].binding = s_unis_n;
+    return s_unis[s_unis_n++].binding;
+}
+
+/* Read the identifier at/after *pp (bounded by end) and advance *pp past it.
+ * Returns its length (0 = none). Copies up to bufsz-1 chars + NUL into buf. */
+static size_t mc_take_ident(const char **pp, const char *end, char *buf, size_t bufsz)
+{
+    const char *p = *pp, *q;
+    size_t n;
+    while (p < end && (*p == ' ' || *p == '\t')) ++p;
+    q = p;
+    while (q < end && ((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+                       (*q >= '0' && *q <= '9') || *q == '_')) ++q;
+    n = (size_t)(q - p);
+    *pp = q;
+    if (n == 0 || n >= bufsz) return 0;
+    memcpy(buf, p, n);
+    buf[n] = '\0';
+    return n;
+}
+
+/* Rewrite the binding of ONE opaque-uniform declaration: a ';'-terminated uniform
+ * line whose declared type is a sampler/image. UBO lines carry no ';' (different
+ * table) and plain numeric uniforms have no sampler/image type, so both are skipped. */
+static void mc_remap_one_opaque_binding(char *line, size_t len, char *limit)
+{
+    char *lay, *open, *close, *loc, *uni, *semi, *q, *digits;
+    const char *p;
+    char type[48], name[48];
+    size_t oldw;
+    int newb, n;
+    char tmp[8];
+
+    if (mc_line_has_word(line, len, "uniform") == 0) return;
+    semi = memchr(line, ';', len);
+    if (semi == NULL) return;                            /* UBO declaration: other table */
+    lay = memmem(line, len, "layout", 6);
+    open = lay ? strchr(lay, '(') : NULL;
+    close = open ? strchr(open, ')') : NULL;
+    if (open == NULL || close == NULL) return;
+    if ((size_t)(close - line) >= len || close > semi) return;
+    loc = memmem(open + 1, (size_t)(close - open - 1), "binding", 7);
+    if (loc == NULL) return;
+    uni = memmem(line, len, "uniform", 7);
+    if (uni == NULL) return;
+    /* type = token after "uniform", skipping an optional precision qualifier */
+    p = uni + 7;
+    if (mc_take_ident(&p, line + len, type, sizeof(type)) == 0) return;
+    if (strcmp(type, "lowp") == 0 || strcmp(type, "mediump") == 0 ||
+        strcmp(type, "highp") == 0) {
+        if (mc_take_ident(&p, line + len, type, sizeof(type)) == 0) return;
+    }
+    if (strstr(type, "sampler") == NULL && strstr(type, "image") == NULL) return;
+    if (mc_take_ident(&p, line + len, name, sizeof(name)) == 0) return;
+    newb = mc_opaque_binding(name);
+    if (newb < 0) return;
+    q = loc + 7;
+    while (*q == ' ' || *q == '\t') ++q;
+    if (*q != '=') return;
+    ++q;
+    while (*q == ' ' || *q == '\t') ++q;
+    digits = q;
+    while (*digits >= '0' && *digits <= '9') ++digits;
+    if (digits == q) return;                             /* no digits: leave untouched */
+    n = snprintf(tmp, sizeof(tmp), "%d", newb);
+    oldw = (size_t)(digits - q);
+    if ((size_t)n <= oldw) {
+        memcpy(q, tmp, (size_t)n);
+        if ((size_t)n < oldw) memset(q + n, ' ', oldw - (size_t)n);   /* keep length */
+    } else {                                             /* needs more room: shift the tail */
+        size_t diff = (size_t)n - oldw;
+        size_t tail = strlen(digits) + 1;
+        if (digits + diff + tail - 1 > limit) return;    /* never write past the buffer */
+        memmove(digits + diff, digits, tail);
+        memcpy(q, tmp, (size_t)n);
+    }
+}
+
+static void mc_remap_opaque_bindings(char *s, size_t cap)
+{
+    char *limit = s + cap - 1;
+    char *line = s;
+    while (line != NULL && *line != '\0') {
+        char *nl = strchr(line, '\n');
+        size_t len = nl ? (size_t)(nl - line) : strlen(line);
+        mc_remap_one_opaque_binding(line, len, limit);
+        nl = strchr(line, '\n');
+        line = nl ? nl + 1 : NULL;
+    }
+}
+
 /* --- translation timing (startup stall evidence) ---------------------- */
 static double s_tms_total = 0.0;
 static unsigned s_tms_count = 0;
@@ -668,6 +951,8 @@ static char *mc_translate(const char *src, mc_enum stage)
                 memcpy(tmp, essl, n + 1);
                 mc_strip_uniform_locations(tmp);
                 mc_remap_varying_locations(tmp, stage == MC_GL_VERTEX_SHADER, cap + 1);
+                mc_remap_block_bindings(tmp, cap + 1);
+                mc_remap_opaque_bindings(tmp, cap + 1);
                 mc_cache_put(h, tmp);
                 free(tmp);
                 out = (char *)mc_cache_get(h);
@@ -684,6 +969,112 @@ static char *mc_translate(const char *src, mc_enum stage)
                 out != NULL, (int)stage, dt, s_tms_total, s_tms_count);
     }
     return out;
+}
+
+/* --- shader compile/link diagnostics (low-frequency, de-duplicated) ---- *
+ * The device hands our ESSL to zink/Mesa, which can reject a stage with a message MC
+ * never prints (it only says "vertex shader minecraft:core/gui was invalid"). To make
+ * the next device log self-diagnosing we emit -- ONLY on failure -- the stage's info
+ * log plus identifiers that can be lined up with MC's source: the stage enum, the
+ * original (MC-supplied, moj_import-expanded) source length and its first 40 bytes,
+ * and the translated ESSL length. Identical log text is printed once per process,
+ * and the success path stays silent. */
+#define MC_SINFO_N 64
+static struct {
+    mc_uint id;
+    mc_enum stage;
+    size_t  src_len;
+    size_t  essl_len;
+    char    head[44];
+} s_sinfo[MC_SINFO_N];
+static unsigned s_sinfo_next = 0;
+
+/* Remember the last-seen source for `id` so a later compile/link failure can name it.
+ * MC sources then compiles a shader back-to-back, so a small ring is enough. */
+static void mc_shader_note(mc_uint id, mc_enum stage, size_t src_len, size_t essl_len,
+                           const char *src)
+{
+    unsigned i;
+    size_t k;
+    for (i = 0; i < MC_SINFO_N; ++i)
+        if (s_sinfo[i].id == id) break;
+    if (i == MC_SINFO_N) i = s_sinfo_next;      /* untracked id: claim the next slot */
+    s_sinfo[i].id = id;
+    s_sinfo[i].stage = stage;
+    s_sinfo[i].src_len = src_len;
+    s_sinfo[i].essl_len = essl_len;
+    for (k = 0; k < sizeof(s_sinfo[i].head) - 1 && src && src[k] != '\0'; ++k) {
+        char c = src[k];
+        s_sinfo[i].head[k] = (c == '\n' || c == '\r' || c == '\t') ? ' ' : c;
+    }
+    s_sinfo[i].head[k] = '\0';
+    s_sinfo_next = (i + 1) % MC_SINFO_N;
+}
+
+static int mc_shader_info(mc_uint id, mc_enum *stage, size_t *src_len, size_t *essl_len,
+                          const char **head)
+{
+    unsigned i;
+    for (i = 0; i < MC_SINFO_N; ++i)
+        if (s_sinfo[i].id == id) {
+            *stage = s_sinfo[i].stage; *src_len = s_sinfo[i].src_len;
+            *essl_len = s_sinfo[i].essl_len; *head = s_sinfo[i].head;
+            return 1;
+        }
+    return 0;
+}
+
+/* Same failure text printed once per process (MC recompiles identical shaders on every
+ * resource reload / window resize). */
+#define MC_LOGHASH_N 8
+static unsigned long s_loghash[MC_LOGHASH_N];
+static unsigned s_loghash_next = 0;
+
+static int mc_log_is_new(const char *s)
+{
+    unsigned long h = 1469598103934665603UL;
+    unsigned i;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) { h ^= *p++; h *= 1099511628211UL; }
+    for (i = 0; i < MC_LOGHASH_N; ++i)
+        if (s_loghash[i] == h) return 0;
+    s_loghash[s_loghash_next] = h;
+    s_loghash_next = (s_loghash_next + 1) % MC_LOGHASH_N;
+    return 1;
+}
+
+static void mc_note_shader_failure(mc_uint shader)
+{
+    mc_int ok = 1;
+    mc_enum stage = 0;
+    size_t src_len = 0, essl_len = 0;
+    const char *head = "(untracked)";
+    char log[2048];
+
+    if (s_realGetShaderiv) s_realGetShaderiv(shader, MC_GL_COMPILE_STATUS, &ok);
+    if (ok) return;                                     /* success path: silent */
+    log[0] = '\0';
+    if (s_realGetShaderInfoLog)
+        s_realGetShaderInfoLog(shader, (mc_int)sizeof(log), NULL, log);
+    if (!mc_log_is_new(log)) return;
+    mc_shader_info(shader, &stage, &src_len, &essl_len, &head);
+    fprintf(stderr, "[meowcore] shader compile FAILED stage=0x%x srcLen=%zu esslLen=%zu "
+                    "head=\"%.40s\": %s\n", (unsigned)stage, src_len, essl_len, head,
+            log[0] ? log : "(empty log)");
+}
+
+static void mc_note_program_failure(mc_uint program)
+{
+    mc_int ok = 1;
+    char log[2048];
+
+    if (s_realGetProgramiv) s_realGetProgramiv(program, MC_GL_LINK_STATUS, &ok);
+    if (ok) return;
+    log[0] = '\0';
+    if (s_realGetProgramInfoLog)
+        s_realGetProgramInfoLog(program, (mc_int)sizeof(log), NULL, log);
+    if (!mc_log_is_new(log)) return;
+    fprintf(stderr, "[meowcore] program link FAILED: %s\n", log[0] ? log : "(empty log)");
 }
 
 /* --- patched entry points --------------------------------------------- */
@@ -763,6 +1154,8 @@ static void mc_glShaderSource(mc_uint shader, mc_int count, const mc_char *const
 
     type = mc_stage_get(shader);
     essl = mc_translate(joined, type);
+    /* remember what the driver is about to compile, for the failure diagnostic */
+    mc_shader_note(shader, type, total, essl ? strlen(essl) : 0, joined);
     free(joined);
 
     if (essl) {
@@ -777,6 +1170,49 @@ static void mc_glShaderSource(mc_uint shader, mc_int count, const mc_char *const
     }
 }
 
+/* Thin pass-throughs that make compile/link failures visible. On failure only, the
+ * info log is emitted once (see mc_note_shader_failure / mc_note_program_failure).
+ * The glGetShaderiv / glGetProgramiv hooks catch failures even when the compile/link
+ * call itself went through a path we did not wrap, and stay silent when the status
+ * query succeeds. */
+static void mc_glCompileShader(mc_uint shader)
+{
+    if (s_realCompileShader) s_realCompileShader(shader);
+    mc_note_shader_failure(shader);
+}
+
+static void mc_glGetShaderiv(mc_uint shader, mc_enum pname, mc_int *params)
+{
+    if (s_realGetShaderiv) s_realGetShaderiv(shader, pname, params);
+    if (pname == MC_GL_COMPILE_STATUS && params && *params == 0)
+        mc_note_shader_failure(shader);
+}
+
+static void mc_glGetShaderInfoLog(mc_uint shader, mc_int bufSize, mc_int *length,
+                                  mc_char *infoLog)
+{
+    if (s_realGetShaderInfoLog) s_realGetShaderInfoLog(shader, bufSize, length, infoLog);
+}
+
+static void mc_glLinkProgram(mc_uint program)
+{
+    if (s_realLinkProgram) s_realLinkProgram(program);
+    mc_note_program_failure(program);
+}
+
+static void mc_glGetProgramiv(mc_uint program, mc_enum pname, mc_int *params)
+{
+    if (s_realGetProgramiv) s_realGetProgramiv(program, pname, params);
+    if (pname == MC_GL_LINK_STATUS && params && *params == 0)
+        mc_note_program_failure(program);
+}
+
+static void mc_glGetProgramInfoLog(mc_uint program, mc_int bufSize, mc_int *length,
+                                   mc_char *infoLog)
+{
+    if (s_realGetProgramInfoLog) s_realGetProgramInfoLog(program, bufSize, length, infoLog);
+}
+
 /* The translated shaders carry explicit layout(location=...) (auto-mapped by
  * glslang). MC still calls glBindAttribLocation before linking; on GLES a bind
  * that contradicts a declared layout is a link error, and MC queries the real
@@ -787,17 +1223,109 @@ static void mc_glBindAttribLocation(mc_uint program, mc_int index, const mc_char
 }
 
 /* --- desktop-only texture entry points MC relies on ------------------- */
+
+/* Map an unsized depth/stencil internalformat to the ES-legal sized one that
+ * matches the requested type. Already-sized (or non-depth) formats pass through
+ * untouched, so valid combinations keep their exact behaviour. */
+static mc_int mc_es_depth_internalformat(mc_int internalformat, mc_enum format, mc_enum type)
+{
+    (void)format;
+    /* GL_DEPTH_COMPONENT32 is the desktop legacy *sized* constant (0x81A7) that has
+     * no ES counterpart: ES knows 16/24/32F only. MC 1.21.10 asks for
+     * (ifmt=0x81A7, fmt=GL_DEPTH_COMPONENT, type=GL_FLOAT), which the driver rejects
+     * with GL_INVALID_OPERATION. Fold it into the same type-directed rule as the
+     * unsized 0x1902 above. */
+    if (internalformat == MC_GL_DEPTH_COMPONENT || internalformat == MC_GL_DEPTH_COMPONENT32) {
+        if (type == MC_GL_FLOAT)          return MC_GL_DEPTH_COMPONENT32F;
+        if (type == MC_GL_UNSIGNED_INT)   return MC_GL_DEPTH_COMPONENT24;
+        if (type == MC_GL_UNSIGNED_SHORT) return MC_GL_DEPTH_COMPONENT16;
+    } else if (internalformat == MC_GL_DEPTH_STENCIL) {
+        if (type == MC_GL_UNSIGNED_INT_24_8)                return MC_GL_DEPTH24_STENCIL8;
+        if (type == MC_GL_FLOAT_32_UNSIGNED_INT_24_8_REV)   return MC_GL_DEPTH32F_STENCIL8;
+    }
+    return internalformat;
+}
+
+/* Diagnostics must not repeat: MC recreates its render targets on resize and mod
+ * reload, so the same remap combination is hit over and over. Emit one line per
+ * (kind, ifmt, fmt, type) combination per process. Returns 1 only the first time.
+ * kind: 0 = texImage2D, 1 = texStorage2D, 2 = renderbufferStorage. */
+#define MC_DIAG_MAX 32
+static struct { int kind; mc_int a; mc_enum b; mc_enum c; } s_diags[MC_DIAG_MAX];
+static int s_diags_n = 0;
+
+static int mc_diag_once(int kind, mc_int a, mc_enum b, mc_enum c)
+{
+    int i;
+    for (i = 0; i < s_diags_n; ++i)
+        if (s_diags[i].kind == kind && s_diags[i].a == a && s_diags[i].b == b && s_diags[i].c == c)
+            return 0;                       /* already logged this combination */
+    if (s_diags_n >= MC_DIAG_MAX)
+        return 0;                           /* table full: stay silent rather than spam */
+    s_diags[s_diags_n].kind = kind;
+    s_diags[s_diags_n].a = a;
+    s_diags[s_diags_n].b = b;
+    s_diags[s_diags_n].c = c;
+    ++s_diags_n;
+    return 1;
+}
+
+/* glTexStorage2D/glRenderbufferStorage have no format/type to disambiguate the
+ * sized format, so the default sized variant is chosen for an unsized request. */
+static mc_enum mc_es_storage_internalformat(mc_enum internalformat)
+{
+    if (internalformat == MC_GL_DEPTH_COMPONENT) return MC_GL_DEPTH_COMPONENT24;
+    if (internalformat == MC_GL_DEPTH_STENCIL)   return MC_GL_DEPTH24_STENCIL8;
+    return internalformat;
+}
+
 static void mc_glTexImage2D(mc_enum target, mc_int level, mc_int internalformat, mc_int width,
                             mc_int height, mc_int border, mc_enum format, mc_enum type,
                             const void *pixels)
 {
+    mc_int legal;
     if (target == MC_GL_PROXY_TEXTURE_2D) {   /* not a real upload: it is MC's size probe */
         s_proxyW = width;
         s_proxyH = height;
         return;
     }
+    legal = mc_es_depth_internalformat(internalformat, format, type);
+    if (legal != internalformat) {
+        if (mc_diag_once(0, internalformat, format, type))
+            fprintf(stderr, "[meowcore] texImage2D remap: target=0x%x ifmt=0x%x fmt=0x%x "
+                            "type=0x%x -> 0x%x\n", target, internalformat, format, type, legal);
+        internalformat = legal;
+    }
     if (s_realTexImage2D)
         s_realTexImage2D(target, level, internalformat, width, height, border, format, type, pixels);
+}
+
+static void mc_glTexStorage2D(mc_enum target, mc_int levels, mc_enum internalformat,
+                              mc_int width, mc_int height)
+{
+    mc_enum legal = mc_es_storage_internalformat(internalformat);
+    if (legal != internalformat) {
+        if (mc_diag_once(1, internalformat, 0, 0))
+            fprintf(stderr, "[meowcore] texStorage2D remap: target=0x%x ifmt=0x%x -> 0x%x\n",
+                    target, internalformat, legal);
+        internalformat = legal;
+    }
+    if (s_realTexStorage2D)
+        s_realTexStorage2D(target, levels, internalformat, width, height);
+}
+
+static void mc_glRenderbufferStorage(mc_enum target, mc_enum internalformat,
+                                     mc_int width, mc_int height)
+{
+    mc_enum legal = mc_es_storage_internalformat(internalformat);
+    if (legal != internalformat) {
+        if (mc_diag_once(2, internalformat, 0, 0))
+            fprintf(stderr, "[meowcore] renderbufferStorage remap: ifmt=0x%x -> 0x%x\n",
+                    internalformat, legal);
+        internalformat = legal;
+    }
+    if (s_realRenderbufferStorage)
+        s_realRenderbufferStorage(target, internalformat, width, height);
 }
 
 static void mc_glGetTexLevelParameteriv(mc_enum target, mc_int level, mc_enum pname, mc_int *params)
@@ -837,6 +1365,55 @@ static void mc_glTexParameterf(mc_enum target, mc_enum pname, float param)
 {
     if (pname == MC_GL_TEXTURE_LOD_BIAS) return;
     if (s_realTexParameterf) s_realTexParameterf(target, pname, param);
+}
+
+/* --- desktop-only glEnable/glDisable caps ----------------------------- *
+ * These wrappers exist only on the core-backend surface (meowcore_GetProcAddress),
+ * which the legacy gl4es fixed-function path never reaches -- so GL_TEXTURE_2D &c.
+ * stay valid caps for legacy. Explicit whitelist: only caps proven absent from the
+ * ES 3.2 glEnable set are dropped; anything else is forwarded verbatim. */
+static int mc_cap_desktop_only(mc_enum cap)
+{
+    switch (cap) {
+        case MC_GL_TEXTURE_CUBE_MAP_SEAMLESS: return 1;
+        case MC_GL_MULTISAMPLE:               return 1;
+        case MC_GL_TEXTURE_2D:                return 1;
+        case MC_GL_TEXTURE_1D:                return 1;
+        case MC_GL_TEXTURE_3D:                return 1;
+        case MC_GL_ALPHA_TEST:                return 1;
+        case MC_GL_LINE_SMOOTH:               return 1;
+        case MC_GL_POLYGON_SMOOTH:            return 1;
+        case MC_GL_DEPTH_CLAMP:               return 1;
+        case MC_GL_PRIMITIVE_RESTART:         return 1;
+        default:                              return 0;
+    }
+}
+
+/* One low-frequency diagnostic line per swallowed cap per process. */
+static mc_enum s_swallowed_caps[16];
+static int     s_swallowed_n = 0;
+
+static void mc_note_swallowed(mc_enum cap)
+{
+    int i;
+    for (i = 0; i < s_swallowed_n; ++i)
+        if (s_swallowed_caps[i] == cap) return;      /* already reported */
+    if (s_swallowed_n < (int)(sizeof(s_swallowed_caps) / sizeof(s_swallowed_caps[0]))) {
+        s_swallowed_caps[s_swallowed_n++] = cap;
+        fprintf(stderr, "[meowcore] glEnable swallowed (desktop-only): 0x%x\n", cap);
+    }
+}
+
+static void mc_glEnable(mc_enum cap)
+{
+    if (mc_cap_desktop_only(cap)) { mc_note_swallowed(cap); return; }
+    if (s_realEnable) s_realEnable(cap);
+}
+
+static void mc_glDisable(mc_enum cap)
+{
+    if (mc_cap_desktop_only(cap)) return;
+    if (s_realDisable) s_realDisable(cap);
 }
 
 /* --- class B: desktop-only names MC calls that ES has under another form --- */
@@ -904,6 +1481,16 @@ int meowcore_init(void)
     s_realDrawBuffers   = (mc_pfn_DrawBuffers)(void *)mc_sym("glDrawBuffers");
     s_realGetBufferParameteriv = (mc_pfn_GetBufferParameteriv)(void *)mc_sym("glGetBufferParameteriv");
     s_realMapBufferRange = (mc_pfn_MapBufferRange)(void *)mc_sym("glMapBufferRange");
+    s_realTexStorage2D = (mc_pfn_TexStorage2D)(void *)mc_sym("glTexStorage2D");
+    s_realRenderbufferStorage = (mc_pfn_RenderbufferStorage)(void *)mc_sym("glRenderbufferStorage");
+    s_realEnable        = (mc_pfn_Enable)(void *)mc_sym("glEnable");
+    s_realDisable       = (mc_pfn_Enable)(void *)mc_sym("glDisable");
+    s_realCompileShader = (mc_pfn_CompileShader)(void *)mc_sym("glCompileShader");
+    s_realGetShaderiv   = (mc_pfn_GetShaderiv)(void *)mc_sym("glGetShaderiv");
+    s_realGetShaderInfoLog = (mc_pfn_GetShaderInfoLog)(void *)mc_sym("glGetShaderInfoLog");
+    s_realLinkProgram   = (mc_pfn_LinkProgram)(void *)mc_sym("glLinkProgram");
+    s_realGetProgramiv  = (mc_pfn_GetProgramiv)(void *)mc_sym("glGetProgramiv");
+    s_realGetProgramInfoLog = (mc_pfn_GetProgramInfoLog)(void *)mc_sym("glGetProgramInfoLog");
 
     if (s_realGetIntegerv) {
         mc_int m = 0;
@@ -928,12 +1515,22 @@ static const struct mc_entry mc_entries[] = {
     { "glCreateShader", (void *)mc_glCreateShader },
     { "glDeleteShader", (void *)mc_glDeleteShader },
     { "glShaderSource", (void *)mc_glShaderSource },
+    { "glCompileShader", (void *)mc_glCompileShader },
+    { "glGetShaderiv", (void *)mc_glGetShaderiv },
+    { "glGetShaderInfoLog", (void *)mc_glGetShaderInfoLog },
+    { "glLinkProgram", (void *)mc_glLinkProgram },
+    { "glGetProgramiv", (void *)mc_glGetProgramiv },
+    { "glGetProgramInfoLog", (void *)mc_glGetProgramInfoLog },
     { "glBindAttribLocation", (void *)mc_glBindAttribLocation },
     { "glTexImage2D", (void *)mc_glTexImage2D },
+    { "glTexStorage2D", (void *)mc_glTexStorage2D },
+    { "glRenderbufferStorage", (void *)mc_glRenderbufferStorage },
     { "glGetTexLevelParameteriv", (void *)mc_glGetTexLevelParameteriv },
     { "glGetTexLevelParameterfv", (void *)mc_glGetTexLevelParameterfv },
     { "glTexParameteri", (void *)mc_glTexParameteri },
     { "glTexParameterf", (void *)mc_glTexParameterf },
+    { "glEnable", (void *)mc_glEnable },
+    { "glDisable", (void *)mc_glDisable },
     { "glClearDepth", (void *)mc_glClearDepth },
     { "glDrawBuffer", (void *)mc_glDrawBuffer },
     { "glMapBuffer", (void *)mc_glMapBuffer },
