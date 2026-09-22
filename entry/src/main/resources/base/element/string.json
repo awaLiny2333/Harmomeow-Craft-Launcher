@@ -257,6 +257,10 @@
       "value": "Vulkan（26.2+，实验）"
     },
     {
+      "name": "renderer_gl4es3",
+      "value": "GLES 3.2（GL3 核心后端）"
+    },
+    {
       "name": "java_env_title",
       "value": "Java 环境"
     },

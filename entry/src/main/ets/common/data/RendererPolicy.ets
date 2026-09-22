@@ -1,5 +1,6 @@
 import { RENDERER_LIB, RENDERER_ENV, RENDERER_LIB_GL4ES,
-  RENDERER_ENV_GL4ES, RENDERER_BACKEND_VULKAN } from '../constants/LaunchDefaults';
+  RENDERER_ENV_GL4ES, RENDERER_BACKEND_VULKAN,
+  RENDERER_BACKEND_GL4ES3 } from '../constants/LaunchDefaults';
 
 /**
  * 渲染后端选择（按 MC 版本），单一事实源。
@@ -24,12 +25,15 @@ export class RendererChoice {
   glProfile: string;
   /** 非空则给 MC 追加游戏参数 `--graphicsBackend <值>`（如 `vulkan`）；GL 侧设置不受影响。 */
   graphicsBackend: string;
+  /** 后端自带的额外渲染 env 行（`K=V`，可含换行）；启动器会拼进 `renderEnv`。空 = 无。 */
+  extraEnv: string;
 
-  constructor(lib: string, env: string, glProfile: string, graphicsBackend: string) {
+  constructor(lib: string, env: string, glProfile: string, graphicsBackend: string, extraEnv: string) {
     this.lib = lib;
     this.env = env;
     this.glProfile = glProfile;
     this.graphicsBackend = graphicsBackend;
+    this.extraEnv = extraEnv;
   }
 }
 
@@ -95,17 +99,28 @@ export function rendererForVersion(mcVersion: string, backend: string): Renderer
   if (backend === RENDERER_BACKEND_VULKAN) {
     // GL 侧与 auto 完全一致（Vulkan 失败就回退到它），只是额外要求 MC 先试 Vulkan。
     return legacy
-      ? new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, RENDERER_BACKEND_VULKAN)
-      : new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, RENDERER_BACKEND_VULKAN);
+      ? new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, RENDERER_BACKEND_VULKAN, '')
+      : new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, RENDERER_BACKEND_VULKAN, '');
+  }
+  if (backend === RENDERER_BACKEND_GL4ES3) {
+    // GL3 核心后端：≥1.17 走 gl4es fork 的 core 后端（原生 GLES 3.2），额外注入
+    //   MEOW_GL3=1        → 桥建 ES3.2 上下文、gl4es 钩子切到 meowcore_*
+    //   MEOW_STRICT_CAPS=1 → 能力守卫按"驱动公布 + 可解析"（诚实；否则会因"可解析"误判
+    //                        桌面专属入口可用。RendererInit 认这个 env，免重打 lwjgl jar）
+    // legacy（固定管线）无 core 语义 → 退回 gl4es(FPE)，不注入。
+    return legacy
+      ? new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '', '')
+      : new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '',
+        'MEOW_GL3=1\nMEOW_STRICT_CAPS=1');
   }
   if (backend === RENDERER_ENV_GL4ES) {
-    return new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '');
+    return new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '', '');
   }
   if (backend === RENDERER_ENV) {
-    return new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, '');
+    return new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, '', '');
   }
   // auto（推荐）：≤1.16 走 gl4es，≥1.17 走系统桌面 GL。
   return legacy
-    ? new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '')
-    : new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, '');
+    ? new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '', '')
+    : new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, '', '');
 }

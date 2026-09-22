@@ -35,7 +35,7 @@ sh "$HERE/build_gl4es_meow.sh" \
   --src "$SRC" \
   --build "$BUILD" \
   --sdk-native "$SDK" \
-  --out "$OUT" >"$LOG" 2>&1
+  --out "$OUT" "$@" >"$LOG" 2>&1
 RC=$?
 set -e
 

@@ -47,6 +47,10 @@ export const RENDERER_AUTO: string = 'auto';
 // `--graphicsBackend vulkan`；MC 的候选列表因此变成 {VulkanBackend, GlBackend} ⇒ Vulkan 失败照样回退 GL。
 // 见方案文 §5.5（后端选择）与 §7.5（开关与回退）。
 export const RENDERER_BACKEND_VULKAN: string = 'vulkan';
+// 逐版本「渲染后端」第五档：**GL3 核心后端**（MC 1.17–1.21.x 走 gl4es fork 的 core 后端 → 原生 GLES 3.2；
+// 用于没有系统桌面 GL 的设备，2in1 上亦作可选档）。复用 gl4es 的 lib/env（桥据此走 GLES 分支），
+// 额外注入 `MEOW_GL3=1` 以启用 core 后端。方案见 notes/20-design/render/GL33到GLES32-后端-方案.md。
+export const RENDERER_BACKEND_GL4ES3: string = 'gl4es3';
 export const VULKAN_LIB: string = 'libvulkan.so';
 // 26.2 新增 NativeLibrariesBootstrap：一旦探测到 Vulkan loader，就会强载 lwjgl-shaderc/spvc/vma
 // （本工程不随包这些模块）。**未选 Vulkan 时**把 LWJGL 的 Vulkan 库名指向这个不存在的名字 → 探测

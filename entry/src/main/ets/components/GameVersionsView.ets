@@ -10,7 +10,7 @@ import {
   SOURCE_MIRROR, SOURCE_OFFICIAL, TYPE_OTHER, TYPE_RELEASE, TYPE_SNAPSHOT
 } from '../common/constants/DownloadContract';
 import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES,
-  RENDERER_BACKEND_VULKAN } from '../common/constants/LaunchDefaults';
+  RENDERER_BACKEND_VULKAN, RENDERER_BACKEND_GL4ES3 } from '../common/constants/LaunchDefaults';
 import { rendererForVersion } from '../common/data/RendererPolicy';
 import { LOADER_FABRIC, LOADER_LEGACY_FABRIC, LOADER_NEO_FORGE, VERSION_FORM_VANILLA } from '../common/data/VersionResolver';
 import { SettingsTools } from '../common/data/SettingsTools';
@@ -340,13 +340,14 @@ export struct GameVersionsView {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'deleted version %{public}s', v.id);
   }
 
-  /** 渲染后端 Select 选项：推荐 / OpenGLv4 / GL4ES（兼容）/ Vulkan（26.2+，实验）。 */
+  /** 渲染后端 Select 选项：推荐 / OpenGLv4 / GL4ES（兼容）/ Vulkan（26.2+，实验）/ GLES 3.2（GL3 核心后端）。 */
   private rendererOptions(): SelectOption[] {
     return [
       { value: $r('app.string.renderer_auto') },
       { value: $r('app.string.renderer_openglv4') },
       { value: $r('app.string.renderer_gl4es') },
       { value: $r('app.string.renderer_vulkan') },
+      { value: $r('app.string.renderer_gl4es3') },
     ];
   }
 
@@ -372,6 +373,9 @@ export struct GameVersionsView {
     if (b === RENDERER_BACKEND_VULKAN) {
       return 3;
     }
+    if (b === RENDERER_BACKEND_GL4ES3) {
+      return 4;
+    }
     return 0;
   }
 
@@ -386,6 +390,9 @@ export struct GameVersionsView {
     if (i === 3) {
       return $r('app.string.renderer_vulkan');
     }
+    if (i === 4) {
+      return $r('app.string.renderer_gl4es3');
+    }
     return $r('app.string.renderer_auto');
   }
 
@@ -396,7 +403,8 @@ export struct GameVersionsView {
   private setRenderer(versionId: string, index: number): void {
     const backend = index === 1 ? RENDERER_ENV
       : (index === 2 ? RENDERER_ENV_GL4ES
-        : (index === 3 ? RENDERER_BACKEND_VULKAN : RENDERER_AUTO));
+        : (index === 3 ? RENDERER_BACKEND_VULKAN
+          : (index === 4 ? RENDERER_BACKEND_GL4ES3 : RENDERER_AUTO)));
     const root = this.editingRoot;
     if (root.length === 0) {
       return;

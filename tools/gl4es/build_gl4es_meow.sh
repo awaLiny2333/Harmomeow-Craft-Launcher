@@ -25,6 +25,8 @@
 #   --api N           OHOS platform level (default: 23)
 #   --arch NAME       OHOS arch (default: arm64-v8a)
 #   --toolchain FILE  CMake toolchain wrapper (default: gl4es_ohos.toolchain.cmake here)
+#   --delta DIR       overlay DIR onto a COPY of the source tree before building
+#                     (Meowcraft fork deltas live under tools/gl4es/deltas/)
 #   -h, --help        show this help
 #
 # Requires: cmake (>=3.19; CMake 4.x also needs CMAKE_POLICY_VERSION_MINIMUM),
@@ -34,13 +36,14 @@ set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 usage() {
-  sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 SRC=""
 SDK_NATIVE=""
 OUT=""
 BUILD=""
+DELTA=""
 TOOLCHAIN="$HERE/gl4es_ohos.toolchain.cmake"
 API=23
 ARCH=arm64-v8a
@@ -52,6 +55,7 @@ while [ "$#" -gt 0 ]; do
     --out)        OUT="$2"; shift 2 ;;
     --build)      BUILD="$2"; shift 2 ;;
     --toolchain)  TOOLCHAIN="$2"; shift 2 ;;
+    --delta)      DELTA="$2"; shift 2 ;;
     --api)        API="$2"; shift 2 ;;
     --arch)       ARCH="$2"; shift 2 ;;
     -h|--help)    usage; exit 0 ;;
@@ -79,8 +83,21 @@ export OHOS_SDK_NATIVE="$SDK_NATIVE"
 mkdir -p "$OUT"
 rm -rf "$BUILD"
 
+# Optional Meowcraft fork: overlay a delta tree onto a COPY of the upstream source
+# (the upstream clone under ref/ is never modified). Copy lives next to <build>.
+SRC_USE="$SRC"
+if [ -n "$DELTA" ]; then
+  [ -d "$DELTA" ] || { echo "error: --delta dir not found: $DELTA" >&2; exit 2; }
+  SRC_USE="$(dirname "$BUILD")/meow-gl4es-src"
+  rm -rf "$SRC_USE"
+  mkdir -p "$SRC_USE"
+  cp -a "$SRC/." "$SRC_USE/"
+  cp -a "$DELTA/." "$SRC_USE/"
+  echo "=== delta overlay: $DELTA -> $SRC_USE ==="
+fi
+
 echo "=== configure ($ARCH, api $API) ==="
-cmake -G Ninja -S "$SRC" -B "$BUILD" \
+cmake -G Ninja -S "$SRC_USE" -B "$BUILD" \
   -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
   -DOHOS_SDK_NATIVE="$SDK_NATIVE" \
   -DOHOS_ARCH="$ARCH" -DOHOS_STL=c++_shared -DOHOS_PLATFORM_LEVEL="$API" \
@@ -93,7 +110,7 @@ ninja -C "$BUILD"
 
 # gl4es hardcodes its lib output dir to <src>/lib and names the artifact
 # libGL.so.1 (SUFFIX ".so.1").
-RAW="$SRC/lib/libGL.so.1"
+RAW="$SRC_USE/lib/libGL.so.1"
 [ -f "$RAW" ] || { echo "error: libGL.so.1 not produced at $RAW" >&2; exit 1; }
 
 if [ -x "$STRIP" ]; then

@@ -21,6 +21,8 @@ compat 路径的渲染错乱。详见 `notes/20-design/render/legacy渲染-gl4es
 
 ```sh
 sh tools/gl4es/rebuild_for_meowcraft.sh        # 用 ref/gl4es，产物落 stuffs/research/gl4es/out/
+# fork delta（本仓自有改动）：把 ref/gl4es 拷到副本、叠加 deltas/<name>、再从副本构建（不改 ref/）
+sh tools/gl4es/rebuild_for_meowcraft.sh --delta tools/gl4es/deltas/glcore
 # 通用：sh tools/gl4es/build_gl4es_meow.sh --src <gl4es> --sdk-native <sdk/native> --out <dir>
 ```
 
@@ -53,5 +55,6 @@ sh tools/lwjgl/install_natives.sh --native libgl4es.so=stuffs/research/gl4es/out
 ## 复现/校验
 
 - 构建期断言（`build_gl4es_meow.sh`）：导出含固定管线入口（`glMatrixMode/glEnableClientState/glFogfv/glBegin/glGetString/glViewport`）**与运行期 dlsym 目标**（`glXGetProcAddress/initialize_gl4es/set_getmainfbsize/set_getprocaddress`）；`DT_NEEDED` 仅 `libc.so` 等白名单。
-- 同 tag + 同 SDK + 同 `--src`/`--build` 路径下预期可复现（gl4es 无内嵌时间戳；如需严格逐字节复现按 2× 干净重建 + `cmp` 验证）。
-- 已核验 digest（本项目构建）：`sha256 90c6ff6bc1521b3da04dc787d6581575fb4800c1399b3c01ab828ec14ebe0e54`（stripped，1231128 B）。
+- ⚠️ **不带 `--delta` 的上游配方不可逐字节复现**：`ref/gl4es/src/gl/build_info.c` 把 `__DATE__`/`__TIME__` 编进二进制，且本机 clang **不认** `SOURCE_DATE_EPOCH`（实测无效；`-D__DATE__="…"` 因 `CMAKE_C_FLAGS` 按空格切分亦不可行）⇒ 每次构建只差日期/时间串。`90c6ff6b…` 是 2026-09-11 那次（= 现随包件）的值，**已不可再复现**。
+- **带 `--delta` 的配方逐字节可复现**：`deltas/glcore` 覆盖 `build_info.c`（去掉时间戳）并加入 **GL3 核心后端**。已验证 2× 干净重建 `cmp` 相等（2026-09-22，含核心后端 + 着色器翻译（翻译库按同目录 `dladdr` 定位；`set_auto_bind_uniforms`，opengl 目标失败时回退 vulkan 目标；SPIRV-Cross 两步 `parse_spirv`→`create_compiler`；**译文剥掉普通 uniform 的 `layout(location)`** 以免两阶段撞车）+ 桌面专属入口改接/吞掉：digest `d59f60a30eddd8d40cb828829c5fe7cc0989cdbfe847499ba6d77f73f5affc53`，1,243,416 B）——**digest 随 delta 增长而变，换装时同步更新**（随包件 `libs/meowlwjgls/libs/natives.manifest` 同步）。
+- 校验方式：同 tag + 同 SDK + 同路径下 **2× 干净重建 + `cmp` 逐字节**（不要只比 sha256）。

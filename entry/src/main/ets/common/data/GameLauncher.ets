@@ -210,6 +210,7 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   const renderEnv = `GALLIUM_THREAD=${glthread ? '1' : '0'}`
     + (guardSyncNone ? '\nMEOW_GUARD_SYNC=none' : '')
     + (maskEnv.length > 0 ? `\n${maskEnv}` : '')
+    + (renderer.extraEnv.length > 0 ? `\n${renderer.extraEnv}` : '')
     // 【F75 env-cleanup】不再注入 MEOW_VK_SHIM：选 Vulkan 由 libname 承载；逃生口仍是用户
     // 「额外渲染环境变量」里的 `MEOW_VK_SHIM=0`（显式写空同理 = 纯透传）。
     + `\n${userRenderEnv}`;

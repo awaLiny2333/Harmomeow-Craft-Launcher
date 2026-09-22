@@ -86,6 +86,23 @@ static int g_gl4es;      /* renderer is GLES + gl4es */
 static int g_gl4esInit;  /* initialize_gl4es() already called */
 static void *g_gl4esGlesLib; /* dlopen'ed GLES lib handle (gl4es backend + proc resolver) */
 
+/* GL3 core backend (MC 1.17+): GL 3.2/3.3 core served by the native GLES 3.2
+ * driver through the gl4es fork's core backend (tools/gl4es/deltas/glcore, symbol
+ * namespace meowcore_*). Selected by env MEOW_GL3=1; skips desktop GL and the FPE. */
+static int g_gl4esCore;
+
+#ifndef EGL_OPENGL_ES3_BIT
+#define EGL_OPENGL_ES3_BIT 0x00000040
+#endif
+#ifndef EGL_CONTEXT_MINOR_VERSION
+#define EGL_CONTEXT_MINOR_VERSION 0x30FB
+#endif
+
+static int meow_gl3_requested(void) {
+    const char *v = getenv("MEOW_GL3");
+    return v != NULL && v[0] != '\0' && !(v[0] == '0' && v[1] == '\0');
+}
+
 static int renderer_is_gl4es(void) {
     const char *r = getenv("MEOWCRAFT_RENDERER");
     return r != NULL && strcmp(r, "gl4es") == 0;
@@ -152,6 +169,28 @@ static void gl4es_getmainfbsize(int *width, int *height) {
 /* dlopen gl4es and run initialize_gl4es() (requires a current GLES context). */
 static void gl4es_init_once(void) {
     if (!g_gl4es || g_gl4esInit) {
+        return;
+    }
+    if (g_gl4esCore) {
+        /* Core backend: the FPE path is bypassed on purpose. We only need the library
+         * loaded so LWJGL's -Dorg.lwjgl.opengl.libname resolves and gl4es'
+         * glXGetProcAddress can serve the meowcore_* surface (the delta's hook). */
+        const char *dir = getenv("MEOWCRAFT_NATIVEDIR");
+        char path[512];
+        void *lib = NULL;
+        if (dir != NULL && dir[0] != '\0') {
+            snprintf(path, sizeof(path), "%s/libgl4es.so", dir);
+            lib = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+        }
+        if (lib == NULL) {
+            lib = dlopen("libgl4es.so", RTLD_NOW | RTLD_GLOBAL);
+        }
+        if (lib == NULL) {
+            MEOWLOGE("gl4es core: dlopen failed: %{public}s", dlerror());
+            return;
+        }
+        MEOWLOGI("gl4es core backend loaded; FPE initialize_gl4es() skipped (MEOW_GL3=1)");
+        g_gl4esInit = 1;
         return;
     }
     gl4es_export_backend();
@@ -252,6 +291,32 @@ static int egl_ensure_context(void) {
     }
     if (!egl_ensure_display()) {
         return 0;
+    }
+
+    /* GL3 core backend (MEOW_GL3=1): MC 1.17+ asks for GL 3.2/3.3 core; we hand it the
+     * native GLES 3.2 driver, served by the gl4es fork's core backend. No desktop GL,
+     * no FPE. Takes precedence over the gl4es(FPE) and desktop-GL branches below. */
+    if (meow_gl3_requested()) {
+        g_gl4es = 1;
+        g_gl4esCore = 1;
+        g_egl.config = egl_pick_config(EGL_OPENGL_ES3_BIT);
+        if (g_egl.config == (EGLConfig)0) {
+            MEOWLOGE("gl4es core: no EGL config for ES3");
+            return 0;
+        }
+        if (eglBindAPI(EGL_OPENGL_ES_API) != EGL_TRUE) {
+            MEOWLOGW("eglBindAPI(EGL_OPENGL_ES_API) failed: %{public}x", eglGetError());
+        }
+        const EGLint coreAttrs[] = {EGL_CONTEXT_CLIENT_VERSION, 3,
+                                    EGL_CONTEXT_MINOR_VERSION, 2, EGL_NONE};
+        g_egl.context = eglCreateContext(g_egl.display, g_egl.config, EGL_NO_CONTEXT, coreAttrs);
+        if (g_egl.context == EGL_NO_CONTEXT) {
+            MEOWLOGE("gl4es core: eglCreateContext (ES3.2) failed: %{public}x", eglGetError());
+            return 0;
+        }
+        MEOWLOGI("created OpenGL ES 3.2 context for gl4es core backend (MEOW_GL3=1)");
+        g_egl.contextReady = 1;
+        return 1;
     }
 
     /* GLES + gl4es path (MC <=1.16 fixed pipeline): gl4es wraps a GLES context.
