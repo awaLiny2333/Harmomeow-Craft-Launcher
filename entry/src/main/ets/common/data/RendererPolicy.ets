@@ -1,6 +1,28 @@
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { RENDERER_LIB, RENDERER_ENV, RENDERER_LIB_GL4ES,
   RENDERER_ENV_GL4ES, RENDERER_BACKEND_VULKAN,
   RENDERER_BACKEND_GL4ES3 } from '../constants/LaunchDefaults';
+
+/**
+ * 「推荐」是否该用**系统桌面 GL**：**2in1 与 tablet** 预期有；其它设备（如 phone）没有
+ * `/system/lib64/libGLv4.so`，必须落到本地 GLES（gl4es 档）。见 [`已知限制与待解.md`] §A8。
+ * 缓存一次（设备类型进程内不变）。
+ */
+let desktopGlExpected: boolean | null = null;
+export function isDesktopGlExpected(): boolean {
+  if (desktopGlExpected === null) {
+    // deviceInfo is a platform read: never let a throw abort a launch. On failure we
+    // fall back to "no desktop GL" -> the GL4ES path, which works on every device.
+    let t = '';
+    try {
+      t = deviceInfo.deviceType;
+    } catch (e) {
+      t = '';
+    }
+    desktopGlExpected = (t === '2in1' || t === 'tablet');
+  }
+  return desktopGlExpected;
+}
 
 /**
  * 渲染后端选择（按 MC 版本），单一事实源。
@@ -97,30 +119,37 @@ export function rendererForVersion(mcVersion: string, backend: string): Renderer
   const legacy = isLegacyVersion(mcVersion);
   const glProfile = legacy ? 'compat' : 'core';
   if (backend === RENDERER_BACKEND_VULKAN) {
-    // GL 侧与 auto 完全一致（Vulkan 失败就回退到它），只是额外要求 MC 先试 Vulkan。
-    return legacy
-      ? new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, RENDERER_BACKEND_VULKAN, '')
-      : new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, RENDERER_BACKEND_VULKAN, '');
+    // 额外要求 MC 先试 Vulkan；**GL 侧与 auto 同规则**（同一设备门）：2in1/tablet 用桌面 GL，
+    // 否则用 GL4ES（core）—— 否则手机上的 GL 回退会落到不存在的桌面 GL（§A8）。
+    if (legacy) {
+      return new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, RENDERER_BACKEND_VULKAN, '');
+    }
+    return isDesktopGlExpected()
+      ? new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, RENDERER_BACKEND_VULKAN, '')
+      : new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, RENDERER_BACKEND_VULKAN,
+        'MEOW_GL3=1\nMEOW_STRICT_CAPS=1');
   }
-  if (backend === RENDERER_BACKEND_GL4ES3) {
-    // GL3 核心后端：≥1.17 走 gl4es fork 的 core 后端（原生 GLES 3.2），额外注入
-    //   MEOW_GL3=1        → 桥建 ES3.2 上下文、gl4es 钩子切到 meowcore_*
-    //   MEOW_STRICT_CAPS=1 → 能力守卫按"驱动公布 + 可解析"（诚实；否则会因"可解析"误判
-    //                        桌面专属入口可用。RendererInit 认这个 env，免重打 lwjgl jar）
-    // legacy（固定管线）无 core 语义 → 退回 gl4es(FPE)，不注入。
+  if (backend === RENDERER_BACKEND_GL4ES3 || backend === RENDERER_ENV_GL4ES) {
+    // 合并后的「GL4ES」档：**按 MC 版本自动分流**。
+    //   ≤1.16 / legacy：固定管线，只有 FPE 一条路（ES 无固定管线）→ 不注入 MEOW_GL3。
+    //   ≥1.17：走 gl4es fork 的 core 后端（原生 GLES 3.2）—— MEOW_GL3=1 让桥建 ES 3.2 上下文
+    //          并把 gl4es 的 glXGetProcAddress 切到 meowcore_*；MEOW_STRICT_CAPS=1 让能力守卫
+    //          用"公布 + 可解析"的诚实口径（否则会误判桌面专属入口可用）。
     return legacy
       ? new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '', '')
       : new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '',
         'MEOW_GL3=1\nMEOW_STRICT_CAPS=1');
   }
-  if (backend === RENDERER_ENV_GL4ES) {
-    return new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '', '');
-  }
   if (backend === RENDERER_ENV) {
     return new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, '', '');
   }
-  // auto（推荐）：≤1.16 走 gl4es，≥1.17 走系统桌面 GL。
-  return legacy
-    ? new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '', '')
-    : new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, '', '');
+  // auto（推荐）：≤1.16 → gl4es；≥1.17 → 有系统桌面 GL 的设备（2in1）走桌面 GL，
+  // 否则（手机等）落到本地 GLES（gl4es 档）。
+  if (legacy) {
+    return new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '', '');
+  }
+  return isDesktopGlExpected()
+    ? new RendererChoice(RENDERER_LIB, RENDERER_ENV, glProfile, '', '')
+    : new RendererChoice(RENDERER_LIB_GL4ES, RENDERER_ENV_GL4ES, glProfile, '',
+      'MEOW_GL3=1\nMEOW_STRICT_CAPS=1');
 }

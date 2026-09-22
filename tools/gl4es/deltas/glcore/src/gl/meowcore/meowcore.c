@@ -12,6 +12,7 @@
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,7 +71,7 @@ typedef void      (*mc_pfn_TexParameterf)(mc_enum, mc_enum, float);
 typedef void      (*mc_pfn_ClearDepthf)(float);
 typedef void      (*mc_pfn_DrawBuffers)(mc_int, const mc_enum *);
 typedef void      (*mc_pfn_GetBufferParameteriv)(mc_enum, mc_enum, mc_int *);
-typedef void *    (*mc_pfn_MapBufferRange)(mc_enum, mc_int, mc_int, mc_enum);
+typedef void *    (*mc_pfn_MapBufferRange)(mc_enum, int64_t, int64_t, mc_enum);
 
 /* --- state ------------------------------------------------------------- */
 static int  s_active = -1;   /* -1 unknown, 0 off, 1 on */
@@ -394,6 +395,12 @@ static void mc_drop_location_qualifier(char *line, size_t len)
             if (*t == ',') { q = t + 1; while (*q == ' ' || *q == '\t') ++q; }
             close -= (q - loc);
             memmove(loc, q, strlen(q) + 1);
+            /* If the removed qualifier was the LAST one, a comma dangles before ')'. */
+            {
+                char *t2 = close;
+                while (t2 > open + 1 && (t2[-1] == ' ' || t2[-1] == '\t')) --t2;
+                if (t2 > open + 1 && t2[-1] == ',') memmove(t2 - 1, t2, strlen(t2) + 1);
+            }
             {
                 char *p = open + 1;
                 while (p < close && (*p == ' ' || *p == '\t')) ++p;
@@ -460,10 +467,11 @@ static void mc_strip_varying_locations(char *s, int is_vertex)
  * renumber the CROSS-STAGE ones from a process-wide name table: a given name always
  * gets the same index in both stages. Vertex attributes (vertex `in`) and fragment
  * outputs keep glslang's locations -- separate location namespaces, as before. */
-#define MC_VAR_MAX 64
+#define MC_VAR_MAX 128
 static struct { char name[40]; int loc; } s_vars[MC_VAR_MAX];
 static int s_vars_n = 0;
 
+/* -1 = table full (caller leaves the declaration untouched, i.e. no corruption). */
 static int mc_varying_loc(const char *name)
 {
     int i;
@@ -471,14 +479,14 @@ static int mc_varying_loc(const char *name)
         if (strcmp(s_vars[i].name, name) == 0)
             return s_vars[i].loc;
     if (s_vars_n >= MC_VAR_MAX)
-        return 0;
+        return -1;
     snprintf(s_vars[s_vars_n].name, sizeof(s_vars[0].name), "%s", name);
     s_vars[s_vars_n].loc = s_vars_n;
     return s_vars[s_vars_n++].loc;
 }
 
 /* Rewrite the location of ONE cross-stage varying declaration, if this line is one. */
-static void mc_remap_one_varying(char *line, size_t len, int is_vertex)
+static void mc_remap_one_varying(char *line, size_t len, int is_vertex, char *limit)
 {
     char *lay, *open, *close, *loc, *semi, *q, *digits, *e, *p, name[40];
     size_t nlen, oldw;
@@ -514,6 +522,7 @@ static void mc_remap_one_varying(char *line, size_t len, int is_vertex)
     memcpy(name, p, nlen);
     name[nlen] = '\0';
     newloc = mc_varying_loc(name);
+    if (newloc < 0) return;                        /* table full: leave untouched */
     n = snprintf(tmp, sizeof(tmp), "%d", newloc);
     oldw = (size_t)(digits - q);
     if ((size_t)n <= oldw) {
@@ -521,18 +530,24 @@ static void mc_remap_one_varying(char *line, size_t len, int is_vertex)
         if ((size_t)n < oldw) memset(q + n, ' ', oldw - (size_t)n);   /* keep length */
     } else {                                       /* needs more room: shift the tail */
         size_t diff = (size_t)n - oldw;
-        memmove(digits + diff, digits, strlen(digits) + 1);
+        size_t tail = strlen(digits) + 1;
+        /* The caller's buffer only has bounded slack: NEVER write past `limit`
+         * (that would be a heap overflow). If it would not fit, leave the original
+         * location -- the source stays valid. */
+        if (digits + diff + tail - 1 > limit) return;
+        memmove(digits + diff, digits, tail);
         memcpy(q, tmp, (size_t)n);
     }
 }
 
-static void mc_remap_varying_locations(char *s, int is_vertex)
+static void mc_remap_varying_locations(char *s, int is_vertex, size_t cap)
 {
+    char *limit = s + cap - 1;
     char *line = s;
     while (line != NULL && *line != '\0') {
         char *nl = strchr(line, '\n');
         size_t len = nl ? (size_t)(nl - line) : strlen(line);
-        mc_remap_one_varying(line, len, is_vertex);
+        mc_remap_one_varying(line, len, is_vertex, limit);
         nl = strchr(line, '\n');
         line = nl ? nl + 1 : NULL;
     }
@@ -615,9 +630,14 @@ static char *mc_translate(const char *src, mc_enum stage)
         if (rc != SPVC_SUCCESS || parsed == NULL) {
             fprintf(stderr, "[meowcore] spvc_context_parse_spirv FAILED rc=%d words=%zu\n",
                     (int)rc, words);
+            s_sc.result_release(res);
             s_spvc.ctx_destroy(ctx);
             return NULL;
         }
+        /* SPIRV-Cross made its own copy of the IR: the shaderc result can go now
+         * (it used to be leaked for every shader on every successful path). */
+        s_sc.result_release(res);
+        res = NULL;
         /* NOTE: the 3rd argument is the parsed-IR handle -- passing the raw SPIR-V
          * pointer here returns SPVC_ERROR_INVALID_ARGUMENT (-4). */
         rc = s_spvc.ctx_create_compiler(ctx, SPVC_BACKEND_GLSL, parsed,
@@ -642,11 +662,12 @@ static char *mc_translate(const char *src, mc_enum stage)
             fprintf(stderr, "[meowcore] spirv->essl FAILED rc=%d\n", (int)rc);
         } else {
             size_t n = strlen(essl);
-            char *tmp = (char *)malloc(n + 1);
+            size_t cap = n + 256;                  /* slack for the varying remap */
+            char *tmp = (char *)malloc(cap + 1);
             if (tmp != NULL) {
                 memcpy(tmp, essl, n + 1);
                 mc_strip_uniform_locations(tmp);
-                mc_remap_varying_locations(tmp, stage == MC_GL_VERTEX_SHADER);
+                mc_remap_varying_locations(tmp, stage == MC_GL_VERTEX_SHADER, cap + 1);
                 mc_cache_put(h, tmp);
                 free(tmp);
                 out = (char *)mc_cache_get(h);
@@ -838,7 +859,7 @@ static void *mc_glMapBuffer(mc_enum target, mc_enum access)
     if (access == MC_GL_READ_ONLY)       flags = MC_GL_MAP_READ_BIT;
     else if (access == MC_GL_WRITE_ONLY) flags = MC_GL_MAP_WRITE_BIT;
     else                                 flags = MC_GL_MAP_READ_BIT | MC_GL_MAP_WRITE_BIT;
-    return s_realMapBufferRange(target, 0, size, flags);
+    return s_realMapBufferRange(target, (int64_t)0, (int64_t)size, flags);
 }
 
 /* --- class C: desktop-only, no ES equivalent -> swallow (never call the FPE) --- */

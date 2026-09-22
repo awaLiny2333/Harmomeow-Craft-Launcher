@@ -198,7 +198,7 @@
     },
     {
       "name": "version_renderer_hint",
-      "value": "推荐 = 自动（≥1.17 GL / ≤1.16 GL4ES）"
+      "value": "推荐 = （≥1.17 GL / ≤1.16 GL4ES；GL 败则 GL4ES）"
     },
     {
       "name": "version_glthread_label",
@@ -246,19 +246,15 @@
     },
     {
       "name": "renderer_openglv4",
-      "value": "OpenGLv4"
+      "value": "OpenGLv4（桌面级）"
     },
     {
       "name": "renderer_gl4es",
-      "value": "GL4ES（旧版本兼容）"
+      "value": "GL4ES（兼容性）"
     },
     {
       "name": "renderer_vulkan",
       "value": "Vulkan（26.2+，实验）"
-    },
-    {
-      "name": "renderer_gl4es3",
-      "value": "GLES 3.2（GL3 核心后端）"
     },
     {
       "name": "java_env_title",
