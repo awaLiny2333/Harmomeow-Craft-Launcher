@@ -1142,6 +1142,16 @@ export class GameInputController {
   }
 
   /**
+   * 系统返回（返回手势 / 返回键）等效一次 ESC 轻点：按下 + 抬起各一次。
+   * 复用虚拟按键同一公开通道（pressVirtual -> meowSendKey），不新增桥/Pipeline。
+   * GLFW Esc 码为 256，键盘键故 isMouse=false。
+   */
+  sendEscapeTap(): void {
+    this.pressVirtual(256, false, true);
+    this.pressVirtual(256, false, false);
+  }
+
+  /**
    * GLFW 键码 -> HarmonyOS KeyCode（仅覆盖虚拟覆盖层用到的键：字母 / 空格 / Esc / 修饰键；
    * 只做本文件需要的反向，未知返回 0 = 仅发送、不记 pressed，不做全表反向）。
    */

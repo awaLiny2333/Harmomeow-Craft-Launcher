@@ -162,6 +162,15 @@ struct GameWindow {
     this.input?.dispose();
   }
 
+  /**
+   * 系统返回（返回手势 / 返回键）：消费掉，不让应用退出，并等效一次 ESC 轻点。
+   * ESC 在 grab 与菜单两种状态下语义天然是"开/关菜单"，故不做 grab 门控。
+   */
+  onBackPress(): boolean {
+    this.input?.sendEscapeTap();
+    return true;
+  }
+
   /** 把控制器既有的 grab 状态镜像到 @Local，供虚拟按键覆盖层做可见性门控。 */
   private syncGrabActive(): void {
     const grabbing: boolean = this.input?.isGrabbing() ?? false;
