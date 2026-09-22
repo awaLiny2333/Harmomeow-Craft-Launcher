@@ -17,7 +17,7 @@ import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { window } from '@kit.ArkUI';
-import { LOG_DOMAIN } from '../common/constants/Constants';
+import { IMMERSIVE_STATE, LOG_DOMAIN } from '../common/constants/Constants';
 import { gameLaunchParams, setGameLaunchParams } from '../common/state/GameLaunchParams';
 import { notifyWindowActive } from '../common/state/JvmLauncher';
 import { GAME_ROUTE } from '../common/constants/LaunchContract';
@@ -62,6 +62,21 @@ export default class GameAbility extends UIAbility {
           JSON.stringify(err));
         return;
       }
+      
+      // Set immersive
+      try {
+        const mainWindow = windowStage.getMainWindowSync();
+        // mainWindow.setWindowDecorHeight(WINDOW_DECOR_HEIGHT);
+        mainWindow.setImmersiveModeEnabledState(IMMERSIVE_STATE);
+        // mainWindow.setWindowDecorVisible(!IMMERSIVE_STATE);
+        mainWindow.setWindowSystemBarEnable([]).catch((err: BusinessError) => {
+          hilog.error(LOG_DOMAIN, LOG_TAG, 'Failed to setWindowSystemBarEnable. code: %{public}s, message: %{public}s',
+            err.code, err.message);
+        });
+      } catch (err) {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'Failed to set immersive. Cause: %{public}s', JSON.stringify(err));
+      }
+      
       hilog.info(LOG_DOMAIN, LOG_TAG, '%{public}s', 'GameAbility content loaded');
       // 顶栏标题设为该版本 id（"游戏窗口显示自己的版本号"）。
       this.applyWindowTitle(windowStage);
