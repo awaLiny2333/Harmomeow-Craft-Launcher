@@ -495,28 +495,6 @@ static void mc_strip_uniform_locations(char *s)
     }
 }
 
-/* Cross-stage varyings (vertex `out` / fragment `in`) must NOT carry explicit locations:
- * glslang assigns them per stage in declaration order, so an output the fragment stage
- * does not consume shifts the other outputs and the stages then disagree. GLES matches
- * interface variables by LOCATION, which produced this device link error:
- *   "vertex shader output `texCoord2' declared as type `vec2', but fragment shader input
- *    declared as type `vec4'"            (loc 4 = vsh vec2 texCoord2 vs fsh vec4 normal)
- * Desktop GL links by NAME and MC's own backend works, so drop the location and let GLES
- * pair by name again. Vertex ATTRIBUTES (vertex `in`) and fragment outputs keep theirs. */
-static void mc_strip_varying_locations(char *s, int is_vertex)
-{
-    char *line = s;
-    while (line != NULL && *line != '\0') {
-        char *nl = strchr(line, '\n');
-        size_t len = nl ? (size_t)(nl - line) : strlen(line);
-        if (mc_line_has_word(line, len, "uniform") == 0 &&
-            mc_line_has_word(line, len, is_vertex ? "out" : "in") != 0)
-            mc_drop_location_qualifier(line, len);
-        nl = strchr(line, '\n');
-        line = nl ? nl + 1 : NULL;
-    }
-}
-
 /* --- name-keyed varying locations ------------------------------------- *
  * Desktop GL pairs cross-stage varyings BY NAME. glslang instead assigns explicit
  * locations PER STAGE in declaration order, so when the vertex stage declares an
@@ -977,8 +955,8 @@ static char *mc_translate(const char *src, mc_enum stage)
  * the next device log self-diagnosing we emit -- ONLY on failure -- the stage's info
  * log plus identifiers that can be lined up with MC's source: the stage enum, the
  * original (MC-supplied, moj_import-expanded) source length and its first 40 bytes,
- * and the translated ESSL length. Identical log text is printed once per process,
- * and the success path stays silent. */
+ * and the translated ESSL length. A failure is printed once per process per
+ * (stage, srcLen, log text) key, and the success path stays silent. */
 #define MC_SINFO_N 64
 static struct {
     mc_uint id;
@@ -1024,17 +1002,21 @@ static int mc_shader_info(mc_uint id, mc_enum *stage, size_t *src_len, size_t *e
     return 0;
 }
 
-/* Same failure text printed once per process (MC recompiles identical shaders on every
- * resource reload / window resize). */
+/* Same failure printed once per process (MC recompiles identical shaders on every
+ * resource reload / window resize). The key is (a, b, log text), not the log text
+ * alone: two different stages/programs can be rejected with the SAME driver text,
+ * and keying on text alone would silently drop the second failure. */
 #define MC_LOGHASH_N 8
 static unsigned long s_loghash[MC_LOGHASH_N];
 static unsigned s_loghash_next = 0;
 
-static int mc_log_is_new(const char *s)
+static int mc_log_is_new(const char *s, unsigned long a, unsigned long b)
 {
     unsigned long h = 1469598103934665603UL;
     unsigned i;
     const unsigned char *p = (const unsigned char *)s;
+    h ^= a; h *= 1099511628211UL;
+    h ^= b; h *= 1099511628211UL;
     while (*p) { h ^= *p++; h *= 1099511628211UL; }
     for (i = 0; i < MC_LOGHASH_N; ++i)
         if (s_loghash[i] == h) return 0;
@@ -1056,8 +1038,8 @@ static void mc_note_shader_failure(mc_uint shader)
     log[0] = '\0';
     if (s_realGetShaderInfoLog)
         s_realGetShaderInfoLog(shader, (mc_int)sizeof(log), NULL, log);
-    if (!mc_log_is_new(log)) return;
     mc_shader_info(shader, &stage, &src_len, &essl_len, &head);
+    if (!mc_log_is_new(log, (unsigned long)stage, (unsigned long)src_len)) return;
     fprintf(stderr, "[meowcore] shader compile FAILED stage=0x%x srcLen=%zu esslLen=%zu "
                     "head=\"%.40s\": %s\n", (unsigned)stage, src_len, essl_len, head,
             log[0] ? log : "(empty log)");
@@ -1073,7 +1055,9 @@ static void mc_note_program_failure(mc_uint program)
     log[0] = '\0';
     if (s_realGetProgramInfoLog)
         s_realGetProgramInfoLog(program, (mc_int)sizeof(log), NULL, log);
-    if (!mc_log_is_new(log)) return;
+    /* link failures carry no stage/srcLen: use the program id as the identity half
+     * of the key so two programs sharing a log text are both reported. */
+    if (!mc_log_is_new(log, (unsigned long)program, 0UL)) return;
     fprintf(stderr, "[meowcore] program link FAILED: %s\n", log[0] ? log : "(empty log)");
 }
 
@@ -1275,6 +1259,7 @@ static int mc_diag_once(int kind, mc_int a, mc_enum b, mc_enum c)
 static mc_enum mc_es_storage_internalformat(mc_enum internalformat)
 {
     if (internalformat == MC_GL_DEPTH_COMPONENT) return MC_GL_DEPTH_COMPONENT24;
+    if (internalformat == MC_GL_DEPTH_COMPONENT32) return MC_GL_DEPTH_COMPONENT24;
     if (internalformat == MC_GL_DEPTH_STENCIL)   return MC_GL_DEPTH24_STENCIL8;
     return internalformat;
 }
