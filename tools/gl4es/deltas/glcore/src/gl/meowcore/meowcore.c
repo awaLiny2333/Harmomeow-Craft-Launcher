@@ -449,6 +449,95 @@ static void mc_strip_varying_locations(char *s, int is_vertex)
     }
 }
 
+/* --- name-keyed varying locations ------------------------------------- *
+ * Desktop GL pairs cross-stage varyings BY NAME. glslang instead assigns explicit
+ * locations PER STAGE in declaration order, so when the vertex stage declares an
+ * output the fragment stage does not consume, the later outputs shift and the pair
+ * disagrees (device: "vertex shader output `texCoord2' declared as type `vec2', but
+ * fragment shader input declared as type `vec4'" -- loc4 shifted onto `normal').
+ * Removing the locations entirely is NOT rendering-equivalent here (the device's GL
+ * is zink-backed; measured: text gone, blocks black), so keep explicit locations but
+ * renumber the CROSS-STAGE ones from a process-wide name table: a given name always
+ * gets the same index in both stages. Vertex attributes (vertex `in`) and fragment
+ * outputs keep glslang's locations -- separate location namespaces, as before. */
+#define MC_VAR_MAX 64
+static struct { char name[40]; int loc; } s_vars[MC_VAR_MAX];
+static int s_vars_n = 0;
+
+static int mc_varying_loc(const char *name)
+{
+    int i;
+    for (i = 0; i < s_vars_n; ++i)
+        if (strcmp(s_vars[i].name, name) == 0)
+            return s_vars[i].loc;
+    if (s_vars_n >= MC_VAR_MAX)
+        return 0;
+    snprintf(s_vars[s_vars_n].name, sizeof(s_vars[0].name), "%s", name);
+    s_vars[s_vars_n].loc = s_vars_n;
+    return s_vars[s_vars_n++].loc;
+}
+
+/* Rewrite the location of ONE cross-stage varying declaration, if this line is one. */
+static void mc_remap_one_varying(char *line, size_t len, int is_vertex)
+{
+    char *lay, *open, *close, *loc, *semi, *q, *digits, *e, *p, name[40];
+    size_t nlen, oldw;
+    int newloc, n;
+    char tmp[8];
+
+    if (mc_line_has_word(line, len, "uniform") != 0) return;
+    if (mc_line_has_word(line, len, is_vertex ? "out" : "in") == 0) return;
+    lay = memmem(line, len, "layout", 6);
+    open = lay ? strchr(lay, '(') : NULL;
+    close = open ? strchr(open, ')') : NULL;
+    semi = memchr(line, ';', len);
+    if (open == NULL || close == NULL || semi == NULL) return;
+    if ((size_t)(close - line) >= len || close > semi) return;
+    loc = memmem(open + 1, (size_t)(close - open - 1), "location", 8);
+    if (loc == NULL) return;
+    q = loc + 8;
+    while (*q == ' ' || *q == '\t') ++q;
+    if (*q != '=') return;
+    ++q;
+    while (*q == ' ' || *q == '\t') ++q;
+    digits = q;
+    while (*digits >= '0' && *digits <= '9') ++digits;
+    if (digits == q) return;                       /* no digits: leave untouched */
+    /* the declared name = identifier immediately before ';' */
+    e = semi;
+    while (e > close && (e[-1] == ' ' || e[-1] == '\t')) --e;
+    p = e;
+    while (p > close && ((p[-1] >= 'a' && p[-1] <= 'z') || (p[-1] >= 'A' && p[-1] <= 'Z') ||
+                         (p[-1] >= '0' && p[-1] <= '9') || p[-1] == '_')) --p;
+    nlen = (size_t)(e - p);
+    if (nlen == 0 || nlen >= sizeof(name)) return;
+    memcpy(name, p, nlen);
+    name[nlen] = '\0';
+    newloc = mc_varying_loc(name);
+    n = snprintf(tmp, sizeof(tmp), "%d", newloc);
+    oldw = (size_t)(digits - q);
+    if ((size_t)n <= oldw) {
+        memcpy(q, tmp, (size_t)n);
+        if ((size_t)n < oldw) memset(q + n, ' ', oldw - (size_t)n);   /* keep length */
+    } else {                                       /* needs more room: shift the tail */
+        size_t diff = (size_t)n - oldw;
+        memmove(digits + diff, digits, strlen(digits) + 1);
+        memcpy(q, tmp, (size_t)n);
+    }
+}
+
+static void mc_remap_varying_locations(char *s, int is_vertex)
+{
+    char *line = s;
+    while (line != NULL && *line != '\0') {
+        char *nl = strchr(line, '\n');
+        size_t len = nl ? (size_t)(nl - line) : strlen(line);
+        mc_remap_one_varying(line, len, is_vertex);
+        nl = strchr(line, '\n');
+        line = nl ? nl + 1 : NULL;
+    }
+}
+
 /* --- translation timing (startup stall evidence) ---------------------- */
 static double s_tms_total = 0.0;
 static unsigned s_tms_count = 0;
@@ -557,11 +646,7 @@ static char *mc_translate(const char *src, mc_enum stage)
             if (tmp != NULL) {
                 memcpy(tmp, essl, n + 1);
                 mc_strip_uniform_locations(tmp);
-                /* REVERTED 2026-09-22: stripping varying locations made the 2 unlinked
-                 * programs link, but broke rendering on device (text missing, blocks
-                 * black) -- it is NOT rendering-equivalent. Kept the helper for the
-                 * offline investigation; do not re-enable without an in-game check. */
-                /* mc_strip_varying_locations(tmp, stage == MC_GL_VERTEX_SHADER); */
+                mc_remap_varying_locations(tmp, stage == MC_GL_VERTEX_SHADER);
                 mc_cache_put(h, tmp);
                 free(tmp);
                 out = (char *)mc_cache_get(h);
