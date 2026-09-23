@@ -217,19 +217,17 @@ void OHOS_TraceWarpIgnored(float x, float y, int grabbing, int relmode)
      * PLATFORM FACT: OHOS gives an application no way to move the user's
      * pointer, so a game-initiated warp cannot be implemented and is a no-op.
      * This line is the proof the no-op was taken (there is deliberately no
-     * MOTION src=warp line any more, because nothing moved). Warps are rare;
-     * dedup identical targets within a second.
+     * MOTION src=warp line any more, because nothing moved). Capped at one
+     * line per second regardless of target, so even a per-frame warper with
+     * changing coordinates stays low-frequency and readable.
      */
     static Uint64 last = 0;
-    static float lastX = 1.0e9f, lastY = 1.0e9f;
     Uint64 now = OHOS_TraceNowMs();
 
-    if (x == lastX && y == lastY && (now - last) < MEOW_TRACE_RATE_MS) {
+    if (last != 0 && (now - last) < MEOW_TRACE_RATE_MS) {
         return;
     }
     last = now;
-    lastX = x;
-    lastY = y;
     fprintf(stderr,
             "MeowSDL: WARP ignored (platform cannot move OS pointer) x=%.3f y=%.3f grabbing=%d relmode=%d\n",
             (double)x, (double)y, grabbing, relmode);
@@ -341,11 +339,16 @@ void OHOS_PumpEvents(SDL_VideoDevice *_this)
             double adx = env->cursorX - env->cLastX;
             double ady = env->cursorY - env->cLastY;
             if (justUngrabbed || adx != 0.0 || ady != 0.0) {
-                double prevX = env->cLastX;
-                double prevY = env->cLastY;
-                env->cLastX = env->cursorX;
-                env->cLastY = env->cursorY;
                 if (win) {
+                    /* Consume the change only once it is actually reported.
+                     * With no event window the sample is kept (cLast stays put)
+                     * and retried on a later pump instead of being recorded as
+                     * sent and lost, which would degrade to a plain HEAD hover
+                     * that needs a physical move to refresh. */
+                    double prevX = env->cLastX;
+                    double prevY = env->cLastY;
+                    env->cLastX = env->cursorX;
+                    env->cLastY = env->cursorY;
                     SDL_SendMouseMotion(ts, win, 0, false, (float)env->cursorX, (float)env->cursorY);
                     OHOS_TraceMotion(justUngrabbed ? "exitgrab" : "pumpabs",
                                      (float)adx, (float)ady, grabbing, relActive,

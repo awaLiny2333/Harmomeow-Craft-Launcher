@@ -80,9 +80,11 @@ Key behaviours (all reasoned from Minecraft 26.3 + on-device findings):
   unimplementable and must not be faked. `OHOS_WarpMouse` (SDL core, incl. the
   exit-grab recentre and MC's own warps), the bridge `meowGrabReset` (ArkTS grab
   re-centre) and `glfwSetCursorPos` all **do nothing**: they do not write the
-  cursor slot and do not send motion. Each prints a deduplicated `MeowSDL: WARP
-  ignored (platform cannot move OS pointer) …` so a device log proves the no-op
-  was taken. Pretending to move made MC believe the pointer sat at the warp
+  cursor slot and do not send motion. Each prints a rate-limited `MeowSDL: WARP
+  ignored (platform cannot move OS pointer) …` (at most one line per second,
+  independent of the target, so even a per-frame warper cannot flood it) so a
+  device log proves the no-op was taken. Pretending to move made MC believe the
+  pointer sat at the warp
   target (the surface centre) while the real pointer stayed where the user left
   it, so UI hover jumped to the centre and a following click lifted the view
   (the touch path exposes it because a tap is teleport+click with no MOVE to
@@ -105,6 +107,11 @@ Key behaviours (all reasoned from Minecraft 26.3 + on-device findings):
   recentre `SDL_PerformWarpMouseInWindow` (which clears `has_position` and
   flushes pending motion), so it is actually queued to MC instead of being
   dropped as a no-change sample. It is logged as `MOTION src=exitgrab`.
+  When a pump that owes this report has no event window (`OHOS_EventWindow()`
+  returns NULL, e.g. the transient after focus was lost), `cLast` is left
+  unchanged so the report is retried on a later pump instead of being recorded
+  as sent and lost — otherwise the sync would silently degrade to a HEAD hover
+  that needs a physical move to refresh.
 - **Size.** Mirrored from the bridge (`width`/`height` at `0x271dc`/`0x271e0`).
 
 ## 2. Build
@@ -194,7 +201,7 @@ git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.
 | Exports | 1270 `SDL_*` dynamic symbols |
 | Driver present | `SDL OpenHarmony (OHOS) video driver`; `OHOS_bootstrap` in `libSDL3.so` |
 | Artifact | `stuffs/research/sdl/out/libSDL3.so` (→ installed as `libSDL3.so`, manifest tag `common`) |
-| sha256 | `5f8b551fc8e21835bd1e1a99832c3964610e6412083c71a145aaba77f8582e54` (2,054,656 bytes; 2026-09-23 **minimal-set cleanup**: game-initiated pointer moves are a no-op everywhere (`OHOS_WarpMouse` / bridge `meowGrabReset` / `glfwSetCursorPos`), the pump forces exactly one absolute report on the exit-grab (`grabbing` 1→0) edge, and the interim input probe machinery was cleaned up. Supersedes the `b7fcf15d…` artifact) |
+| sha256 | `5fe4d5d44517d8f4bd1a37c5cef76518a977b7ca4e2f97b13bb81791c8d01e59` (2,054,656 bytes; 2026-09-23 **minimal-set cleanup**: game-initiated pointer moves are a no-op everywhere (`OHOS_WarpMouse` / bridge `meowGrabReset` / `glfwSetCursorPos`), the pump forces exactly one absolute report on the exit-grab (`grabbing` 1→0) edge, and the interim input probe machinery was cleaned up. **2026-09-23 follow-up (review fixes)**: the exit-grab absolute report now keeps `cLast` unchanged when the pump has no event window, so the sync is retried instead of being swallowed (`win==NULL` no longer degrades to a HEAD hover); and the `WARP ignored` proof line is capped at a hard one-per-second independent of the target (the old same-target dedup alone had no bound). Supersedes the `5f8b551f…` and `b7fcf15d…` artifacts) |
 
 > Reproducibility: like all our native builds, the digest corresponds to the
 > recorded `--src`/`--out` paths; rebuilds at other paths are functionally
@@ -205,12 +212,12 @@ git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.
 **One from-scratch rebuild at the current source state**: `rebuild_for_meowcraft.sh`
 re-creates the worktree (pristine `release-3.4.14`) and wipes the build dir, so the
 patcher is exercised. Same `--src`/`--out` paths:
-`libSDL3.so` sha256 `5f8b551fc8e21835bd1e1a99832c3964610e6412083c71a145aaba77f8582e54`, 2,054,656 bytes.
+`libSDL3.so` sha256 `5fe4d5d44517d8f4bd1a37c5cef76518a977b7ca4e2f97b13bb81791c8d01e59`, 2,054,656 bytes.
 (Same-path caveat as all our natives: the linker embeds the output path in `.dynstr`.)
 Earlier rounds (Vulkan, window-focus, clipboard/URL, and the 2026-09-23 motion-diagnostics
 build `bd5b42df…`) were each verified byte-identical; the 2026-09-23 probe era produced
-`b7fcf15d…` before this minimal-set cleanup superseded it. This is an iteration round: one
-rebuild, no 2×/`cmp`.
+`b7fcf15d…` and the minimal-set cleanup `5f8b551f…`, and the 2026-09-23 review-fix round
+produced this `5fe4d5d4…`. These are iteration rounds: one rebuild each, no 2×/`cmp`.
 
 Contract checked on the artifact: 1270 `SDL_*` dynamic symbols, `DT_NEEDED` = `libnative_window.so libc.so`
 only (EGL/GL/Vulkan/hilog are resolved at run time), `ohos` driver present.
@@ -277,8 +284,9 @@ devecocli run --module entry meowjre --device <serial>
   `SDL_Log` stays invisible on this platform) to pin down the §G2 menu→game warp jump.
   Reading: a `BUTTON down` immediately followed by `MOTION` from the same `src` marks that
   `src` as the suspect. A game-initiated warp no longer logs a `MOTION src=warp` (nothing
-  moved): it prints a deduplicated `MeowSDL: WARP ignored (platform cannot move OS pointer)
-  …` instead, so a device log proves the no-op was taken. The forced absolute report on the
+  moved): it prints a rate-limited (at most one per second, target-independent)
+  `MeowSDL: WARP ignored (platform cannot move OS pointer) …` instead, so a device log
+  proves the no-op was taken. The forced absolute report on the
   `grabbing` 1→0 edge is `MOTION src=exitgrab` (present even with `dx=dy=0`); the non-grab
   absolute pass-through stays `MOTION src=pumpabs`. These probes are to be removed together
   with their call sites once the jump is located (`src/video/ohos/SDL_ohosevents.{h,c}`).

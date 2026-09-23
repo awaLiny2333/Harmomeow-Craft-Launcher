@@ -107,26 +107,24 @@ static void meow_trace_motion(const char *src, double x, double y, int grabbing)
  * Ignored game-warp diagnostic. PLATFORM FACT: OHOS gives an application no
  * API to move the user's pointer, so every game-initiated pointer recentre
  * (the ArkTS grab reset -> meowGrabReset, the GLFW glfwSetCursorPos) is a
- * no-op: no cursor-slot write and no motion. This prints a rate-limited,
- * deduplicated line so a device log shows the no-op was taken (and with which
- * target) instead of a phantom motion. Same stderr channel as the MOTION
- * lines, so it also shows up as [jre_stderr] MeowSDL: ...
+ * no-op: no cursor-slot write and no motion. This prints a rate-limited line
+ * so a device log shows the no-op was taken (and with which target) instead of
+ * a phantom motion. Same stderr channel as the MOTION lines, so it also shows
+ * up as [jre_stderr] MeowSDL: ...
  */
 static int64_t g_iwarp_last_ms;
-static const char *g_iwarp_last_src;
-static double g_iwarp_last_x, g_iwarp_last_y;
 
 static void meow_trace_warp_ignored(const char *src, double x, double y) {
     int64_t now = meow_now_ms();
-    bool same = (g_iwarp_last_src == src) && (g_iwarp_last_x == x) && (g_iwarp_last_y == y);
 
-    if (same && (now - g_iwarp_last_ms) < MEOW_TRACE_RATE_MS) {
+    /* Hard ceiling independent of target/source: at most one proof line per
+     * MEOW_TRACE_RATE_MS. The old same-target/same-src dedup alone had no
+     * bound, so a caller recentring every frame with changing coordinates (or
+     * alternating glfwwarp/grabreset) could flood the log. */
+    if (g_iwarp_last_ms != 0 && (now - g_iwarp_last_ms) < MEOW_TRACE_RATE_MS) {
         return;
     }
     g_iwarp_last_ms = now;
-    g_iwarp_last_src = src;
-    g_iwarp_last_x = x;
-    g_iwarp_last_y = y;
     fprintf(stderr,
             "MeowSDL: WARP ignored (platform cannot move OS pointer) src=%s x=%.3f y=%.3f\n",
             src, x, y);

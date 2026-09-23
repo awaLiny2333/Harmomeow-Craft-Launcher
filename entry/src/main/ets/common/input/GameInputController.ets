@@ -677,6 +677,14 @@ export class GameInputController {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'setGrab fail: %{public}s', JSON.stringify(e));
     } finally {
       this.grabBusy = false;
+      // Reconcile a dropped edge: if grabNative flipped while this call was
+      // awaiting, pollGrabbing's setGrab bailed out on grabBusy, leaving
+      // grabApplied !== grabNative (stale cursor lock). Re-run once for the
+      // latest intent; the recursive call cannot re-enter while busy, applies
+      // the current target, and then grabApplied === grabNative so it stops.
+      if (this.grabApplied !== this.grabNative) {
+        void this.setGrab(this.grabNative);
+      }
     }
   }
 
