@@ -1183,6 +1183,13 @@ static double g_touchOriginY;
 static double g_touchScale = 1.0;
 
 /*
+ * 双指点按判定上限（ms）：从第一指按下到全部抬起短于此值才算「点按」= 右键；长按
+ * （拖拽 / 停留更久）不触发，避免双指操作起手误发右键。点按 vs 长按本质是时间判据，
+ * 无事件可替代；450ms 与常见触摸长按阈值同量级，比典型点按（<200ms）宽裕。
+ */
+#define MEOW_TWO_FINGER_TAP_MS 450
+
+/*
  * 虚拟按键排除区（display px，与 OH_Input_GetTouchEventDisplayX/Y 同空间）。
  * 命中这些矩形的触点「只按虚拟按键」，不驱动 MC 光标/点击；起手落在排除区的那根
  * 手指整段手势都跳过，其它手指照常。上限固定，解析失败/超限即跳过。
@@ -1437,7 +1444,7 @@ static bool meow_touch_filter(Input_TouchEvent *event) {
     if (g_tTwoFinger) {
         /* 双指不做滚轮（MC 里可滚动处都有滚动条）；只保留「双指点按 = 右键」。 */
         if ((action == TOUCH_ACTION_UP || action == TOUCH_ACTION_CANCEL) && g_tFingers == 0) {
-            if ((now - g_tDownMs) < 450) {
+            if ((now - g_tDownMs) < MEOW_TWO_FINGER_TAP_MS) {
                 critical_send_mouse_button(1, 1, 0);
                 critical_send_mouse_button(1, 0, 0);
             }

@@ -21,10 +21,18 @@ const CURSOR_SENS: number = 1.0;
  * 轮询仅 1 次 NAPI 读共享块（微秒级），且仅在值变化时才回写 UI，无每帧重绘负担。
  */
 const GRAB_POLL_MS: number = 16;
-/** 开聊键（T//）转发给 MC 后，等待其释放 grab 再激活 IME 的延迟（ms）。 */
-const IME_ACTIVATE_DELAY_MS: number = 120;
+/**
+ * 等待 MC 释放 grab 再激活 IME 的超时兜底（ms）。不再用固定延迟：改由既有 16ms grab
+ * 轮询推进 pending，轮询到 grabNative === false 即激活（典型路径 ≤1 帧），既不白等、也不
+ * 因 MC 慢一点就静默放弃。仅当 MC 在该上限内始终未释放 grab（聊天屏没打开 / 卡住）时才
+ * 放弃，且放弃只清 pending、不抢焦点。取值 300ms ≈ 60Hz 下 18 帧，远大于按 T 后 MC 开
+ * 聊天屏并释放 grab 的正常 1~3 帧延迟，给慢帧留足余量，又不会让过期意图长期悬挂。
+ */
+const IME_ACTIVATE_TIMEOUT_MS: number = 300;
 /** 去激活后的冷却：防 Esc 关菜单/切屏瞬间被 poll 抢回焦点到隐形 IME。 */
 const IME_COOLDOWN_MS: number = 600;
+/** IME 激活态下鼠标点击后把焦点还给隐形输入框的延迟（ms）。 */
+const IME_REFOCUS_AFTER_CLICK_MS: number = 10;
 /** 采样率 overlay 刷新间隔（ms）。 */
 const RATE_POLL_MS: number = 500;
 /**
@@ -59,8 +67,6 @@ export class GameInputController {
   // ---- 窗口级鼠标 filter（非 grab 绝对坐标直通）----
   private filterActive: boolean = false;
   private filterWinId: number = 0;
-  private mapLastMs: number = 0;
-  private touchMapLastMs: number = 0;
   /** 触屏当鼠标（高级选项，应用级设置；窗口存活期内固定，改后下次开窗生效）。 */
   private touchAsMouse: boolean = false;
   /** 触屏转视角倍率（高级选项百分比 / 100；独立于鼠标手感）。 */
@@ -82,8 +88,12 @@ export class GameInputController {
   // ---- 定时器 ----
   private grabPollTimer: number = -1;
   private rateTimer: number = -1;
-  private imeActivateTimer: number = -1;
   private imeCooldownTimer: number = -1;
+
+  // ---- IME 待激活意图（条件等待，由 grab 轮询推进）----
+  private imePending: boolean = false;
+  /** 待激活意图的登记时刻（超时兜底基准，ms）。 */
+  private imePendingSinceMs: number = 0;
 
   // ---- grab ----
   private grabNative: boolean = false;
@@ -119,7 +129,6 @@ export class GameInputController {
   private imeLast: string = '';
   private imeActive: boolean = false;
   private imeLocalDeleted: boolean = false;
-  private chatOpening: boolean = false;
   private imeCooldown: boolean = false;
 
   constructor(ctx: common.UIAbilityContext, focus: (id: string) => void,
@@ -269,7 +278,7 @@ export class GameInputController {
       clearInterval(this.rateTimer);
       this.rateTimer = -1;
     }
-    this.clearImeActivateTimer();
+    this.clearImePending();
     if (this.imeCooldownTimer >= 0) {
       clearTimeout(this.imeCooldownTimer);
       this.imeCooldownTimer = -1;
@@ -476,25 +485,23 @@ export class GameInputController {
     }
   }
 
-  private clearImeActivateTimer(): void {
-    if (this.imeActivateTimer >= 0) {
-      clearTimeout(this.imeActivateTimer);
-      this.imeActivateTimer = -1;
-    }
+  /** 清除待激活意图（去激活 / 销毁 / 超时）。 */
+  private clearImePending(): void {
+    this.imePending = false;
   }
 
-  /** grab 中按了开聊键（T//）：延迟探测 MC 释放 grab 后激活。 */
+  /** 登记“想激活 IME”的意图；重复登记不重置计时（超时从首次起算）。 */
+  private armImePending(): void {
+    if (this.imeActive || this.imePending) {
+      return;
+    }
+    this.imePending = true;
+    this.imePendingSinceMs = Date.now();
+  }
+
+  /** grab 中按了开聊键（T//）：登记待激活，由 grab 轮询等到 MC 释放 grab 后激活。 */
   private onChatOpeningKey(): void {
-    this.chatOpening = true;
-    this.clearImeActivateTimer();
-    this.imeActivateTimer = setTimeout(() => {
-      this.imeActivateTimer = -1;
-      const opening: boolean = this.chatOpening;
-      this.chatOpening = false;
-      if (opening && !this.imeActive && !this.grabNative && !this.imeCooldown) {
-        this.activateIme();
-      }
-    }, IME_ACTIVATE_DELAY_MS);
+    this.armImePending();
   }
 
   private activateIme(): void {
@@ -502,7 +509,6 @@ export class GameInputController {
       return;
     }
     this.imeActive = true;
-    this.chatOpening = false;
     this.setImeText('');
     this.imeLast = '';
     this.imeLocalDeleted = false;
@@ -514,9 +520,8 @@ export class GameInputController {
     if (!this.imeActive) {
       return;
     }
-    this.clearImeActivateTimer();
+    this.clearImePending();
     this.imeActive = false;
-    this.chatOpening = false;
     this.imeLast = '';
     this.setImeText('');
     this.imeLocalDeleted = false;
@@ -588,15 +593,43 @@ export class GameInputController {
   // ---- grab 轮询与应用 ----
 
   private scheduleImeForMenu(): void {
-    if (this.imeActive || this.imeCooldown || this.imeActivateTimer >= 0) {
+    if (this.imeActive || this.imeCooldown || this.imePending) {
       return;
     }
-    this.imeActivateTimer = setTimeout(() => {
-      this.imeActivateTimer = -1;
-      if (!this.imeActive && !this.grabNative && !this.imeCooldown) {
-        this.activateIme();
+    this.armImePending();
+  }
+
+  /**
+   * 待激活意图的推进（由 pollGrabbing 每 16ms 调一次）。条件成立即激活；超时明确放弃。
+   * - 冷却中不激活：保留原 !imeCooldown 的"防 Esc 后被抢回焦点"语义（冷却结束前超时则放弃）。
+   * - grab 未释放绝不激活：不与 MC 抢焦点。
+   */
+  private pollImePending(): void {
+    if (!this.imePending) {
+      return;
+    }
+    if (this.imeActive) {
+      this.clearImePending();
+      return;
+    }
+    const timedOut: boolean = Date.now() - this.imePendingSinceMs >= IME_ACTIVATE_TIMEOUT_MS;
+    if (this.imeCooldown) {
+      if (timedOut) {
+        this.clearImePending();
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'IME pending dropped (cooldown)');
       }
-    }, IME_ACTIVATE_DELAY_MS);
+      return;
+    }
+    if (!this.grabNative) {
+      this.clearImePending();
+      this.activateIme();
+      return;
+    }
+    if (timedOut) {
+      this.clearImePending();
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'IME activate timeout: grab held >%{public}dms',
+        IME_ACTIVATE_TIMEOUT_MS);
+    }
   }
 
   private pollGrabbing(): void {
@@ -617,6 +650,7 @@ export class GameInputController {
     if (!want && !this.imeActive) {
       this.scheduleImeForMenu();
     }
+    this.pollImePending();
   }
 
   /** 焦点回到 XComponent：若 MC 仍想 grab，按需重锁光标。 */
@@ -963,11 +997,6 @@ export class GameInputController {
     if (t === undefined || this.filterWinId <= 0) {
       return;
     }
-    const nowMs = Date.now();
-    if (nowMs - this.touchMapLastMs < 100) {
-      return;
-    }
-    this.touchMapLastMs = nowMs;
     const s: number = this.renderScale > 0 ? this.renderScale : 1;
     const sx = this.xcVpW > 0 ? this.frameW / this.xcVpW : 1;
     const sy = this.xcVpH > 0 ? this.frameH / this.xcVpH : 1;
@@ -1012,11 +1041,6 @@ export class GameInputController {
     if (b === undefined || b.mouseFilterStart === undefined) {
       return;
     }
-    const nowMs = Date.now();
-    if (nowMs - this.mapLastMs < 100) {
-      return;
-    }
-    this.mapLastMs = nowMs;
     const s: number = this.renderScale > 0 ? this.renderScale : 1;
     const sx = this.xcVpW > 0 ? this.frameW / this.xcVpW : 1;
     const sy = this.xcVpH > 0 ? this.frameH / this.xcVpH : 1;
@@ -1042,9 +1066,6 @@ export class GameInputController {
             'pushMouseMap active win=%{public}d ox=%{public}d oy=%{public}d',
             wid, Math.round(ox), Math.round(oy));
         }
-        // 触屏走同一个窗口 filter 家族（复用同一套原点/缩放口径）。是否把触屏合成鼠标事件
-        // 由应用级设置 touchAsMouse 经参数 enable 传入（旧的 MEOW_TOUCH env 门控早已删除）。
-        b.touchFilterStart?.(wid, ox, oy, s, this.touchAsMouse, this.touchSens);
       } catch (e) {
         hilog.info(LOG_DOMAIN, LOG_TAG, 'pushMouseMap filter err: %{public}s', JSON.stringify(e));
       }
@@ -1056,8 +1077,12 @@ export class GameInputController {
         if (this.disposed) {
           return;
         }
-        this.filterWinId = w.getWindowProperties().id;
-        apply(this.filterWinId);
+        try {
+          this.filterWinId = w.getWindowProperties().id;
+          apply(this.filterWinId);
+        } catch (e) {
+          hilog.info(LOG_DOMAIN, LOG_TAG, 'pushMouseMap win err: %{public}s', JSON.stringify(e));
+        }
       }).catch((e: Error) => {
         hilog.info(LOG_DOMAIN, LOG_TAG, 'pushMouseMap win err: %{public}s',
           JSON.stringify(e.message));
@@ -1065,14 +1090,18 @@ export class GameInputController {
     }
   }
 
-  /** 鼠标点击后把焦点还给隐形 TextInput（防 focusOnTouch 抢焦；IME 态专用）。 */
+  /**
+   * 鼠标点击后把焦点还给隐形 TextInput（防 focusOnTouch 抢焦；IME 态专用）。
+   * 用一次延迟而非同步 requestFocus：点击的焦点转移由平台在本事件之后落地，同步抢回会被
+   * 随后的 focusOnTouch 覆盖；延迟到下一个任务即可稳定落地（无更精确的事件可挂钩）。
+   */
   private refocusImeAfterClick(): void {
     setTimeout(() => {
       if (!this.imeActive) {
         return;
       }
       this.focus('ime-input');
-    }, 10);
+    }, IME_REFOCUS_AFTER_CLICK_MS);
   }
 
   /** 补发全部按住键的 UP（action 0），然后清空 pressed。 */
@@ -1097,8 +1126,7 @@ export class GameInputController {
 
   /** 生命周期兜底：解锁 + 显示指针 + 全部按键 UP（防卡键）。 */
   private cleanupInput(): void {
-    this.clearImeActivateTimer();
-    this.chatOpening = false;
+    this.clearImePending();
     if (this.imeCooldownTimer >= 0) {
       clearTimeout(this.imeCooldownTimer);
       this.imeCooldownTimer = -1;
@@ -1139,7 +1167,6 @@ export class GameInputController {
     this.touchOriginX = 0;
     this.touchOriginY = 0;
     this.touchOriginValid = false;
-    this.touchMapLastMs = 0;
     if (wid <= 0) {
       return;
     }

@@ -86,3 +86,11 @@ export const DOWNLOAD_CARD_MAX_W: number = 420;
 // 游戏启动兜底（ms）：正常在首次 onSurfaceChanged 拿到真实客户区尺寸后再启动；
 // 若该回调迟迟不来，等这么久后按默认尺寸启动，避免"永不启动"。
 export const LAUNCH_FALLBACK_MS: number = 1500;
+
+// 游戏窗口内两个"native 共享块 → ArkTS"的轮询周期（ms）。这两条通道 native 侧无回调可挂，
+// 只能轮询；周期是"响应感 vs 常态开销"的折中，非功能限制。
+// 全屏切换请求（F11）：用户在游戏内触发，100ms 内处理可感无延迟；native 仅切换时写一次块。
+export const FULLSCREEN_POLL_MS: number = 100;
+// 打开链接请求：native 以"临时文件 + rename"写请求，纯用户点击动作，1s 一次 stat 足够；
+// 文件不存在时 ArkTS 直接早退，常态零成本。
+export const OPEN_URL_POLL_MS: number = 1000;

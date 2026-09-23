@@ -9,7 +9,8 @@ import { gameLaunchParams } from '../common/state/GameLaunchParams';
 import { isLegacyLwjgl, setWindowDisplaySize } from '../common/data/MinecraftLauncher';
 import { readAppGlobalSettings } from '../common/data/AppSettings';
 import { SettingsTools } from '../common/data/SettingsTools';
-import { LAYOUT_SPACE, OVERLAY_BG, LAUNCH_FALLBACK_MS } from '../common/constants/Constants';
+import { LAYOUT_SPACE, OVERLAY_BG, LAUNCH_FALLBACK_MS, FULLSCREEN_POLL_MS,
+  OPEN_URL_POLL_MS } from '../common/constants/Constants';
 import { OPEN_URL_REQUEST_FILE } from '../common/constants/Paths';
 import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H } from '../common/constants/LaunchDefaults';
 import { GameInputController } from '../common/input/GameInputController';
@@ -141,15 +142,15 @@ struct GameWindow {
     this.touchControls = new SettingsTools(ctx).touchControls();
     this.input.setRenderScale(this.renderScale);
     this.input.start(this.showInputRate);
-    // 轮询 MC 的全屏切换请求（GLFW stub → native 桥 → 这里驱动真实窗口）：100 ms 保响应。
+    // 轮询 MC 的全屏切换请求（GLFW stub → native 桥 → 这里驱动真实窗口）：周期见 FULLSCREEN_POLL_MS。
     // grab 状态改由控制器轮询变化时经 onGrab 回调直推 @Local（不再在本定时器里中转拉取）。
     this.fsTimer = setInterval(() => {
       this.pollFullscreen();
-    }, 100);
-    // 打开链接是"用户点一下"的动作 ⇒ 1 s 一次文件 stat 足够；常态零成本（native 侧只在点击时写一次）。
+    }, FULLSCREEN_POLL_MS);
+    // 打开链接是"用户点一下"的动作 ⇒ 见 OPEN_URL_POLL_MS；常态零成本（native 侧只在点击时写一次）。
     this.urlTimer = setInterval(() => {
       this.pollOpenUrl();
-    }, 1000);
+    }, OPEN_URL_POLL_MS);
   }
 
   aboutToDisappear(): void {
