@@ -82,7 +82,7 @@ struct GameWindow {
   @Local renderScale: number = 1;
   /** 应用级高级选项：虚拟触屏按键覆盖层（挂载时从应用沙箱全局设置读入；默认关）。 */
   @Local touchControls: boolean = false;
-  /** 控制器既有 grab 轮询结果的镜像：仅 grab 时覆盖层渲染左右两簇（顶部始终渲染）。 */
+  /** 控制器 grab 轮询变化时的镜像（onGrab 回调直推）：仅 grab 时覆盖层渲染左右两簇（顶部始终渲染）。 */
   @Local grabActive: boolean = false;
   /** 隐形 TextInput 文本（绑定 id('ime-input')；由 GameInputController 回写）。 */
   @Local imeText: string = '';
@@ -101,7 +101,7 @@ struct GameWindow {
     const param = gameLaunchParams;
     hilog.info(LOG_DOMAIN, LOG_TAG, 'aboutToAppear gameRoot=%{public}s id=%{public}s',
       param.gameRoot, param.versionId);
-    // 控制器与页面通过 3 个回调解耦：焦点请求 / IME 文本回写 / 采样率回写。
+    // 控制器与页面通过 4 个回调解耦：焦点请求 / IME 文本回写 / 采样率回写 / grab 变化回写。
     this.input = new GameInputController(ctx,
       (id: string) => {
         try {
@@ -116,6 +116,9 @@ struct GameWindow {
       },
       (hz: number) => {
         this.mouseRate = hz;
+      },
+      (g: boolean) => {
+        this.grabActive = g;
       });
     this.xController.setSurfaceReadyHandler((surfaceId: string, w: number, h: number) => {
       if (w > 0 && h > 0) {
@@ -139,10 +142,9 @@ struct GameWindow {
     this.input.setRenderScale(this.renderScale);
     this.input.start(this.showInputRate);
     // 轮询 MC 的全屏切换请求（GLFW stub → native 桥 → 这里驱动真实窗口）：100 ms 保响应。
-    // 同一拍顺带把控制器既有 grab 轮询结果镜像到 @Local，供虚拟按键覆盖层门控（不另开定时器）。
+    // grab 状态改由控制器轮询变化时经 onGrab 回调直推 @Local（不再在本定时器里中转拉取）。
     this.fsTimer = setInterval(() => {
       this.pollFullscreen();
-      this.syncGrabActive();
     }, 100);
     // 打开链接是"用户点一下"的动作 ⇒ 1 s 一次文件 stat 足够；常态零成本（native 侧只在点击时写一次）。
     this.urlTimer = setInterval(() => {
@@ -169,14 +171,6 @@ struct GameWindow {
   onBackPress(): boolean {
     this.input?.sendEscapeTap();
     return true;
-  }
-
-  /** 把控制器既有的 grab 状态镜像到 @Local，供虚拟按键覆盖层做可见性门控。 */
-  private syncGrabActive(): void {
-    const grabbing: boolean = this.input?.isGrabbing() ?? false;
-    if (grabbing !== this.grabActive) {
-      this.grabActive = grabbing;
-    }
   }
 
   /** XComponent surface 销毁后请求 MC 优雅退出（幂等，只发一次）。 */

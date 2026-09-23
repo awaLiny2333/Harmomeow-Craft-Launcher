@@ -15,8 +15,12 @@ const LOG_TAG = 'GameInput';
 
 /** rawDelta -> 虚拟光标像素 的校准系数（grab 视角灵敏度；可调）。 */
 const CURSOR_SENS: number = 1.0;
-/** grab 状态轮询间隔（ms）。 */
-const GRAB_POLL_MS: number = 120;
+/**
+ * grab 状态轮询间隔（ms）。取一个 UI 帧（16ms ≈ 60Hz）：平台 setInterval 为
+ * "非精准计时器"且受 UI 帧节拍管控，更小的值不会更快（实测下限即帧间隔）；单次
+ * 轮询仅 1 次 NAPI 读共享块（微秒级），且仅在值变化时才回写 UI，无每帧重绘负担。
+ */
+const GRAB_POLL_MS: number = 16;
 /** 开聊键（T//）转发给 MC 后，等待其释放 grab 再激活 IME 的延迟（ms）。 */
 const IME_ACTIVATE_DELAY_MS: number = 120;
 /** 去激活后的冷却：防 Esc 关菜单/切屏瞬间被 poll 抢回焦点到隐形 IME。 */
@@ -36,16 +40,19 @@ const FKEY_RELEASE_GRACE_MS: number = 20;
  * 职责：键鼠/滚轮透传、隐形 IME 状态机、光标 grab 锁、窗口级鼠标 filter、
  * 采样率统计。页面只保留 UI 响应式字段（imeText/mouseRate/showInputRate）与 build()。
  *
- * 与页面的三个回调：
+ * 与页面的四个回调：
  * - focus(id)：请求焦点（'ime-input' / 'game-xc'）。
  * - onImeText(v)：把 IME 镜像文本回写页面 @Local（TextInput 绑定）。
  * - onRate(hz)：把采样率回写页面 @Local（overlay 显示）。
+ * - onGrab(g)：把 grab 变化回写页面 @Local（覆盖层门控）。仅值变化时触发一次，
+ *   页面无需再另开循环去拉 isGrabbing()（消除一个 100ms 的中转延迟）。
  */
 export class GameInputController {
   private ctx: common.UIAbilityContext;
   private focus: (id: string) => void;
   private onImeText: (v: string) => void;
   private onRate: (hz: number) => void;
+  private onGrab: (g: boolean) => void;
 
   private bridge: JreLibModule | undefined = undefined;
 
@@ -116,11 +123,13 @@ export class GameInputController {
   private imeCooldown: boolean = false;
 
   constructor(ctx: common.UIAbilityContext, focus: (id: string) => void,
-    onImeText: (v: string) => void, onRate: (hz: number) => void) {
+    onImeText: (v: string) => void, onRate: (hz: number) => void,
+    onGrab: (g: boolean) => void) {
     this.ctx = ctx;
     this.focus = focus;
     this.onImeText = onImeText;
     this.onRate = onRate;
+    this.onGrab = onGrab;
   }
 
   /** 由 GameWindow 注入已 import 的 meowjre 桥。 */
@@ -603,6 +612,7 @@ export class GameInputController {
         this.deactivateIme();
       }
       this.setGrab(want);
+      this.onGrab(want);
     }
     if (!want && !this.imeActive) {
       this.scheduleImeForMenu();
@@ -612,11 +622,6 @@ export class GameInputController {
   /** 焦点回到 XComponent：若 MC 仍想 grab，按需重锁光标。 */
   onFocusGained(): void {
     this.setGrab(this.grabNative);
-  }
-
-  /** 供 UI（虚拟按键覆盖层）查询当前是否 grab；复用既有 pollGrabbing 的轮询结果，不另设轮询。 */
-  isGrabbing(): boolean {
-    return this.grabNative;
   }
 
   private async setGrab(target: boolean): Promise<void> {
