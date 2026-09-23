@@ -191,7 +191,7 @@ reports "already present" — that is how a removed `hilog_ndk.z` link kept fail
 git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.14
 ```
 
-## 4. Verified build (2026-09-11, SDK clang 15.0.4, api 23; re-verified 2026-09-23)
+## 4. Verified build (2026-09-11, SDK clang 15.0.4, api 23; re-verified 2026-09-23, 3× clean rebuild)
 
 | Item | Result |
 |---|---|
@@ -202,6 +202,7 @@ git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.
 | Driver present | `SDL OpenHarmony (OHOS) video driver`; `OHOS_bootstrap` in `libSDL3.so` |
 | Artifact | `stuffs/research/sdl/out/libSDL3.so` (→ installed as `libSDL3.so`, manifest tag `common`) |
 | sha256 | `5fe4d5d44517d8f4bd1a37c5cef76518a977b7ca4e2f97b13bb81791c8d01e59` (2,054,656 bytes; 2026-09-23 **minimal-set cleanup**: game-initiated pointer moves are a no-op everywhere (`OHOS_WarpMouse` / bridge `meowGrabReset` / `glfwSetCursorPos`), the pump forces exactly one absolute report on the exit-grab (`grabbing` 1→0) edge, and the interim input probe machinery was cleaned up. **2026-09-23 follow-up (review fixes)**: the exit-grab absolute report now keeps `cLast` unchanged when the pump has no event window, so the sync is retried instead of being swallowed (`win==NULL` no longer degrades to a HEAD hover); and the `WARP ignored` proof line is capped at a hard one-per-second independent of the target (the old same-target dedup alone had no bound). Supersedes the `5f8b551f…` and `b7fcf15d…` artifacts) |
+| Verification (2026-09-23) | **3× clean rebuild + `cmp` byte-identical** to each other and to the shipped `libs/meowlwjgls/libs/arm64-v8a/libSDL3.so` (`5fe4d5d4…`, 2,054,656 bytes). Scope: same tag `release-3.4.14` / same SDK (api 23, clang 15.0.4) / same absolute `--src` `ref/SDL-3.4.14` + `--out` `stuffs/research/sdl/out`. Method: reset the worktree to pristine + `rm -rf` the build dir before each round, then `cmp` (not just sha256). See §4b. |
 
 > Reproducibility: like all our native builds, the digest corresponds to the
 > recorded `--src`/`--out` paths; rebuilds at other paths are functionally
@@ -209,15 +210,27 @@ git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.
 
 ## 4b. Reproducibility
 
-**One from-scratch rebuild at the current source state**: `rebuild_for_meowcraft.sh`
-re-creates the worktree (pristine `release-3.4.14`) and wipes the build dir, so the
-patcher is exercised. Same `--src`/`--out` paths:
+**Verification method / 校验方式 (2026-09-23): 3× clean rebuild, `cmp` byte-identical.** Each round
+reset `ref/SDL-3.4.14` to pristine `release-3.4.14` (`git checkout -- .`, plus removing
+the patcher's untracked `src/video/ohos/` and `src/misc/ohos/`, so the patcher is
+exercised), then `rm -rf` the build dir, then ran `rebuild_for_meowcraft.sh`. All three
+artifacts are **byte-identical to each other and to the shipped
+`libs/meowlwjgls/libs/arm64-v8a/libSDL3.so`** (`cmp`, not just sha256):
 `libSDL3.so` sha256 `5fe4d5d44517d8f4bd1a37c5cef76518a977b7ca4e2f97b13bb81791c8d01e59`, 2,054,656 bytes.
-(Same-path caveat as all our natives: the linker embeds the output path in `.dynstr`.)
+Scope: same tag (`release-3.4.14`), same SDK (api 23, clang 15.0.4) and the same absolute
+`--src` (`ref/SDL-3.4.14`) / `--out` (`stuffs/research/sdl/out`) paths. Same-path caveat
+as all our natives: the linker embeds the output path in `.dynstr`, so rebuilds at other
+paths are functionally identical but hash differently.
+
+`rebuild_for_meowcraft.sh` itself only `rm -rf`s the build dir (via `build_sdl_meow.sh`)
+and re-runs the idempotent patcher in place — it does **not** re-create the worktree; the
+pristine reset above is done by hand for the clean-rebuild check.
+
 Earlier rounds (Vulkan, window-focus, clipboard/URL, and the 2026-09-23 motion-diagnostics
 build `bd5b42df…`) were each verified byte-identical; the 2026-09-23 probe era produced
-`b7fcf15d…` and the minimal-set cleanup `5f8b551f…`, and the 2026-09-23 review-fix round
-produced this `5fe4d5d4…`. These are iteration rounds: one rebuild each, no 2×/`cmp`.
+`b7fcf15d…`, the minimal-set cleanup `5f8b551f…` and the review-fix round this
+`5fe4d5d4…` — those were iteration rounds, one rebuild each. This final round re-verified
+the shipped `5fe4d5d4…` with the full 3×/`cmp` procedure above.
 
 Contract checked on the artifact: 1270 `SDL_*` dynamic symbols, `DT_NEEDED` = `libnative_window.so libc.so`
 only (EGL/GL/Vulkan/hilog are resolved at run time), `ohos` driver present.
@@ -278,18 +291,22 @@ devecocli run --module entry meowjre --device <serial>
   a log file, even at `WARN` — while stderr provably arrives in the exported log, and
   linking hilog would add a `DT_NEEDED` entry that `build_sdl_meow.sh` deliberately
   rejects. Look for `[jre_stderr] MeowSDL: …`.
-- **Motion diagnostics (always on as of 2026-09-23, temporary)**: the `ohos` input pump also
-  emits rate-limited, de-duplicated `MeowSDL: BUTTON …`, `MeowSDL: MOTION src=… grabbing=…`
+- **Motion diagnostics (always on as of 2026-09-23, still in the current build)**: the `ohos` input pump also
+  emits rate-limited `MeowSDL: BUTTON …`, `MeowSDL: MOTION src=… grabbing=…`
   and `MeowSDL: GRABMODE src=…` lines on stderr (same `[jre_stderr] MeowSDL:` channel;
-  `SDL_Log` stays invisible on this platform) to pin down the §G2 menu→game warp jump.
+  `SDL_Log` stays invisible on this platform) to pin down the menu→game warp jump (since
+  located in MC's own `MouseHandler.accumulatedDX/DY` and accepted — see notes
+  `00-current/已知限制与待解.md` §B7).
   Reading: a `BUTTON down` immediately followed by `MOTION` from the same `src` marks that
   `src` as the suspect. A game-initiated warp no longer logs a `MOTION src=warp` (nothing
   moved): it prints a rate-limited (at most one per second, target-independent)
   `MeowSDL: WARP ignored (platform cannot move OS pointer) …` instead, so a device log
   proves the no-op was taken. The forced absolute report on the
   `grabbing` 1→0 edge is `MOTION src=exitgrab` (present even with `dx=dy=0`); the non-grab
-  absolute pass-through stays `MOTION src=pumpabs`. These probes are to be removed together
-  with their call sites once the jump is located (`src/video/ohos/SDL_ohosevents.{h,c}`).
+  absolute pass-through stays `MOTION src=pumpabs`. These lines remain in the current build:
+  the `WARP ignored` line is kept deliberately as the bounded proof the pointer no-op was
+  taken (call sites `src/video/ohos/SDL_ohosevents.{h,c}` and the bridge
+  `libs/meowcraftlib/src/main/cpp/meowcraftbridge/input_bridge.c`).
 - Window `Show/Hide/Raise/Focusable/Minimize` are not implemented (external
   window owned by ArkTS).
 
