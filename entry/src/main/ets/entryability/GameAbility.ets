@@ -33,6 +33,16 @@ const LOG_TAG = 'GameAbility';
  * 即"点启动 → 独立游戏窗口"。启动参数经 want.parameters 进入 GameLaunchParams。
  */
 export default class GameAbility extends UIAbility {
+  /** GameAbility 自己的主窗：焦点是窗口粒度，窗口级事件挂在它上面。 */
+  private mainWindow: window.Window | null = null;
+  /** 诊断日志去重：记录上一次打印的事件 type（首见 / 变化才打，低频不刷屏）。 */
+  private lastLoggedWinEvent: number = -1;
+
+  /** 窗口级获焦/失焦回调（保存引用，供销毁时 off 使用）。 */
+  private winEventCb: (ev: window.WindowEventType) => void = (ev: window.WindowEventType): void => {
+    this.onWindowEvent(ev);
+  };
+
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'GameAbility onCreate params=%{public}s',
       JSON.stringify(want.parameters ?? {}));
@@ -80,19 +90,60 @@ export default class GameAbility extends UIAbility {
       hilog.info(LOG_DOMAIN, LOG_TAG, '%{public}s', 'GameAbility content loaded');
       // 顶栏标题设为该版本 id（"游戏窗口显示自己的版本号"）。
       this.applyWindowTitle(windowStage);
+      // 焦点是窗口粒度：按官方推荐在窗口级监听。详见 IMPL-window-event.md。
+      this.registerFocus(windowStage);
     });
+  }
 
-    // 26.3(SDL)：MC 靠 SDL 的 FOCUS_LOST/GAINED 决定是否自动暂停（options: pauseOnLostFocus）；
-    // 平台侧告知获焦/失焦的只有 windowStageEvent，转给 native（写共享块 → SDL 驱动发焦点事件）。
+  /**
+   * 注册获焦/失焦监听。
+   *
+   * 官方 window-focus-guide / window-lifecycle 推荐：焦点是"窗口粒度"，用
+   * getMainWindowSync() 取主窗后 on('windowEvent') 监听（windowStageEvent 是
+   * stage 级语义，悬浮小窗下不再重发 ACTIVE，故不再使用）。
+   */
+  private registerFocus(windowStage: window.WindowStage): void {
     try {
-      windowStage.on('windowStageEvent', (ev: window.WindowStageEventType) => {
-        notifyWindowActive(ev === window.WindowStageEventType.ACTIVE).catch((e: BusinessError) => {
-          hilog.warn(LOG_DOMAIN, LOG_TAG, 'notifyWindowActive failed code=%{public}s', e.code);
-        });
-      });
+      const win: window.Window = windowStage.getMainWindowSync();
+      this.mainWindow = win;
+      win.on('windowEvent', this.winEventCb);
+      hilog.info(LOG_DOMAIN, LOG_TAG, '[focus] windowEvent subscribed (window-level)');
     } catch (e) {
-      hilog.warn(LOG_DOMAIN, LOG_TAG, 'windowStageEvent subscribe failed');
+      // 注册失败：不写状态，共享块保持零值 = 获焦（安全默认，与既有 ABI 语义一致）。
+      hilog.warn(LOG_DOMAIN, LOG_TAG, '[focus] windowEvent subscribe failed: %{public}s', JSON.stringify(e));
     }
+  }
+
+  /** 窗口级事件：ACTIVE=获焦；INACTIVE/HIDDEN=失焦；其它只记日志、不改状态。 */
+  private onWindowEvent(ev: window.WindowEventType): void {
+    if (ev === window.WindowEventType.WINDOW_ACTIVE) {
+      this.logWinEvent(ev, 'focused');
+      this.publishFocus(true);
+    } else if (ev === window.WindowEventType.WINDOW_INACTIVE) {
+      this.logWinEvent(ev, 'unfocused');
+      this.publishFocus(false);
+    } else if (ev === window.WindowEventType.WINDOW_HIDDEN) {
+      this.logWinEvent(ev, 'hidden->unfocused');
+      this.publishFocus(false);
+    } else {
+      // SHOWN / DESTROYED 等：保守起见只记日志（证据驱动，不臆测状态）。
+      this.logWinEvent(ev, 'ignored');
+    }
+  }
+
+  /** 窗口事件诊断日志：同一 type 只在「首见 / 变化」时打一条（低频、不刷屏）。 */
+  private logWinEvent(ev: window.WindowEventType, label: string): void {
+    if (ev !== this.lastLoggedWinEvent) {
+      this.lastLoggedWinEvent = ev;
+      hilog.info(LOG_DOMAIN, LOG_TAG, '[focus] winEvent type=%{public}d -> %{public}s', ev, label);
+    }
+  }
+
+  /** 转给 native（复用既有 notifyWindowActive 链路，不改共享块 / ABI）。 */
+  private publishFocus(active: boolean): void {
+    notifyWindowActive(active).catch((e: BusinessError) => {
+      hilog.warn(LOG_DOMAIN, LOG_TAG, '[focus] notifyWindowActive failed code=%{public}s', e.code);
+    });
   }
 
   /** 把游戏窗口顶栏标题设为当前启动版本的 id（best-effort；设备/窗口不支持则忽略）。 */
@@ -110,6 +161,20 @@ export default class GameAbility extends UIAbility {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'window title set to %{public}s', id);
     } catch (e) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'setWindowTitle err: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  /** 窗口销毁：移除窗口级监听（文档要求），避免悬挂回调。 */
+  onWindowStageDestroy(): void {
+    hilog.info(LOG_DOMAIN, LOG_TAG, '%{public}s', 'GameAbility onWindowStageDestroy');
+    const win: window.Window | null = this.mainWindow;
+    if (win !== null) {
+      try {
+        win.off('windowEvent', this.winEventCb);
+      } catch (e) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG, '[focus] windowEvent off failed: %{public}s', JSON.stringify(e));
+      }
+      this.mainWindow = null;
     }
   }
 
