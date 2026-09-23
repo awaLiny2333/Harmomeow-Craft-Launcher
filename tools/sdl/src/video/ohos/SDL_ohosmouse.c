@@ -61,17 +61,29 @@ static bool OHOS_WarpMouse(SDL_Window *window, float x, float y)
     struct meow_environ_s *env;
 
     (void)window;
-    /* OHOS has no OS cursor-warp API. Centre the bridge's virtual cursor (the
-     * grab baseline is re-seeded by OHOS_PumpEvents when relative mode starts). */
+    /*
+     * UNCONDITIONAL NO-OP.
+     *
+     * PLATFORM FACT: OHOS gives an application no API to move the user's
+     * pointer. A game-initiated warp is therefore unimplementable and MUST NOT
+     * be faked: do NOT write the bridge cursor slot (env->cursorX/Y) and do NOT
+     * emit any motion. Pretending to move made MC believe its pointer sat at
+     * the warp target (the surface centre) while the real pointer stayed where
+     * the user left it, so UI hover jumped to the centre and a following click
+     * "lifted" the view. The bridge virtual cursor is now a *user-input* record
+     * only; MC's absolute pointer is synced from it by OHOS_PumpEvents
+     * (exitgrab on the grab 1->0 edge, pumpabs otherwise).
+     *
+     * relmode is SDL core's own state (SDL_GetRelativeMouseMode()); it is only
+     * logged. SDL core forwards here only while it is false
+     * (src/events/SDL_mouse.c: SDL_PerformWarpMouseInWindow). The `has_position`
+     * reset SDL core does before this call is kept, so the exit-grab absolute
+     * report is still queued to MC rather than dropped as a no-change sample.
+     */
     env = (struct meow_environ_s *)OHOS_GetBridgeBase();
-    if (env) {
-        /* relmode is SDL core's own state (SDL_GetRelativeMouseMode()); it is
-         * logged because SDL core only forwards to this hook while it is false
-         * (src/events/SDL_mouse.c: SDL_PerformWarpMouseInWindow). */
-        OHOS_TraceWarp(x, y, env->grabbing, SDL_GetRelativeMouseMode() ? 1 : 0);
-        env->cursorX = (double)x;
-        env->cursorY = (double)y;
-    }
+    OHOS_TraceWarpIgnored(x, y,
+                          env ? (env->grabbing ? 1 : 0) : 0,
+                          SDL_GetRelativeMouseMode() ? 1 : 0);
     return true;
 }
 

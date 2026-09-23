@@ -211,9 +211,15 @@ void OHOS_TraceMotion(const char *src, float dx, float dy, int grabbing, int rel
             src, (double)dx, (double)dy, grabbing, relActive, cursorX, cursorY, lastX, lastY);
 }
 
-void OHOS_TraceWarp(float x, float y, int grabbing, int relmode)
+void OHOS_TraceWarpIgnored(float x, float y, int grabbing, int relmode)
 {
-    /* Warps are rare; dedup identical targets within a second. */
+    /*
+     * PLATFORM FACT: OHOS gives an application no way to move the user's
+     * pointer, so a game-initiated warp cannot be implemented and is a no-op.
+     * This line is the proof the no-op was taken (there is deliberately no
+     * MOTION src=warp line any more, because nothing moved). Warps are rare;
+     * dedup identical targets within a second.
+     */
     static Uint64 last = 0;
     static float lastX = 1.0e9f, lastY = 1.0e9f;
     Uint64 now = OHOS_TraceNowMs();
@@ -224,7 +230,8 @@ void OHOS_TraceWarp(float x, float y, int grabbing, int relmode)
     last = now;
     lastX = x;
     lastY = y;
-    fprintf(stderr, "MeowSDL: MOTION src=warp x=%.3f y=%.3f grabbing=%d relmode=%d\n",
+    fprintf(stderr,
+            "MeowSDL: WARP ignored (platform cannot move OS pointer) x=%.3f y=%.3f grabbing=%d relmode=%d\n",
             (double)x, (double)y, grabbing, relmode);
 }
 
@@ -242,6 +249,7 @@ void OHOS_PumpEvents(SDL_VideoDevice *_this)
     size_t queued, index, target, n;
     static int relActive = 0;
     static double relLastX = 0.0, relLastY = 0.0;
+    static int lastGrabbing = 0;        /* detect the grabbing 1->0 edge (exit grab) */
     static int lastCharModsCp = -1;
     int grabbing;
 
@@ -312,24 +320,42 @@ void OHOS_PumpEvents(SDL_VideoDevice *_this)
             }
         }
     } else {
+        /* Exit-grab edge (grabbing 1->0). While grabbing, MC keeps its GUI
+         * pointer frozen: it consumes relative deltas, never absolute positions.
+         * The exit recentre (SDL core SDL_SetRelativeMouseMode(false) ->
+         * SDL_PerformWarpMouseInWindow) clears SDL core's `has_position`, and
+         * the driver's OHOS_WarpMouse is a no-op (OHOS cannot move the OS
+         * pointer), so the bridge slot still holds the user's last pointer. The
+         * change-gated pass-through below would then skip the frame when the
+         * virtual cursor did not move since cLast, so MC would never receive an
+         * absolute sample and the button under the pointer would stay dark until
+         * a physical move forced one. Force exactly one absolute report on the
+         * 1->0 edge so MC's hover lands immediately (the "return to game"
+         * button lights up without moving the mouse). Entry (0->1) deliberately
+         * does NOT: MC is then in relative mode with the pointer hidden, and an
+         * absolute write there could shift the grab baseline. */
+        bool justUngrabbed = (lastGrabbing == 1);
         relActive = 0;
         /* Pointer motion is a latest-value slot, not a ring entry. */
         {
             double adx = env->cursorX - env->cLastX;
             double ady = env->cursorY - env->cLastY;
-            if (adx != 0.0 || ady != 0.0) {
+            if (justUngrabbed || adx != 0.0 || ady != 0.0) {
                 double prevX = env->cLastX;
                 double prevY = env->cLastY;
                 env->cLastX = env->cursorX;
                 env->cLastY = env->cursorY;
                 if (win) {
                     SDL_SendMouseMotion(ts, win, 0, false, (float)env->cursorX, (float)env->cursorY);
-                    OHOS_TraceMotion("pumpabs", (float)adx, (float)ady, grabbing, relActive,
+                    OHOS_TraceMotion(justUngrabbed ? "exitgrab" : "pumpabs",
+                                     (float)adx, (float)ady, grabbing, relActive,
                                      env->cursorX, env->cursorY, prevX, prevY);
                 }
             }
         }
     }
+
+    lastGrabbing = grabbing;
 
     queued = atomic_load_explicit(&env->eventCounter, memory_order_acquire);
     index = env->outEventIndex;

@@ -43,7 +43,7 @@ git -C ref/SDL worktree add --detach "$PWD/ref/SDL-3.4.14" release-3.4.14   # �
 | `SDL_ohosevents.c/.h` | **input pump** (`OHOS_PumpEvents`): drains the bridge ring → SDL events; `WaitEventTimeout` |
 | `SDL_ohosgl.c/.h` | EGL context/surface/swap + **GL entry-point resolution via `dlopen`+`dlsym`** (pointer identity with LWJGL) |
 | `SDL_ohosvulkan.c/.h` | **Vulkan support**: the `Vulkan_LoadLibrary`/`UnloadLibrary`/`GetInstanceExtensions`/`CreateSurface`/`DestroySurface` entries SDL core needs (without them `SDL_Vulkan_LoadLibrary` fails with *“No dynamic Vulkan support in current SDL video driver (ohos)”*). See §6. |
-| `SDL_ohosmouse.c/.h` | **`SDL_Mouse` hooks** (relative mode / warp) → `env->grabbing` |
+| `SDL_ohosmouse.c/.h` | **`SDL_Mouse` hooks**: relative mode → `env->grabbing`; `WarpMouse` is an unconditional no-op (OHOS cannot move the user's pointer) |
 | `SDL_ohosclipboard.c/.h` | **Clipboard write** (`SetClipboardText`) via the platform pasteboard NDK (`libpasteboard.so`/`libudmf.so`, resolved with `dlopen` so `DT_NEEDED` stays clean). Read/paste is deliberately absent: it needs `ohos.permission.READ_PASTEBOARD`. |
 | `../misc/ohos/SDL_sysurl.c` | **URL opener** (`SDL_SYS_OpenURL`) — writes the URL to `$HOME/meow-open-url.txt`; the ArkTS side picks it up and does `startAbility`. Copied to `src/misc/ohos/` (not `src/video/ohos/`), see §3. |
 | `ohos_meow_environ.h` | vendored, trimmed copy of the bridge ABI struct (ring + cursor slots) |
@@ -75,6 +75,36 @@ Key behaviours (all reasoned from Minecraft 26.3 + on-device findings):
 - **Mouse grab.** `SDL_Mouse.SetRelativeMouseMode` → `env->grabbing` (ArkTS then
   `LockCursor`s + hides the pointer); while grabbing the pump differences the
   bridge virtual cursor (`env->cursorX/Y`) and sends **relative** motion.
+- **Game-initiated pointer moves are a no-op (2026-09-23).** OHOS gives an
+  application no API to move the user's pointer, so a game warp is
+  unimplementable and must not be faked. `OHOS_WarpMouse` (SDL core, incl. the
+  exit-grab recentre and MC's own warps), the bridge `meowGrabReset` (ArkTS grab
+  re-centre) and `glfwSetCursorPos` all **do nothing**: they do not write the
+  cursor slot and do not send motion. Each prints a deduplicated `MeowSDL: WARP
+  ignored (platform cannot move OS pointer) …` so a device log proves the no-op
+  was taken. Pretending to move made MC believe the pointer sat at the warp
+  target (the surface centre) while the real pointer stayed where the user left
+  it, so UI hover jumped to the centre and a following click lifted the view
+  (the touch path exposes it because a tap is teleport+click with no MOVE to
+  mask the wrong position).
+  **The cursor slot is now written by user input only** —
+  `critical_send_cursor_pos` (menu pointer positioning, touch tap, NAPI
+  `sendCursorPos`) plus genuine `meowGrabDelta` / `meow_touch_grab_delta` — so
+  the non-grab absolute branch and the exit-grab sync always report the user's
+  real pointer. `meowGrabReset` still re-aligns the bridge's grab-delta
+  integration base to the current slot (read-only), so the first `meowGrabDelta`
+  after entering grab is not lost.
+- **Exit-grab pointer sync.** On the `grabbing` **1→0** edge the pump forces
+  exactly one **absolute** motion report (`SDL_SendMouseMotion(relative=false)`)
+  even when the virtual cursor did not move since `cLast`, so MC's menu
+  pointer/hover lands immediately and the button under it lights up without a
+  physical move. This covers the case the change-gated absolute branch would
+  otherwise skip; the entry edge (**0→1**) deliberately does **not** report — MC
+  is then in relative mode with the pointer hidden and an absolute write there
+  could shift the grab baseline. The report is emitted after SDL core's exit
+  recentre `SDL_PerformWarpMouseInWindow` (which clears `has_position` and
+  flushes pending motion), so it is actually queued to MC instead of being
+  dropped as a no-change sample. It is logged as `MOTION src=exitgrab`.
 - **Size.** Mirrored from the bridge (`width`/`height` at `0x271dc`/`0x271e0`).
 
 ## 2. Build
@@ -164,7 +194,7 @@ git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.
 | Exports | 1270 `SDL_*` dynamic symbols |
 | Driver present | `SDL OpenHarmony (OHOS) video driver`; `OHOS_bootstrap` in `libSDL3.so` |
 | Artifact | `stuffs/research/sdl/out/libSDL3.so` (→ installed as `libSDL3.so`, manifest tag `common`) |
-| sha256 | `bd5b42dfef11454c18a5d55bf33b6aeb6e4200ea023fe83e43931479660b706d` (2,054,656 bytes; re-verified 2026-09-23 in the motion-diagnostics round — see §4b) |
+| sha256 | `5f8b551fc8e21835bd1e1a99832c3964610e6412083c71a145aaba77f8582e54` (2,054,656 bytes; 2026-09-23 **minimal-set cleanup**: game-initiated pointer moves are a no-op everywhere (`OHOS_WarpMouse` / bridge `meowGrabReset` / `glfwSetCursorPos`), the pump forces exactly one absolute report on the exit-grab (`grabbing` 1→0) edge, and the interim input probe machinery was cleaned up. Supersedes the `b7fcf15d…` artifact) |
 
 > Reproducibility: like all our native builds, the digest corresponds to the
 > recorded `--src`/`--out` paths; rebuilds at other paths are functionally
@@ -172,17 +202,15 @@ git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.
 
 ## 4b. Reproducibility
 
-**3× from-scratch rebuilds (`cmp` byte-identical) at the current source state**: each one
-re-creates the worktree (`git worktree remove/add`, i.e. a pristine `release-3.4.14`) *and*
-wipes the build dir, so the patcher is exercised every time. Same `--src`/`--out` paths:
-`libSDL3.so` sha256 `bd5b42dfef11454c18a5d55bf33b6aeb6e4200ea023fe83e43931479660b706d`, 2,054,656 bytes.
+**One from-scratch rebuild at the current source state**: `rebuild_for_meowcraft.sh`
+re-creates the worktree (pristine `release-3.4.14`) and wipes the build dir, so the
+patcher is exercised. Same `--src`/`--out` paths:
+`libSDL3.so` sha256 `5f8b551fc8e21835bd1e1a99832c3964610e6412083c71a145aaba77f8582e54`, 2,054,656 bytes.
 (Same-path caveat as all our natives: the linker embeds the output path in `.dynstr`.)
-Twelve such builds in four rounds so far (three rounds for the Vulkan work, one for the
-window-focus events); every round was byte-identical within itself, and this round also
-matches the shipped artifact and the digested value above. (A fifth round covered the
-clipboard write and the URL opener.) A sixth round (the 2026-09-23 motion-diagnostics
-build) did two from-scratch rebuilds and `cmp` proved them byte-identical — both
-`libSDL3-build{1,2}.so` carry `bd5b42df…`, matching the shipped artifact.
+Earlier rounds (Vulkan, window-focus, clipboard/URL, and the 2026-09-23 motion-diagnostics
+build `bd5b42df…`) were each verified byte-identical; the 2026-09-23 probe era produced
+`b7fcf15d…` before this minimal-set cleanup superseded it. This is an iteration round: one
+rebuild, no 2×/`cmp`.
 
 Contract checked on the artifact: 1270 `SDL_*` dynamic symbols, `DT_NEEDED` = `libnative_window.so libc.so`
 only (EGL/GL/Vulkan/hilog are resolved at run time), `ohos` driver present.
@@ -248,8 +276,12 @@ devecocli run --module entry meowjre --device <serial>
   and `MeowSDL: GRABMODE src=…` lines on stderr (same `[jre_stderr] MeowSDL:` channel;
   `SDL_Log` stays invisible on this platform) to pin down the §G2 menu→game warp jump.
   Reading: a `BUTTON down` immediately followed by `MOTION` from the same `src` marks that
-  `src` as the suspect. These probes are to be removed together with their call sites once
-  the jump is located (`src/video/ohos/SDL_ohosevents.{h,c}`).
+  `src` as the suspect. A game-initiated warp no longer logs a `MOTION src=warp` (nothing
+  moved): it prints a deduplicated `MeowSDL: WARP ignored (platform cannot move OS pointer)
+  …` instead, so a device log proves the no-op was taken. The forced absolute report on the
+  `grabbing` 1→0 edge is `MOTION src=exitgrab` (present even with `dx=dy=0`); the non-grab
+  absolute pass-through stays `MOTION src=pumpabs`. These probes are to be removed together
+  with their call sites once the jump is located (`src/video/ohos/SDL_ohosevents.{h,c}`).
 - Window `Show/Hide/Raise/Focusable/Minimize` are not implemented (external
   window owned by ArkTS).
 

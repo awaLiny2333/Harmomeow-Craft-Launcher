@@ -45,7 +45,7 @@ extern int OHOS_WaitEventTimeout(SDL_VideoDevice *_this, Sint64 timeoutNS);
 extern void OHOS_TraceMotion(const char *src, float dx, float dy, int grabbing, int relActive,
                              double cursorX, double cursorY, double lastX, double lastY);
 extern void OHOS_TraceButton(const char *phase, int btn, int grabbing);
-extern void OHOS_TraceWarp(float x, float y, int grabbing, int relmode);
+extern void OHOS_TraceWarpIgnored(float x, float y, int grabbing, int relmode);
 extern void OHOS_TraceGrabMode(int enabled, int grabbing);
 
 #endif // SDL_ohosevents_h_

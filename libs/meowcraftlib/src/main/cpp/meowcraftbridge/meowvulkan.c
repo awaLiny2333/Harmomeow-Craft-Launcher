@@ -48,7 +48,8 @@
 //   MEOW_VK_STRIP_UNSUPPORTED_FEATURES zero unsupported bits (F36, default); else createDevice rc=-8.
 //
 // --- TIER B: DIAGNOSTIC -- default OFF, kept so a defect can be re-investigated -----------------
-//   MEOW_VK_VERBOSE                    per-call / detail logs (high volume, perturbs timing).
+//   MEOW_VK_VERBOSE                    per-call / detail logs (high volume, perturbs timing); also
+//                                      makes the F72b push totals line print on every push (F104).
 //   MEOW_VK_WD=<seconds>               hang watchdog: SIGQUIT for a thread dump when Vulkan goes quiet.
 //   MEOW_VK_FIX_EXTENT=current         force imageExtent = caps.currentExtent (not needed here yet).
 //   MEOW_VK_FIX_COPY_BUFFER_TO_IMAGE=1 F53 CopyBufferToImage rewrite (default OFF since F61).
@@ -60,9 +61,9 @@
 //                                      is never returned: allocs reach pools*maxSets, then
 //                                      OUT_OF_POOL_MEMORY -> native push fallback -> DEVICE_LOST.
 //                                      F99's coverage gate (I5) is kept; reuse is not a default.
-//   MEOW_VK_TOTALS_SEC=<seconds>       F98: print the F72b push totals line every N seconds even when
-//                                      pools/forwarded are stable (steady-state visibility). Default
-//                                      OFF; the default trigger (forwarded/grow change) is unchanged.
+//   MEOW_VK_TOTALS_SEC=<seconds>       F98: print the F72b push totals line every N seconds even in
+//                                      steady state (opt-in heartbeat). F104: the totals line is now
+//                                      DEFAULT SILENT (MEOW_VK_VERBOSE or this env is needed to see it).
 // ===============================================================================
 //
 // STATUS: production shim. The four corrections above are the shipped Vulkan path -- the launcher
@@ -2174,8 +2175,12 @@ static void meow_f72_capture_layout(const void* ci, void* layout) {
     g_f72_layouts[slot].layout = key;
     g_f72_layouts[slot].count = n;
     g_f72_layouts[slot].sets = copy;
-    MEOWLOGI("meowvulkan: F72 pipelineLayout captured layout=0x%{public}llx setLayouts=%{public}u slot=%{public}d",
-             (unsigned long long)key, n, slot);
+    // F103 (build 2026-09-23.82 quiet-vk-probes): capture is per DISTINCT pipeline layout, which MC
+    // creates per pipeline (measured 200 lines/run) -- a research probe, so default QUIET. The capture
+    // itself is unchanged; MEOW_VK_VERBOSE=1 restores the line.
+    if (meow_vk_verbose())
+        MEOWLOGI("meowvulkan: F72 pipelineLayout captured layout=0x%{public}llx setLayouts=%{public}u slot=%{public}d",
+                 (unsigned long long)key, n, slot);
 }
 
 static VkDescriptorSetLayout meow_f72_lookup_dsl(void* layout, uint32_t set) {
@@ -3005,7 +3010,8 @@ static int meow_f72_emulate_push_inner(void* cmd, uint32_t bindPoint, void* layo
     return 1;
 }
 
-// Public entry: counts the outcome and emits the F72c/F90 totals line on meaningful change.
+// Public entry: counts the outcome and emits the F72c/F90 totals line under MEOW_VK_VERBOSE (or the
+// MEOW_VK_TOTALS_SEC heartbeat); default silent since F104.
 static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, uint32_t set,
                                  uint32_t n, const void* writes) {
     int r = meow_f72_emulate_push_inner(cmd, bindPoint, layout, set, n, writes);
@@ -3015,17 +3021,16 @@ static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, ui
     } else {
         ++g_f72_forwarded;   // r == 0 (no writes) or -1 (failure): the original push is forwarded
     }
-    // F86/F91: emit the totals line ONLY when a new forward or a pool grow happened -- both are
-    // "something abnormal" signals. The F89 per-256-emulated bucket is gone, and F91 also removed the
-    // `resets` term: `resets` increments ~once per frame, so including it printed ~1 line/frame in
-    // steady state (the .65 log: resets=66048 over 14.52M pushes). resets stays in the printed fields
-    // as information, but NEVER triggers the line. Never per push; verbose still prints every call.
-    static unsigned long f86_last_fwd = 0ul, f86_last_grow = 0ul;
-    // F98 (.76): the grow/forwarded trigger goes quiet once the pools plateau, so a low-rate time-based
-    // trigger is added on top -- OPT-IN and default OFF (MEOW_VK_TOTALS_SEC=<seconds>). The condition
-    // below is byte-for-byte the old one when the env is unset; the clock is read only when the env is
-    // set, and then at most once per 256 pushes. Same MEOWLOGI line, no new print point (I2/I3).
-    int f98_print = (meow_vk_verbose() || g_f72_forwarded != f86_last_fwd || g_f72_grows != f86_last_grow);
+    // F104 (build 2026-09-23.83 quiet-f72b-totals): DEFAULT SILENT. The .76/.91 forwarded/grow
+    // "change" trigger was NOT low-frequency in normal play: MC issues empty pushes (n==0 ->
+    // forwarded++) about once per frame, and `g_f72_grows` also creeps, so a whole session printed
+    // ~one totals line per forwarded increment (log 1790168149: forwarded 1290->3890 => 2601 lines).
+    // The line now prints only (a) per call under the existing MEOW_VK_VERBOSE switch, or (b) on the
+    // existing opt-in slow heartbeat MEOW_VK_TOTALS_SEC=<seconds>. No new env; the clock is read only
+    // when (b) is set, and then at most once per 256 pushes. Same MEOWLOGI line, no new print point.
+    // Real forward failures keep their own signal: meow_f72_warn() still names the first 4 and every
+    // 4th/20000th reason (allocate-set-failed, layout-not-captured, ...).
+    int f98_print = meow_vk_verbose();
     if (!f98_print) {
         static int f98_decided = 0, f98_secs = 0;
         static long long f98_next_ns = 0;
@@ -3076,8 +3081,6 @@ static int meow_f72_emulate_push(void* cmd, uint32_t bindPoint, void* layout, ui
                  g_f95_borrow_full, g_f69_evicts,
                  g_wait_calls, g_wait_f69, g_wait_f60_drain, g_wait_fwd,
                  g_wait_fence_ms, g_wait_drain_ms, g_gscv_calls);
-        f86_last_fwd = g_f72_forwarded;
-        f86_last_grow = g_f72_grows;
     }
     return (r == 1) ? 1 : 0;
 }
@@ -4043,8 +4046,12 @@ static int log_CreateGraphicsPipelines(void* dev, void* cache, uint32_t count, c
     // Logging the divisor state here answers "does MC ever ask for divisor>1?" from a SAFE run
     // (draws dropped), because pipelines are created at load time regardless of the draws.
     // Uses the official structs (the shim includes <vulkan/vulkan.h> with VK_NO_PROTOTYPES since F62).
+    // F103 (build 2026-09-23.82 quiet-vk-probes): this whole divisor block is a research probe from the
+    // F70/F71 campaign. MC creates pipelines lazily, so the per-create summary printed 233 lines/run.
+    // Gated behind MEOW_VK_VERBOSE=1 (the existing diagnostics switch); the feature lie itself is
+    // unaffected (it lives in the device-feature/createDevice path, not here).
     uint32_t pipesWithDiv = 0, pipesTotal = 0, maxDivSeen = 0;
-    if (count > 0 && cis != NULL) {
+    if (meow_vk_verbose() && count > 0 && cis != NULL) {
         const VkGraphicsPipelineCreateInfo* gci = (const VkGraphicsPipelineCreateInfo*)cis;
         for (uint32_t i = 0; i < count; i++) {
             ++pipesTotal;
@@ -4080,7 +4087,8 @@ static int log_CreateGraphicsPipelines(void* dev, void* cache, uint32_t count, c
                 MEOWLOGI("meowvulkan: F71 pipeline[%{public}u] vertexBindings=%{public}u divisorEntries=%{public}u",
                          i, nBind, nDiv);
         }
-        // One unconditional summary line per create call: the answer to "does MC ever use divisor>1?"
+        // F103: was one line per create call; now only reachable under MEOW_VK_VERBOSE=1 (the answer to
+        // "does MC ever use divisor>1?" is a research finding, not a per-run invariant).
         MEOWLOGI("meowvulkan: F71 divisor summary: pipelines=%{public}u withDivisorState=%{public}u maxDivisor=%{public}u",
                  pipesTotal, pipesWithDiv, maxDivSeen);
     }
@@ -6257,7 +6265,7 @@ static void init_once(void) {
     // Deployment self-certification: this campaign lost a run to "the fix was in the tree but not on
     // the device", so every shim build now names itself. Bump the tag whenever the shim changes.
     // F74 env switch tiers (A/B) are documented in the header comment at the top of this file.
-    MEOWLOGI("meowvulkan: shim build 2026-09-19.81 revert-shim-time");
+    MEOWLOGI("meowvulkan: shim build 2026-09-23.83 quiet-f72b-totals");
     // Crash backtraces for the Vulkan path are handled by meowbt, which the bridge now installs from
     // meowSetSurfaceId (see egl_gl.c) -- reachable on this path, unlike the GL-only install sites.
     // Enable with the documented envs: MEOW_BT=1 (and optionally MEOW_BT_FILE=<path>).

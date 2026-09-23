@@ -103,6 +103,35 @@ static void meow_trace_motion(const char *src, double x, double y, int grabbing)
             meow_environ ? meow_environ->cursorY : 0.0);
 }
 
+/*
+ * Ignored game-warp diagnostic. PLATFORM FACT: OHOS gives an application no
+ * API to move the user's pointer, so every game-initiated pointer recentre
+ * (the ArkTS grab reset -> meowGrabReset, the GLFW glfwSetCursorPos) is a
+ * no-op: no cursor-slot write and no motion. This prints a rate-limited,
+ * deduplicated line so a device log shows the no-op was taken (and with which
+ * target) instead of a phantom motion. Same stderr channel as the MOTION
+ * lines, so it also shows up as [jre_stderr] MeowSDL: ...
+ */
+static int64_t g_iwarp_last_ms;
+static const char *g_iwarp_last_src;
+static double g_iwarp_last_x, g_iwarp_last_y;
+
+static void meow_trace_warp_ignored(const char *src, double x, double y) {
+    int64_t now = meow_now_ms();
+    bool same = (g_iwarp_last_src == src) && (g_iwarp_last_x == x) && (g_iwarp_last_y == y);
+
+    if (same && (now - g_iwarp_last_ms) < MEOW_TRACE_RATE_MS) {
+        return;
+    }
+    g_iwarp_last_ms = now;
+    g_iwarp_last_src = src;
+    g_iwarp_last_x = x;
+    g_iwarp_last_y = y;
+    fprintf(stderr,
+            "MeowSDL: WARP ignored (platform cannot move OS pointer) src=%s x=%.3f y=%.3f\n",
+            src, x, y);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Java GLFW bridge cache (window-size upcall and graceful close)            */
 /* ------------------------------------------------------------------------- */
@@ -653,12 +682,15 @@ JNIEXPORT void JNICALL Java_org_lwjgl_glfw_GLFW_glfwSetCursorPos(JNIEnv *jenv, j
     (void)jenv;
     (void)clazz;
     (void)window;
-    if (meow_environ == NULL) {
-        return;
-    }
-    meow_trace_motion("glfwwarp", xpos, ypos, meow_environ->grabbing);
-    meow_environ->cLastX = meow_environ->cursorX = xpos;
-    meow_environ->cLastY = meow_environ->cursorY = ypos;
+    /*
+     * UNCONDITIONAL NO-OP. Game-initiated absolute warp (GLFW glfwSetCursorPos,
+     * MC <= 26.2). PLATFORM FACT: OHOS cannot move the user's pointer, so this
+     * must not fake one either: no cursor-slot write, no cLast update, no
+     * motion. (The 26.3 SDL path does the same in OHOS_WarpMouse.) User
+     * absolute writes (critical_send_cursor_pos) remain the only sink that may
+     * move the slot, so MC's pointer tracks real input.
+     */
+    meow_trace_warp_ignored("glfwwarp", xpos, ypos);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1084,10 +1116,29 @@ void meowGrabSetSens(float sensitivity) {
 }
 
 void meowGrabReset(float centerX, float centerY) {
-    g_grabCursorX = centerX;
-    g_grabCursorY = centerY;
-    meow_trace_motion("grabreset", centerX, centerY, meow_environ ? meow_environ->grabbing : 0);
-    critical_send_cursor_pos(centerX, centerY);
+    struct meow_environ_s *env = meow_environ;
+
+    /*
+     * "Recentering the pointer to the window centre" is a game-initiated warp and
+     * PLATFORM FACT says OHOS cannot move the user's pointer, so the request
+     * itself is a no-op: no cursor-slot write and no motion (the drop-in centre
+     * coordinates are deliberately ignored).
+     *
+     * What IS kept: the bridge's grab-delta integration base is re-aligned to
+     * the *current user pointer slot* (read-only). Otherwise the first
+     * meowGrabDelta after entering grab would difference the whole "stale
+     * accumulator -> real pointer" gap and send it as one huge relative turn
+     * (loses the first move). Aligning only reads env->cursorX/Y; it never
+     * writes the slot. After this, the slot is written by user input alone
+     * (critical_send_cursor_pos absolute writes and genuine grab deltas), which
+     * is exactly what the `ohos` pump reflects.
+     */
+    meow_trace_warp_ignored("grabreset", centerX, centerY);
+    if (env == NULL) {
+        return;
+    }
+    g_grabCursorX = (float)env->cursorX;
+    g_grabCursorY = (float)env->cursorY;
 }
 
 void meowGrabDelta(float dx, float dy) {
