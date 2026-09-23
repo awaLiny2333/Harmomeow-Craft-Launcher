@@ -143,7 +143,7 @@ export class SettingsTools {
     });
   }
 
-  /** 触屏当鼠标：单指点按=左键单击、拖动=移动光标、游戏内拖动=转视角、双指点按=右键（默认开）。 */
+  /** 触屏当鼠标：单指点按=左键单击、拖动=移动光标、游戏内拖动=转视角（默认开）。 */
   touchAsMouse(): boolean {
     return this.currentTouch().touchAsMouse;
   }

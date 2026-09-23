@@ -1157,7 +1157,9 @@ void meowGrabDelta(float dx, float dy) {
  * 语义（"触屏当鼠标"）：
  *   单指按下 = 光标跳到触点 + 左键按下；单指拖动 = 光标跟随；抬起 = 左键释放
  *   游戏内(grab) 单指拖动 = 转视角（喂 meow_touch_grab_delta，自带 grabbing 自检且只受触屏灵敏度）
- *   双指点按 = 右键（不做滚轮：MC 里可滚动处都有滚动条）
+ *
+ * 不做滚轮：MC 里可滚动处都有滚动条。
+ * 右键（使用/交互）**不在触屏手势里**：改由虚拟按键覆盖层的「交互」键承担（见 TouchControlsView）。
  *
  * 开关由上层以参数传入（启动器「高级选项」），不再读任何 env：早先的 MEOW_TOUCH
  * 环境变量与合成分支已删除，是否触屏当鼠标只看 Start 的 enable 入参。
@@ -1168,10 +1170,10 @@ static int g_touchReg;
 static int32_t g_touchWinId;
 static int g_tFingers;
 static int g_tLeftDown;
-static int g_tTwoFinger;
 static double g_tLastX;
 static double g_tLastY;
-static int64_t g_tDownMs;
+/* 当前驱动光标的「第一指」id；-1 = 无。见 meow_touch_filter 的多指守卫。 */
+static int g_tDrivingFinger = -1;
 /* 触屏转视角倍率（高级选项传入）。**独立于鼠标**：鼠标/node 路径用 g_grabSensitivity，
  * 两者不能共用，否则调触屏手感会连带改掉鼠标手感。 */
 static float g_touchSens = 1.0f;
@@ -1181,13 +1183,6 @@ static int64_t g_tLastLogMs;
 static double g_touchOriginX;
 static double g_touchOriginY;
 static double g_touchScale = 1.0;
-
-/*
- * 双指点按判定上限（ms）：从第一指按下到全部抬起短于此值才算「点按」= 右键；长按
- * （拖拽 / 停留更久）不触发，避免双指操作起手误发右键。点按 vs 长按本质是时间判据，
- * 无事件可替代；450ms 与常见触摸长按阈值同量级，比典型点按（<200ms）宽裕。
- */
-#define MEOW_TWO_FINGER_TAP_MS 450
 
 /*
  * 虚拟按键排除区（display px，与 OH_Input_GetTouchEventDisplayX/Y 同空间）。
@@ -1324,7 +1319,7 @@ static void meow_touch_excl_finger_remove(int fid) {
 
 /*
  * 一次触屏会话的全部单次状态复位。Start/Stop 都调：若上一段手势丢了收尾的 UP/CANCEL，
- * 双指标志 / 手指计数 / 排除手指会一直挂着，导致光标与左键到重启前都失效。复位时若左键
+ * 手指计数 / 排除手指会一直挂着，导致光标与左键到重启前都失效。复位时若左键
  * 还按着，先补发一次释放，防粘键。
  */
 static void meow_touch_reset_gesture(void) {
@@ -1333,10 +1328,9 @@ static void meow_touch_reset_gesture(void) {
         g_tLeftDown = 0;
     }
     g_tFingers = 0;
-    g_tTwoFinger = 0;
     g_tLastX = 0.0;
     g_tLastY = 0.0;
-    g_tDownMs = 0;
+    g_tDrivingFinger = -1;
     g_tExclFingerCount = 0;
     g_tLastLogMs = 0;
 }
@@ -1375,9 +1369,8 @@ static bool meow_touch_filter(Input_TouchEvent *event) {
     double dy = (double)OH_Input_GetTouchEventDisplayY(event);
 
     /*
-     * 整段手势被取消：一次到位复位。**不能只减一格手指计数** —— 双指场景下 g_tTwoFinger
-     * 不清、计数又回不到 0 ⇒ 之后每次 DOWN 都把它顶回 2 ⇒ 永久卡在双指模式（单指点击与
-     * 拖动全被吞，直到 Stop）。取消事件也未必带有效 fingerId，所以按"整段终结"处理。
+     * 整段手势被取消：一次到位复位（CANCEL 未必带有效 fingerId，按"整段终结"处理，
+     * 避免手指计数漂移导致后续单指点击/拖动异常）。
      */
     if (action == TOUCH_ACTION_CANCEL) {
         meow_touch_reset_gesture();
@@ -1386,8 +1379,7 @@ static bool meow_touch_filter(Input_TouchEvent *event) {
 
     /*
      * 虚拟按键排除区：命中即本指整段手势「只按按钮」。在计数之前判定，使落在按键上的
-     * 手指**不参与 g_tFingers**（否则会误触发双指右键，把另一根手指的转视角/光标顶掉）；
-     * 手指计数靠 g_tExclFingers 单独维护，抬手时移除，不会漂移。
+     * 手指**不参与 g_tFingers**；手指计数靠 g_tExclFingers 单独维护，抬手时移除，不会漂移。
      */
     bool exclDown = (action == TOUCH_ACTION_DOWN) && meow_touch_in_exclude(dx, dy);
     /* 一次 DOWN 就是该 id 新手势的起点：若上一段手势漏了 UP、列表里还残留这个 id，
@@ -1430,38 +1422,28 @@ static bool meow_touch_filter(Input_TouchEvent *event) {
         return false;
     }
 
-    /* 升级为双指：本手势不再走单指逻辑 */
-    if (action == TOUCH_ACTION_DOWN && g_tFingers >= 2) {
-        g_tTwoFinger = 1;
-        g_tLastY = dy;
-        if (g_tLeftDown) { /* 第二指落下 = 取消已按下的左键 */
-            critical_send_mouse_button(0, 0, 0);
-            g_tLeftDown = 0;
-        }
-        return false;
-    }
-
-    if (g_tTwoFinger) {
-        /* 双指不做滚轮（MC 里可滚动处都有滚动条）；只保留「双指点按 = 右键」。 */
-        if ((action == TOUCH_ACTION_UP || action == TOUCH_ACTION_CANCEL) && g_tFingers == 0) {
-            if ((now - g_tDownMs) < MEOW_TWO_FINGER_TAP_MS) {
-                critical_send_mouse_button(1, 1, 0);
-                critical_send_mouse_button(1, 0, 0);
-            }
-            g_tTwoFinger = 0;
-        }
-        return false;
-    }
-
-    /* 单指 */
+    /*
+     * 多指守卫：只认**第一个有效手指**驱动光标。所谓有效 = 未被排除区跳过
+     * （排除区手指在上面已经 return，既不算数也不占位）。
+     * 第一指按下后登记 g_tDrivingFinger；在它抬起（或 CANCEL / 会话复位）之前，
+     * 后续落下的手指一律忽略：不改光标、不产生位移、不发任何鼠标键。
+     *
+     * 第一指抬起后：立即注销（g_tDrivingFinger = -1）。此时若还有别的指头在场，
+     * 它们不"接管"——其 MOVE/UP 因 id 不等于 -1 全部忽略；只有之后一次**新的
+     * DOWN** 才会重新登记为第一指。这样不会出现"换手指时用未跟踪的坐标算增量 ⇒
+     * 视角乱飞"：新 DOWN 在 grab 里只重置基准点、不写光标，非 grab 里本就是
+     * "光标跳到触点"的点击语义。
+     */
     if (action == TOUCH_ACTION_DOWN) {
-        g_tDownMs = now;
+        if (g_tDrivingFinger >= 0) {
+            return false; /* 已有第一指在驱动：本指整段忽略 */
+        }
+        g_tDrivingFinger = fid;
         g_tLastX = dx;
         g_tLastY = dy;
         /* 游戏内(grab) **故意不发左键**：那里单指拖动是用来转视角的，若按下即攻击
          * 会「一转视角就开始挖」（2026-09-21 实测反馈）。⇒ 光标定位与左键按下都只在
-         * 非 grab 做。破坏/攻击的触屏方案以后再定，勿当 bug"修"掉。
-         * 右键（双指点按）不受此限，一直可用。 */
+         * 非 grab 做。破坏/攻击的触屏方案以后再定，勿当 bug"修"掉。 */
         if (!env->grabbing) {
             double lx = 0.0;
             double ly = 0.0;
@@ -1471,6 +1453,11 @@ static bool meow_touch_filter(Input_TouchEvent *event) {
             critical_send_mouse_button(0, 1, 0);
             g_tLeftDown = 1;
         }
+        return false;
+    }
+
+    /* 非第一指的在途 MOVE/UP 一律忽略（含第一指抬起后仍在场的其它手指）。 */
+    if (g_tDrivingFinger != fid) {
         return false;
     }
 
@@ -1490,14 +1477,12 @@ static bool meow_touch_filter(Input_TouchEvent *event) {
         return false;
     }
 
-    if (action == TOUCH_ACTION_UP || action == TOUCH_ACTION_CANCEL) {
+    if (action == TOUCH_ACTION_UP) {
         if (g_tLeftDown) {
             critical_send_mouse_button(0, 0, 0); /* 左键释放 */
             g_tLeftDown = 0;
         }
-        if (g_tFingers == 0) {
-            g_tTwoFinger = 0;
-        }
+        g_tDrivingFinger = -1; /* 第一指抬起 ⇒ 注销，其余手指不接管 */
     }
     return false;
 }

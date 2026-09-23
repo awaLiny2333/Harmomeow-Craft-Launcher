@@ -322,7 +322,7 @@
     },
     {
       "name": "advanced_touch_as_mouse_hint",
-      "value": "单指点按=左键单击；拖动=移动光标；游戏内拖动=转视角；双指点按=右键"
+      "value": "单指点按=左键单击；拖动=移动光标；游戏内拖动=转视角"
     },
     {
       "name": "advanced_cpu_count",
