@@ -57,6 +57,53 @@ static int64_t meow_now_ms(void) {
 }
 
 /* ------------------------------------------------------------------------- */
+/* diagnostic motion tracing (DELIBERATELY always-on in this build)          */
+/*                                                                           */
+/* Every writer of the virtual cursor (env->cursorX/Y) that can make the SDL  */
+/* 'ohos' pump emit a relative motion event logs a rate-limited line with a   */
+/* `src=` tag, the mouse/button correlation being the point. stderr is used   */
+/* instead of SDL_Log/hilog for the same reason as the SDL driver: it shows   */
+/* up in the exported log as [jre_stderr] MeowSDL: ...                        */
+/* ------------------------------------------------------------------------- */
+#define MEOW_TRACE_BURST_MS 400
+#define MEOW_TRACE_BURST_SAME_MS 50
+#define MEOW_TRACE_RATE_MS 1000
+
+static int64_t g_mtrace_last_ms;
+static const char *g_mtrace_last_src;
+static int64_t g_mtrace_button_until_ms;
+
+/* Arm the post-button burst window without adding a second BUTTON line (the
+ * authoritative one is emitted by the SDL pump when it delivers to MC). */
+static void meow_trace_button_mark(void) {
+    g_mtrace_button_until_ms = meow_now_ms() + MEOW_TRACE_BURST_MS;
+}
+
+static void meow_trace_motion(const char *src, double x, double y, int grabbing) {
+    int64_t now = meow_now_ms();
+    bool burst = (now <= g_mtrace_button_until_ms);
+    bool first = (g_mtrace_last_src == NULL);
+    bool switched = (g_mtrace_last_src != src);
+    int64_t since = now - g_mtrace_last_ms;
+
+    if (burst) {
+        if (!switched && since < MEOW_TRACE_BURST_SAME_MS) {
+            return;
+        }
+    } else if (!(first || switched || since >= MEOW_TRACE_RATE_MS)) {
+        return;
+    }
+
+    g_mtrace_last_ms = now;
+    g_mtrace_last_src = src;
+    fprintf(stderr,
+            "MeowSDL: MOTION src=%s x=%.3f y=%.3f grabbing=%d cursor=(%.3f,%.3f)\n",
+            src, x, y, grabbing,
+            meow_environ ? meow_environ->cursorX : 0.0,
+            meow_environ ? meow_environ->cursorY : 0.0);
+}
+
+/* ------------------------------------------------------------------------- */
 /* Java GLFW bridge cache (window-size upcall and graceful close)            */
 /* ------------------------------------------------------------------------- */
 
@@ -260,6 +307,14 @@ int critical_send_char_mods(int codepoint, int mods) {
     return 1;
 }
 
+/*
+ * Absolute cursor sink. NOTE: do NOT add a `grabbing` early-out here. In grab the
+ * callers of this function are the *relative* producers (meowGrabDelta /
+ * meow_touch_grab_delta) plus the grab-reset seed; OHOS_PumpEvents derives SDL's
+ * only relative motion from env->cursorX/Y, so guarding this slot in grab would
+ * freeze the camera. The absolute->relative leak is instead cut at its single
+ * entry: MeowNodeEventReceiver drops non-MOVE mouse events before meowGrabDelta.
+ */
 void critical_send_cursor_pos(float x, float y) {
     struct meow_environ_s *env = meow_environ;
     if (env == NULL || !env->isInputReady) {
@@ -317,6 +372,10 @@ void critical_send_mouse_button(int button, int action, int mods) {
     struct meow_environ_s *env = meow_environ;
     if (env == NULL || !env->isInputReady) {
         return;
+    }
+
+    if (button == 0) {
+        meow_trace_button_mark();
     }
 
     if (env->mouseDownBuffer != NULL && button >= 0 && button < 8) {
@@ -597,6 +656,7 @@ JNIEXPORT void JNICALL Java_org_lwjgl_glfw_GLFW_glfwSetCursorPos(JNIEnv *jenv, j
     if (meow_environ == NULL) {
         return;
     }
+    meow_trace_motion("glfwwarp", xpos, ypos, meow_environ->grabbing);
     meow_environ->cLastX = meow_environ->cursorX = xpos;
     meow_environ->cLastY = meow_environ->cursorY = ypos;
 }
@@ -722,6 +782,8 @@ JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetGrabbing(
     if (meow_environ != NULL) {
         meow_environ->grabbing = grabbing ? 1 : 0;
         meow_environ->isGrabbing = grabbing ? 1u : 0u;
+        fprintf(stderr, "MeowSDL: GRABFLAG src=nativeSetGrabbing grabbing=%d\n",
+                meow_environ->grabbing);
     }
     MEOWLOGI("nativeSetGrabbing: %{public}d", (int)grabbing);
 }
@@ -977,6 +1039,7 @@ static bool meow_mouse_filter(Input_MouseEvent *event) {
         y = 0.0;
     }
     critical_send_cursor_pos((float)x, (float)y);
+    meow_trace_motion("mousefilter", x, y, env->grabbing);
     meow_rate_tick();
     return false; /* do not consume: ArkUI still needs the event */
 }
@@ -1023,6 +1086,7 @@ void meowGrabSetSens(float sensitivity) {
 void meowGrabReset(float centerX, float centerY) {
     g_grabCursorX = centerX;
     g_grabCursorY = centerY;
+    meow_trace_motion("grabreset", centerX, centerY, meow_environ ? meow_environ->grabbing : 0);
     critical_send_cursor_pos(centerX, centerY);
 }
 
@@ -1033,6 +1097,7 @@ void meowGrabDelta(float dx, float dy) {
     }
     g_grabCursorX += dx * g_grabSensitivity;
     g_grabCursorY += dy * g_grabSensitivity;
+    meow_trace_motion("bridge", g_grabCursorX, g_grabCursorY, env->grabbing);
     critical_send_cursor_pos(g_grabCursorX, g_grabCursorY);
     meow_rate_tick();
 }
@@ -1238,6 +1303,7 @@ static void meow_touch_grab_delta(double dx, double dy) {
     double k = (double)g_touchSens * (double)g_grabSensitivity;
     g_grabCursorX += (float)(dx / s * k);
     g_grabCursorY += (float)(dy / s * k);
+    meow_trace_motion("touchmap", g_grabCursorX, g_grabCursorY, env->grabbing);
     critical_send_cursor_pos(g_grabCursorX, g_grabCursorY);
     meow_rate_tick();
 }
@@ -1344,6 +1410,7 @@ static bool meow_touch_filter(Input_TouchEvent *event) {
             double lx = 0.0;
             double ly = 0.0;
             meow_touch_local(dx, dy, &lx, &ly);
+            meow_trace_motion("touchmap", lx, ly, env->grabbing);
             critical_send_cursor_pos((float)lx, (float)ly);
             critical_send_mouse_button(0, 1, 0);
             g_tLeftDown = 1;
@@ -1358,6 +1425,7 @@ static bool meow_touch_filter(Input_TouchEvent *event) {
             double lx = 0.0;
             double ly = 0.0;
             meow_touch_local(dx, dy, &lx, &ly);
+            meow_trace_motion("touchmap", lx, ly, env->grabbing);
             critical_send_cursor_pos((float)lx, (float)ly);
             meow_rate_tick(); /* 与鼠标路径一致，供速率浮层统计 */
         }

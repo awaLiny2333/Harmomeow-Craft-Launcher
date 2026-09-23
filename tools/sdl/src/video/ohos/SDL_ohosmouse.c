@@ -26,6 +26,7 @@
 
 #include "SDL_ohosvideo.h"
 #include "SDL_ohosmouse.h"
+#include "SDL_ohosevents.h"
 #include "ohos_meow_environ.h"
 
 extern uintptr_t OHOS_GetBridgeBase(void);
@@ -51,6 +52,7 @@ static bool OHOS_SetRelativeMouseMode(bool enabled)
     }
     env->grabbing = enabled ? 1 : 0;
     env->isGrabbing = enabled ? 1u : 0u;
+    OHOS_TraceGrabMode(enabled ? 1 : 0, env->grabbing);
     return true;
 }
 
@@ -63,6 +65,10 @@ static bool OHOS_WarpMouse(SDL_Window *window, float x, float y)
      * grab baseline is re-seeded by OHOS_PumpEvents when relative mode starts). */
     env = (struct meow_environ_s *)OHOS_GetBridgeBase();
     if (env) {
+        /* relmode is SDL core's own state (SDL_GetRelativeMouseMode()); it is
+         * logged because SDL core only forwards to this hook while it is false
+         * (src/events/SDL_mouse.c: SDL_PerformWarpMouseInWindow). */
+        OHOS_TraceWarp(x, y, env->grabbing, SDL_GetRelativeMouseMode() ? 1 : 0);
         env->cursorX = (double)x;
         env->cursorY = (double)y;
     }

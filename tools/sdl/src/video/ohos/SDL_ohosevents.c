@@ -158,6 +158,81 @@ static void OHOS_SendChar(Uint64 ts, Uint32 cp)
     SDL_SendKeyboardText(buf);
 }
 
+/*
+ * Diagnostic motion tracing (see SDL_ohosevents.h). Always on in this build,
+ * but rate-limited + deduplicated so normal play does not flood the log:
+ *   - one line per distinct `src` for MEOW_TRACE_BURST_MS after any button;
+ *   - within a burst, the same src is throttled to one line per 50 ms;
+ *   - outside a burst: first ever call, source change, or one line per second.
+ * Every line carries `src=` and `grabbing=` so a button/motion correlation is
+ * readable at a glance in the exported log ([jre_stderr] MeowSDL: ...).
+ */
+#define MEOW_TRACE_BURST_MS 400
+#define MEOW_TRACE_RATE_MS 1000
+#define MEOW_TRACE_BURST_SAME_MS 50
+
+static Uint64 s_trace_last_ms = 0;
+static const char *s_trace_last_src = NULL;
+static Sint64 s_trace_button_until_ms = 0;
+
+static Uint64 OHOS_TraceNowMs(void)
+{
+    return SDL_GetTicksNS() / SDL_NS_PER_MS;
+}
+
+void OHOS_TraceButton(const char *phase, int btn, int grabbing)
+{
+    Uint64 now = OHOS_TraceNowMs();
+    s_trace_button_until_ms = (Sint64)now + MEOW_TRACE_BURST_MS;
+    fprintf(stderr, "MeowSDL: BUTTON %s btn=%d grabbing=%d\n", phase, btn, grabbing);
+}
+
+void OHOS_TraceMotion(const char *src, float dx, float dy, int grabbing, int relActive,
+                      double cursorX, double cursorY, double lastX, double lastY)
+{
+    Uint64 now = OHOS_TraceNowMs();
+    bool burst = ((Sint64)now <= s_trace_button_until_ms);
+    bool first = (s_trace_last_src == NULL);
+    bool switched = (s_trace_last_src != src);
+    Uint64 since = now - s_trace_last_ms;
+
+    if (burst) {
+        if (!switched && since < MEOW_TRACE_BURST_SAME_MS) {
+            return;
+        }
+    } else if (!(first || switched || since >= MEOW_TRACE_RATE_MS)) {
+        return;
+    }
+
+    s_trace_last_ms = now;
+    s_trace_last_src = src;
+    fprintf(stderr,
+            "MeowSDL: MOTION src=%s dx=%.3f dy=%.3f grabbing=%d relActive=%d cursor=(%.3f,%.3f) last=(%.3f,%.3f)\n",
+            src, (double)dx, (double)dy, grabbing, relActive, cursorX, cursorY, lastX, lastY);
+}
+
+void OHOS_TraceWarp(float x, float y, int grabbing, int relmode)
+{
+    /* Warps are rare; dedup identical targets within a second. */
+    static Uint64 last = 0;
+    static float lastX = 1.0e9f, lastY = 1.0e9f;
+    Uint64 now = OHOS_TraceNowMs();
+
+    if (x == lastX && y == lastY && (now - last) < MEOW_TRACE_RATE_MS) {
+        return;
+    }
+    last = now;
+    lastX = x;
+    lastY = y;
+    fprintf(stderr, "MeowSDL: MOTION src=warp x=%.3f y=%.3f grabbing=%d relmode=%d\n",
+            (double)x, (double)y, grabbing, relmode);
+}
+
+void OHOS_TraceGrabMode(int enabled, int grabbing)
+{
+    fprintf(stderr, "MeowSDL: GRABMODE src=setrelmode enabled=%d grabbing=%d\n", enabled, grabbing);
+}
+
 void OHOS_PumpEvents(SDL_VideoDevice *_this)
 {
     struct meow_environ_s *env;
@@ -232,16 +307,26 @@ void OHOS_PumpEvents(SDL_VideoDevice *_this)
             relLastY = env->cursorY;
             if (win && (dx != 0.0 || dy != 0.0)) {
                 SDL_SendMouseMotion(ts, win, 0, true, (float)dx, (float)dy);
+                OHOS_TraceMotion("pumpdiff", (float)dx, (float)dy, grabbing, relActive,
+                                 env->cursorX, env->cursorY, relLastX, relLastY);
             }
         }
     } else {
         relActive = 0;
         /* Pointer motion is a latest-value slot, not a ring entry. */
-        if (env->cursorX != env->cLastX || env->cursorY != env->cLastY) {
-            env->cLastX = env->cursorX;
-            env->cLastY = env->cursorY;
-            if (win) {
-                SDL_SendMouseMotion(ts, win, 0, false, (float)env->cursorX, (float)env->cursorY);
+        {
+            double adx = env->cursorX - env->cLastX;
+            double ady = env->cursorY - env->cLastY;
+            if (adx != 0.0 || ady != 0.0) {
+                double prevX = env->cLastX;
+                double prevY = env->cLastY;
+                env->cLastX = env->cursorX;
+                env->cLastY = env->cursorY;
+                if (win) {
+                    SDL_SendMouseMotion(ts, win, 0, false, (float)env->cursorX, (float)env->cursorY);
+                    OHOS_TraceMotion("pumpabs", (float)adx, (float)ady, grabbing, relActive,
+                                     env->cursorX, env->cursorY, prevX, prevY);
+                }
             }
         }
     }
@@ -281,6 +366,7 @@ void OHOS_PumpEvents(SDL_VideoDevice *_this)
             Uint8 b = OHOS_GlfwToSdlButton(ev.i1);
             if (win && b) {
                 SDL_SendMouseButton(ts, win, 0, b, ev.i2 != 0);
+                OHOS_TraceButton(ev.i2 != 0 ? "down" : "up", (int)b, grabbing);
             }
             break;
         }

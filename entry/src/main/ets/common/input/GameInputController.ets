@@ -86,6 +86,11 @@ export class GameInputController {
   private vy: number = 0;
   private winId: number = 0;
 
+  // ---- 诊断埋点（本诊断版常开；限频/去重，正常游玩不刷屏）----
+  private traceLastMs: number = 0;
+  private traceLastSrc: string = '';
+  private traceButtonUntilMs: number = 0;
+
   // ---- 键盘 / 尺寸 ----
   private pressed: Set<number> = new Set<number>();
   /** 功能键延迟释放定时器（kc -> timer）。见 FKEY_RELEASE_GRACE_MS。 */
@@ -368,6 +373,38 @@ export class GameInputController {
     b.meowSendCursorPos(x, y);
   }
 
+  /**
+   * 诊断埋点：带来源标签的位移（常开；限频 + 去重）。
+   * 规则与 SDL/桥侧一致：按键后 400ms 内每个 src 至少一条（同 src 限 50ms），
+   * 平时首见/换源/每 1s 一条 —— 正常游玩不刷屏，按键同帧必留痕。
+   * 与 SDL 侧 `MeowSDL: BUTTON`/`MOTION` 对读即可定位位移来源。
+   */
+  private traceMotion(src: string, x: number, y: number): void {
+    const now: number = Date.now();
+    const burst: boolean = now <= this.traceButtonUntilMs;
+    const switched: boolean = this.traceLastSrc !== src;
+    if (burst) {
+      if (!switched && now - this.traceLastMs < 50) {
+        return;
+      }
+    } else if (!switched && now - this.traceLastMs < 1000) {
+      return;
+    }
+    this.traceLastMs = now;
+    this.traceLastSrc = src;
+    hilog.info(LOG_DOMAIN, LOG_TAG,
+      'MeowSDL: MOTION src=%{public}s x=%{public}f y=%{public}f grabbing=%{public}d',
+      src, x, y, this.grabNative ? 1 : 0);
+  }
+
+  /** 诊断埋点：左键按下/抬起（与 SDL 侧 `MeowSDL: BUTTON` 对时）。 */
+  private traceButton(down: boolean, btn: number): void {
+    this.traceButtonUntilMs = Date.now() + 400;
+    hilog.info(LOG_DOMAIN, LOG_TAG,
+      'MeowSDL: BUTTON %{public}s src=arkts btn=%{public}d grabbing=%{public}d',
+      down ? 'down' : 'up', btn, this.grabNative ? 1 : 0);
+  }
+
   private sendScroll(x: number, y: number): void {
     const b = this.bridge;
     if (b === undefined || b.meowSendScroll === undefined) {
@@ -603,6 +640,7 @@ export class GameInputController {
         } else {
           this.sendCursorPos(this.vx, this.vy);
         }
+        this.traceMotion('arkts-grabreset', this.vx, this.vy);
         const rc: number = b.lockCursor(this.winId, false);
         hilog.info(LOG_DOMAIN, LOG_TAG, 'lockCursor windowId=%{public}d rc=%{public}d',
           this.winId, rc);
@@ -820,6 +858,7 @@ export class GameInputController {
     } else if (ry > 1) {
       ry = 1;
     }
+    this.traceMotion('arkts-abs', Math.round(rx * this.frameW), Math.round(ry * this.frameH));
     this.sendCursorPos(Math.round(rx * this.frameW), Math.round(ry * this.frameH));
   }
 
@@ -830,6 +869,7 @@ export class GameInputController {
         if (!this.grabNative) {
           this.sendAbsCursor(event.x, event.y);
         }
+        this.traceButton(true, gb);
         this.sendMouseButton(gb, GLFW_PRESS);
         if (!this.grabNative && this.imeActive) {
           this.refocusImeAfterClick();
@@ -838,6 +878,7 @@ export class GameInputController {
     } else if (event.action === MouseAction.Release || event.action === MouseAction.CANCEL) {
       const gb: number = glfwMouseButton(event.button);
       if (gb >= 0) {
+        this.traceButton(false, gb);
         this.sendMouseButton(gb, GLFW_RELEASE);
       }
     } else if (event.action === MouseAction.Move) {
@@ -849,6 +890,7 @@ export class GameInputController {
             this.vx += dx * CURSOR_SENS;
             this.vy += dy * CURSOR_SENS;
             this.sendCursorPos(this.vx, this.vy);
+            this.traceMotion('arkts-rawdelta', this.vx, this.vy);
           }
         }
       } else {

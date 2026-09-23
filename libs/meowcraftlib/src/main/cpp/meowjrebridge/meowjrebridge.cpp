@@ -1166,6 +1166,17 @@ static void MeowNodeEventReceiver(ArkUI_NodeEvent* event) {
     if (ev == nullptr || OH_ArkUI_UIInputEvent_GetType(ev) != ARKUI_UIINPUTEVENT_TYPE_MOUSE) {
         return;
     }
+    /*
+     * 只有真正的指针移动才允许推进抓取相机。本节点同时会收到按键的 press/release，
+     * 而 ArkUI 在非 MOVE 事件上也可能给出非零 rawDelta（其 rawDelta 由指针绝对位置
+     * 推导，并非硬件增量）；OHOS_PumpEvents 又把 env->cursorX/Y 差分后当相对位移发给
+     * MC，于是按键帧的这个值会变成“每点一次转 1px”。按键不是位移 ⇒ 在唯一入口按
+     * action 收口，非 MOVE 一律丢弃。非 grab 时 meowGrabDelta 本就早退，菜单/UI 鼠标
+     * 定位与按键（走 ArkTS/ring，不经本节点）完全不受影响。
+     */
+    if (OH_ArkUI_MouseEvent_GetMouseAction(ev) != UI_MOUSE_EVENT_ACTION_MOVE) {
+        return;
+    }
     float dx = OH_ArkUI_MouseEvent_GetRawDeltaX(ev);
     float dy = OH_ArkUI_MouseEvent_GetRawDeltaY(ev);
     if (dx == 0.0f && dy == 0.0f) {

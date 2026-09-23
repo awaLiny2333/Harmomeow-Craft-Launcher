@@ -154,17 +154,17 @@ reports "already present" — that is how a removed `hilog_ndk.z` link kept fail
 git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.14
 ```
 
-## 4. Verified build (2026-09-11, SDK clang 15.0.4, api 23)
+## 4. Verified build (2026-09-11, SDK clang 15.0.4, api 23; re-verified 2026-09-23)
 
 | Item | Result |
 |---|---|
 | Configure | `--   Video drivers: dummy offscreen ohos` |
-| Compile/link | ✅ `[226/228] Linking C shared library libSDL3.so.0.4.14` |
+| Compile/link | ✅ `[229/231] Linking C shared library libSDL3.so.0.4.14` |
 | `DT_NEEDED` | `libnative_window.so`, `libc.so` (EGL/GL are `dlopen`ed at runtime) |
 | Exports | 1270 `SDL_*` dynamic symbols |
 | Driver present | `SDL OpenHarmony (OHOS) video driver`; `OHOS_bootstrap` in `libSDL3.so` |
 | Artifact | `stuffs/research/sdl/out/libSDL3.so` (→ installed as `libSDL3.so`, manifest tag `common`) |
-| sha256 | `db255b257b9310604b3b9eed0cc776bea6b8ad4020eeb12230e87f457949e54d` (2,050,560 bytes; re-verified 2026-09-21 together with the clipboard write and the URL opener — see §4b) |
+| sha256 | `bd5b42dfef11454c18a5d55bf33b6aeb6e4200ea023fe83e43931479660b706d` (2,054,656 bytes; re-verified 2026-09-23 in the motion-diagnostics round — see §4b) |
 
 > Reproducibility: like all our native builds, the digest corresponds to the
 > recorded `--src`/`--out` paths; rebuilds at other paths are functionally
@@ -175,12 +175,14 @@ git -C ref/SDL-3.4.14 checkout -- .     # worktree back to pristine release-3.4.
 **3× from-scratch rebuilds (`cmp` byte-identical) at the current source state**: each one
 re-creates the worktree (`git worktree remove/add`, i.e. a pristine `release-3.4.14`) *and*
 wipes the build dir, so the patcher is exercised every time. Same `--src`/`--out` paths:
-`libSDL3.so` sha256 `db255b257b9310604b3b9eed0cc776bea6b8ad4020eeb12230e87f457949e54d`, 2,050,560 bytes.
+`libSDL3.so` sha256 `bd5b42dfef11454c18a5d55bf33b6aeb6e4200ea023fe83e43931479660b706d`, 2,054,656 bytes.
 (Same-path caveat as all our natives: the linker embeds the output path in `.dynstr`.)
 Twelve such builds in four rounds so far (three rounds for the Vulkan work, one for the
 window-focus events); every round was byte-identical within itself, and this round also
 matches the shipped artifact and the digested value above. (A fifth round covered the
-clipboard write and the URL opener.)
+clipboard write and the URL opener.) A sixth round (the 2026-09-23 motion-diagnostics
+build) did two from-scratch rebuilds and `cmp` proved them byte-identical — both
+`libSDL3-build{1,2}.so` carry `bd5b42df…`, matching the shipped artifact.
 
 Contract checked on the artifact: 1270 `SDL_*` dynamic symbols, `DT_NEEDED` = `libnative_window.so libc.so`
 only (EGL/GL/Vulkan/hilog are resolved at run time), `ohos` driver present.
@@ -241,6 +243,13 @@ devecocli run --module entry meowjre --device <serial>
   a log file, even at `WARN` — while stderr provably arrives in the exported log, and
   linking hilog would add a `DT_NEEDED` entry that `build_sdl_meow.sh` deliberately
   rejects. Look for `[jre_stderr] MeowSDL: …`.
+- **Motion diagnostics (always on as of 2026-09-23, temporary)**: the `ohos` input pump also
+  emits rate-limited, de-duplicated `MeowSDL: BUTTON …`, `MeowSDL: MOTION src=… grabbing=…`
+  and `MeowSDL: GRABMODE src=…` lines on stderr (same `[jre_stderr] MeowSDL:` channel;
+  `SDL_Log` stays invisible on this platform) to pin down the §G2 menu→game warp jump.
+  Reading: a `BUTTON down` immediately followed by `MOTION` from the same `src` marks that
+  `src` as the suspect. These probes are to be removed together with their call sites once
+  the jump is located (`src/video/ohos/SDL_ohosevents.{h,c}`).
 - Window `Show/Hide/Raise/Focusable/Minimize` are not implemented (external
   window owned by ArkTS).
 
