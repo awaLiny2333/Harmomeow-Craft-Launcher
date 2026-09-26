@@ -104,6 +104,7 @@ typedef mc_uint   (*mc_pfn_CreateShader)(mc_enum);
 typedef void      (*mc_pfn_DeleteShader)(mc_uint);
 typedef void      (*mc_pfn_ShaderSource)(mc_uint, mc_int, const mc_char *const *, const mc_int *);
 typedef void      (*mc_pfn_BindAttribLocation)(mc_uint, mc_int, const mc_char *);
+typedef void      (*mc_pfn_BindFragDataLocation)(mc_uint, mc_uint, const mc_char *);
 typedef void      (*mc_pfn_TexImage2D)(mc_enum, mc_int, mc_int, mc_int, mc_int, mc_int,
                                        mc_enum, mc_enum, const void *);
 typedef void      (*mc_pfn_GetTexLevelParameteriv)(mc_enum, mc_int, mc_enum, mc_int *);
@@ -123,6 +124,12 @@ typedef void      (*mc_pfn_GetShaderInfoLog)(mc_uint, mc_int, mc_int *, mc_char 
 typedef void      (*mc_pfn_LinkProgram)(mc_uint);
 typedef void      (*mc_pfn_GetProgramiv)(mc_uint, mc_enum, mc_int *);
 typedef void      (*mc_pfn_GetProgramInfoLog)(mc_uint, mc_int, mc_int *, mc_char *);
+/* Desktop GL 3.2 multi-draw: absent from ES 3.2 core and from the device's
+ * libGLESv3 exports (which ship only the ...EXT suffix). See
+ * mc_glMultiDrawElementsBaseVertex below. */
+typedef void      (*mc_pfn_MultiDrawElementsBaseVertex)(mc_enum, const mc_int *, mc_enum,
+                                                        const void *const *, mc_int, const mc_int *);
+typedef void      (*mc_pfn_DrawElementsBaseVertex)(mc_enum, mc_int, mc_enum, const void *, mc_int);
 
 /* --- state ------------------------------------------------------------- */
 static int  s_active = -1;   /* -1 unknown, 0 off, 1 on */
@@ -154,6 +161,10 @@ static mc_pfn_GetShaderInfoLog s_realGetShaderInfoLog;
 static mc_pfn_LinkProgram    s_realLinkProgram;
 static mc_pfn_GetProgramiv   s_realGetProgramiv;
 static mc_pfn_GetProgramInfoLog s_realGetProgramInfoLog;
+static mc_pfn_BindAttribLocation  s_realBindAttribLocation;
+static mc_pfn_BindFragDataLocation s_realBindFragDataLocation;
+static mc_pfn_MultiDrawElementsBaseVertex s_realMultiDrawElementsBaseVertexEXT;
+static mc_pfn_DrawElementsBaseVertex      s_realDrawElementsBaseVertex;
 
 /* GL_PROXY_TEXTURE_2D emulation (ES has no proxy targets): remember the last
  * proxy size MC asked about and answer its glGetTexLevelParameter query from it. */
@@ -489,6 +500,67 @@ static void mc_strip_uniform_locations(char *s)
         char *nl = strchr(line, '\n');
         size_t len = nl ? (size_t)(nl - line) : strlen(line);
         if (mc_line_has_word(line, len, "uniform") != 0)
+            mc_drop_location_qualifier(line, len);
+        nl = strchr(line, '\n');
+        line = nl ? nl + 1 : NULL;
+    }
+}
+
+/* Vertex attributes: desktop GL lets the app bind attribute NAMES to indices with
+ * glBindAttribLocation, and a producer that never queries (Sodium 0.5 binds
+ * a_PosId/a_Color/a_TexCoord/a_LightCoord to 1/2/3/4) depends entirely on it.
+ * glslang instead BAKES locations in declaration order (0..N-1), and forwarding a
+ * bind that contradicts a baked layout is a link error on ES. So drop the baked
+ * locations from vertex-stage INPUTS only and let the device honour the app's bind;
+ * fragment outputs and cross-stage varyings keep theirs (separate namespaces). MC
+ * queries glGetAttribLocation after link, so it stays self-consistent either way. */
+static void mc_strip_vertex_input_locations(char *s)
+{
+    char *line = s;
+    while (line != NULL && *line != '\0') {
+        char *nl = strchr(line, '\n');
+        size_t len = nl ? (size_t)(nl - line) : strlen(line);
+        if (mc_line_has_word(line, len, "in") != 0 &&
+            mc_line_has_word(line, len, "out") == 0 &&
+            mc_line_has_word(line, len, "uniform") == 0)
+            mc_drop_location_qualifier(line, len);
+        nl = strchr(line, '\n');
+        line = nl ? nl + 1 : NULL;
+    }
+}
+
+/* Fragment outputs: same rule as the vertex inputs above, but GUARDED by the
+ * ORIGINAL source. MC's core shaders declare bare outputs (`out vec4 fragColor;`)
+ * and never call glBindFragDataLocation, so for them dropping the baked location
+ * just lets the driver re-derive the same default order (declaration order; a
+ * single output is 0) that glslang had already baked. A shader that DOES declare
+ * `layout(location = N) out` must keep that exact location, so we only strip when
+ * the original declared none -- then the app's bind (forwarded in
+ * mc_glBindFragDataLocation) is authoritative. NOTE: MC/Sodium declare no output
+ * locations at all (measured: 0 of MC's 116 core shaders use `layout(location`). */
+static int mc_src_declares_out_location(const char *src)
+{
+    const char *line = src;
+    while (line != NULL && *line != '\0') {
+        const char *nl = strchr(line, '\n');
+        size_t len = nl ? (size_t)(nl - line) : strlen(line);
+        if (mc_line_has_word(line, len, "out") != 0 &&
+            memmem(line, len, "location", 8) != NULL)
+            return 1;
+        line = nl ? nl + 1 : NULL;
+    }
+    return 0;
+}
+
+static void mc_strip_frag_output_locations(char *s)
+{
+    char *line = s;
+    while (line != NULL && *line != '\0') {
+        char *nl = strchr(line, '\n');
+        size_t len = nl ? (size_t)(nl - line) : strlen(line);
+        if (mc_line_has_word(line, len, "out") != 0 &&
+            mc_line_has_word(line, len, "in") == 0 &&
+            mc_line_has_word(line, len, "uniform") == 0)
             mc_drop_location_qualifier(line, len);
         nl = strchr(line, '\n');
         line = nl ? nl + 1 : NULL;
@@ -928,6 +1000,10 @@ static char *mc_translate(const char *src, mc_enum stage)
             if (tmp != NULL) {
                 memcpy(tmp, essl, n + 1);
                 mc_strip_uniform_locations(tmp);
+                if (stage == MC_GL_VERTEX_SHADER)
+                    mc_strip_vertex_input_locations(tmp);
+                else if (!mc_src_declares_out_location(src))
+                    mc_strip_frag_output_locations(tmp);
                 mc_remap_varying_locations(tmp, stage == MC_GL_VERTEX_SHADER, cap + 1);
                 mc_remap_block_bindings(tmp, cap + 1);
                 mc_remap_opaque_bindings(tmp, cap + 1);
@@ -1197,13 +1273,51 @@ static void mc_glGetProgramInfoLog(mc_uint program, mc_int bufSize, mc_int *leng
     if (s_realGetProgramInfoLog) s_realGetProgramInfoLog(program, bufSize, length, infoLog);
 }
 
-/* The translated shaders carry explicit layout(location=...) (auto-mapped by
- * glslang). MC still calls glBindAttribLocation before linking; on GLES a bind
- * that contradicts a declared layout is a link error, and MC queries the real
- * location anyway -> make it a no-op so our baked locations stay authoritative. */
+/* Forward the app's name->index binding to the device. The translated vertex shader
+ * has no baked input locations (see mc_strip_vertex_input_locations), so this bind is
+ * what makes Sodium's a_PosId..a_LightCoord land on attributes 1..4. Previously a
+ * no-op: any producer that binds attributes instead of querying them then read the
+ * wrong slots (Sodium's a_PosId came from never-fed slot 0 -> every vertex collapsed
+ * to one point -> the whole terrain was invisible). */
 static void mc_glBindAttribLocation(mc_uint program, mc_int index, const mc_char *name)
 {
-    (void)program; (void)index; (void)name;
+    if (s_realBindAttribLocation)
+        s_realBindAttribLocation(program, index, name);
+}
+
+/* Fragment-output counterpart of the above. The device ships only the ...EXT
+ * spelling, so the bare name used to fall to mc_safe_noop -- which happened to be
+ * harmless for Sodium only because its single output auto-mapped to 0 == its
+ * FRAG_COLOR bind. Forward it so any output binding is actually honoured (paired
+ * with mc_strip_frag_output_locations). */
+static void mc_glBindFragDataLocation(mc_uint program, mc_uint colorNumber, const mc_char *name)
+{
+    if (s_realBindFragDataLocation)
+        s_realBindFragDataLocation(program, colorNumber, name);
+}
+
+/* Desktop-only multi-draw. Sodium 0.5.x submits its terrain with
+ * glMultiDrawElementsBaseVertex (GL 3.2 core). That name is absent from ES 3.2
+ * core AND from the device's libGLESv3 exports (only the ...EXT suffix exists),
+ * so without this wrapper the lookup silently becomes mc_safe_noop and the whole
+ * terrain stops rendering (blocks appear transparent). Keep the hardware path via
+ * the device's EXT entry; otherwise fall back to looping the ES 3.2 core
+ * glDrawElementsBaseVertex so the geometry is always submitted. */
+static void mc_glMultiDrawElementsBaseVertex(mc_enum mode, const mc_int *count, mc_enum type,
+                                             const void *const *indices, mc_int drawcount,
+                                             const mc_int *basevertex)
+{
+    mc_int i;
+    if (drawcount <= 0) return;
+    if (s_realMultiDrawElementsBaseVertexEXT) {
+        s_realMultiDrawElementsBaseVertexEXT(mode, count, type, indices, drawcount, basevertex);
+        return;
+    }
+    if (s_realDrawElementsBaseVertex) {
+        for (i = 0; i < drawcount; ++i)
+            s_realDrawElementsBaseVertex(mode, count[i], type, indices[i],
+                                         basevertex ? basevertex[i] : 0);
+    }
 }
 
 /* --- desktop-only texture entry points MC relies on ------------------- */
@@ -1437,6 +1551,31 @@ static void mc_glGetTexImage(mc_enum t, mc_int l, mc_enum f, mc_enum ty, void *p
  * libgl4es.so(glClearDepthf+48) @0x48). A no-op keeps us in charge. */
 static void mc_safe_noop(void) { }
 
+/* A name we neither wrap nor resolve on the device silently becomes a no-op
+ * below. That is invisible to LWJGL's capability checks (the pointer is never
+ * NULL), so a missing desktop-only entry can show up as "capability present but
+ * nothing renders". Log each such name once (bounded) so it stays diagnosable. */
+#define MC_NOOP_MAX 512
+#define MC_NOOP_LEN 64
+static char s_noop_names[MC_NOOP_MAX][MC_NOOP_LEN];
+static int  s_noop_n = 0;
+
+static void mc_note_noop(const char *name)
+{
+    int i;
+    size_t n;
+    if (!name) return;
+    for (i = 0; i < s_noop_n; ++i)
+        if (strcmp(s_noop_names[i], name) == 0) return;
+    if (s_noop_n >= MC_NOOP_MAX) return;             /* stay silent rather than spam */
+    n = strlen(name);
+    if (n >= MC_NOOP_LEN) n = MC_NOOP_LEN - 1;
+    memcpy(s_noop_names[s_noop_n], name, n);
+    s_noop_names[s_noop_n][n] = '\0';
+    fprintf(stderr, "[meowcore] entry not on device -> no-op: %s\n", s_noop_names[s_noop_n]);
+    ++s_noop_n;
+}
+
 /* --- init + table-driven GetProcAddress ------------------------------- */
 int meowcore_init(void)
 {
@@ -1476,6 +1615,14 @@ int meowcore_init(void)
     s_realLinkProgram   = (mc_pfn_LinkProgram)(void *)mc_sym("glLinkProgram");
     s_realGetProgramiv  = (mc_pfn_GetProgramiv)(void *)mc_sym("glGetProgramiv");
     s_realGetProgramInfoLog = (mc_pfn_GetProgramInfoLog)(void *)mc_sym("glGetProgramInfoLog");
+    s_realBindAttribLocation = (mc_pfn_BindAttribLocation)(void *)mc_sym("glBindAttribLocation");
+    s_realBindFragDataLocation = (mc_pfn_BindFragDataLocation)(void *)mc_sym("glBindFragDataLocationEXT");
+    if (!s_realBindFragDataLocation)
+        s_realBindFragDataLocation = (mc_pfn_BindFragDataLocation)(void *)mc_sym("glBindFragDataLocation");
+    s_realMultiDrawElementsBaseVertexEXT =
+        (mc_pfn_MultiDrawElementsBaseVertex)(void *)mc_sym("glMultiDrawElementsBaseVertexEXT");
+    s_realDrawElementsBaseVertex =
+        (mc_pfn_DrawElementsBaseVertex)(void *)mc_sym("glDrawElementsBaseVertex");
 
     if (s_realGetIntegerv) {
         mc_int m = 0;
@@ -1507,6 +1654,8 @@ static const struct mc_entry mc_entries[] = {
     { "glGetProgramiv", (void *)mc_glGetProgramiv },
     { "glGetProgramInfoLog", (void *)mc_glGetProgramInfoLog },
     { "glBindAttribLocation", (void *)mc_glBindAttribLocation },
+    { "glBindFragDataLocation", (void *)mc_glBindFragDataLocation },
+    { "glMultiDrawElementsBaseVertex", (void *)mc_glMultiDrawElementsBaseVertex },
     { "glTexImage2D", (void *)mc_glTexImage2D },
     { "glTexStorage2D", (void *)mc_glTexStorage2D },
     { "glRenderbufferStorage", (void *)mc_glRenderbufferStorage },
@@ -1538,5 +1687,7 @@ void *meowcore_GetProcAddress(const char *name)
     p = mc_sym(name);
     /* Never NULL: see mc_safe_noop's comment -- a NULL here lets LWJGL fall back to
      * dlsym on libgl4es.so and run uninitialized FPE code. */
-    return p ? p : (void *)mc_safe_noop;
+    if (p) return p;
+    mc_note_noop(name);
+    return (void *)mc_safe_noop;
 }
