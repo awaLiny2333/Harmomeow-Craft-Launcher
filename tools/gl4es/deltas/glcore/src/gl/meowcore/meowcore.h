@@ -23,7 +23,7 @@ extern "C" {
 
 /* Build tag: printed at init so the device log states WHICH build is running
  * (bump this string on every behavioural change). */
-#define MC_BUILD_TAG "2026-09-26-r13 (honor glBindFragDataLocation too)"
+#define MC_BUILD_TAG "2026-09-27-r16 (multidraw: core base-vertex loop; ext diag)"
 
 /* 1 = core (GLES) backend selected. Reads env MEOW_GL3 (unset/"0" = off). */
 MEOWCORE_API int meowcore_active(void);

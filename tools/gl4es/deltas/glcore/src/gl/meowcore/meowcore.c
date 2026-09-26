@@ -1297,27 +1297,31 @@ static void mc_glBindFragDataLocation(mc_uint program, mc_uint colorNumber, cons
 }
 
 /* Desktop-only multi-draw. Sodium 0.5.x submits its terrain with
- * glMultiDrawElementsBaseVertex (GL 3.2 core). That name is absent from ES 3.2
- * core AND from the device's libGLESv3 exports (only the ...EXT suffix exists),
- * so without this wrapper the lookup silently becomes mc_safe_noop and the whole
- * terrain stops rendering (blocks appear transparent). Keep the hardware path via
- * the device's EXT entry; otherwise fall back to looping the ES 3.2 core
- * glDrawElementsBaseVertex so the geometry is always submitted. */
+ * glMultiDrawElementsBaseVertex (GL 3.2 core). That name is absent from ES 3.2 core
+ * AND from the device's libGLESv3 exports (only the ...EXT suffix exists), so without
+ * this wrapper the lookup silently becomes mc_safe_noop and the whole terrain stops
+ * rendering (blocks appear transparent).
+ *
+ * We must use the ES 3.2 CORE per-draw entry and LOOP it. The device's ...EXT spelling
+ * is NOT portable and cannot be probed: the phone's OpenGLWrapper SILENTLY SWALLOWS
+ * glMultiDrawElementsBaseVertexEXT ("... is invalid", and it sets NO GL error, so a
+ * glGetError probe sees nothing) while the 2in1 accepts it. Looping glDrawElementsBaseVertex
+ * is exactly what a driver without multi-draw does, and it is valid on every ES 3.2 stack. */
 static void mc_glMultiDrawElementsBaseVertex(mc_enum mode, const mc_int *count, mc_enum type,
                                              const void *const *indices, mc_int drawcount,
                                              const mc_int *basevertex)
 {
     mc_int i;
     if (drawcount <= 0) return;
-    if (s_realMultiDrawElementsBaseVertexEXT) {
-        s_realMultiDrawElementsBaseVertexEXT(mode, count, type, indices, drawcount, basevertex);
-        return;
-    }
     if (s_realDrawElementsBaseVertex) {
         for (i = 0; i < drawcount; ++i)
             s_realDrawElementsBaseVertex(mode, count[i], type, indices[i],
                                          basevertex ? basevertex[i] : 0);
+        return;
     }
+    /* Only if the core entry is missing (never observed): best-effort ...EXT. */
+    if (s_realMultiDrawElementsBaseVertexEXT)
+        s_realMultiDrawElementsBaseVertexEXT(mode, count, type, indices, drawcount, basevertex);
 }
 
 /* --- desktop-only texture entry points MC relies on ------------------- */
@@ -1576,6 +1580,23 @@ static void mc_note_noop(const char *name)
     ++s_noop_n;
 }
 
+/* One-time diagnostic: list the device ES extensions relevant to the ...EXT entry
+ * points we would otherwise lean on. The phone's stack swallows
+ * glMultiDrawElementsBaseVertexEXT / glBindFragDataLocationEXT without a GL error,
+ * so this is how we find out (statically) whether a fast path could ever be gated. */
+static void mc_log_relevant_extensions(void)
+{
+    mc_int n = 0, i;
+    if (!s_realGetIntegerv || !s_realGetStringi) return;
+    s_realGetIntegerv(MC_GL_NUM_EXTENSIONS, &n);
+    for (i = 0; i < n && i < 4096; ++i) {
+        const char *e = (const char *)s_realGetStringi(MC_GL_EXTENSIONS, (mc_uint)i);
+        if (!e) continue;
+        if (strstr(e, "multi_draw") || strstr(e, "base_vertex") || strstr(e, "frag_data"))
+            fprintf(stderr, "[meowcore] relevant ext: %s\n", e);
+    }
+}
+
 /* --- init + table-driven GetProcAddress ------------------------------- */
 int meowcore_init(void)
 {
@@ -1632,6 +1653,7 @@ int meowcore_init(void)
 
     fprintf(stderr, "[meowcore] core backend init: gles=%p shaderSource=%p maxTex=%d tag=%s\n",
             s_gles, (void *)s_realShaderSource, s_maxTexSize, MC_BUILD_TAG);
+    mc_log_relevant_extensions();
     return (s_realGetString && s_realGetIntegerv && s_realShaderSource) ? 1 : 0;
 }
 
