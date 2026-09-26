@@ -27,7 +27,7 @@ constexpr char kJresRoot[] = "meow-jres";
  * Install 仅在「lib/modules 存在 且 令牌一致」时跳过；否则清目录重解压 →
  * 防止「新 el1 .so + 旧 filesDir 数据」混合。**改随包 JRE 数据（= JRE 版本升级）须同步此值 +
  * ArkTS `common/constants/Paths.ets` 的 JRE_DATA_TOKEN**。 */
-constexpr char kJreDataToken[] = "26.0.2.1+1-7-r1";
+constexpr char kJreDataToken[] = "26.0.2.1+1-7-r2";
 constexpr char kJreDataTokenFile[] = "meow_jre_data";
 
 /**

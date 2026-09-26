@@ -79,6 +79,8 @@
 | `linux_bootstrap.sh` / `linux_build_jvm.sh` | **容器内**：装工具链 + boot JDK + 原生编 `libjvm.so`（见 §4） |
 | `linux_env_snapshot.sh` | **容器内**：打印精确环境版本（供溯源/一致性核对） |
 | `linux_slim_jre.sh` | **容器内**：`jlink` 裁 `lib/modules`（见 §5） |
+| `linux_build_zipfs_patch.sh` | **容器内**：只编**一个类** —— 打过 best-effort-chmod 补丁的 `ZipFileSystem.class`（随 JRE 数据带上，供启动器 `--patch-module jdk.zipfs=` 覆盖；**不动 jmod / jlink / 模块哈希**） |
+| `patches/zipfs_chmod_best_effort.py` | 上者的补丁本体：把 `jdk.zipfs` 的 `ZipFileSystem.sync()` 里那次 `Files.setPosixFilePermissions` 改成 best-effort（手机用户存储/FUSE 拒绝 chmod ⇒ Fabric 首次 remap 崩；jar 字节不变） |
 | `linux_verify_jvm_repro.sh` | **容器内**：N× 干净重建 `libjvm` + `cmp`（默认 2；`MEOW_REPRO_N` 可调） |
 | `pack_jre_data.py` | **确定性**打包 `home` → `meow_jre.tar.gz` |
 | `verify_symbols.py` | 符号满足性自检（GLOBAL 未定义 vs 提供者集合） |
@@ -98,6 +100,7 @@ sh tools/jre26/linux_bootstrap.sh         # 装工具链 + boot JDK（如已装�
 sh tools/jre26/linux_build_jvm.sh         # → out-linux/libjvm.so（glibc；默认源 ref/jdk26u @ jdk-26.0.2.1-ga）
 sh tools/jre26/linux_verify_jvm_repro.sh  # （建议）N× cmp 验 libjvm 逐字节可复现（默认 2；MEOW_REPRO_N 调高）
 sh tools/jre26/linux_slim_jre.sh          # （仅在换官方输入时需要）→ out-linux/modules.slim
+sh tools/jre26/linux_build_zipfs_patch.sh # → out-linux/zipfs-patch/（36 个 jdk.zipfs 类，含 best-effort chmod；见 §6）
 
 # 2) 宿主 —— 组装（魔改 26 官方件 + 自编 libc6/libjli + 魔改自编 libjvm）
 sh tools/jre26/rebuild_for_meowcraft.sh \
@@ -105,8 +108,10 @@ sh tools/jre26/rebuild_for_meowcraft.sh \
     --jdk-src      stuffs/research/jdk26/jdk26u-src \
     --libjvm       stuffs/research/jdk26/out-linux/libjvm.so \
     --modules-slim stuffs/research/jdk26/out-linux/modules.slim \
+    --zipfs-patch  stuffs/research/jdk26/out-linux/zipfs-patch \
     --out          stuffs/research/jdk26/out
-#   （rebuild 会对 --jdk-src 打 patches/libjli-ohos.patch 后自编 libjli；对 --libjvm 跑魔改）
+#   （rebuild 会对 --jdk-src 打 patches/libjli-ohos.patch 后自编 libjli；对 --libjvm 跑魔改；
+#    --zipfs-patch 把 jdk.zipfs 补丁类放进 home/lib/patch/jdk.zipfs/，供启动器 --patch-module 覆盖，见 §6）
 
 # 3) 随包（工程内）
 cp stuffs/research/jdk26/out/*.so libs/meowjre/libs/arm64-v8a/
@@ -130,12 +135,12 @@ rm -rf libs/meowjre/build entry/build && devecocli build --modules entry meowjre
 | 随包 `libc6.so` | `c8b06fadd6f074b8bab3069bddb537bf503ac815575b46021b6ef05121a5a723` |
 | 随包 `libjli.so` | `bedc743c54d0d9acd37a5d841963b87e79659063f5d5e4222a8433cad637d089` |
 | `modules.slim`（jlink 产物，43 模块） | `d7486973d16eccc577ac86a96531089184c69c6be284b5c712d30d7da1d8f0c0`（42,748,043 B） |
-| 随包数据 tar（`pack_jre_data.py` 规范化） | `4f9c2b87af26303ba660e6cde1c048c61e817c7dcb50f1b5cf93eecbeea2579b`（41,158,374 B） |
+| 随包数据 tar（`pack_jre_data.py` 规范化） | `f17974a51a53bbdaeecdedf0230046375664137cfdb36653425864491a877fb3`（41,233,017 B / 71 文件 = 35 基础 + 36 个 `lib/patch/jdk.zipfs/**` 补丁类〔40 条目〕；令牌 **r2**，见 §6） |
 | HAP（本次 debug 签名） | `69e2ebd33b8288d41798fcb1c962a8d19dc1e2fb53db369583ceb11b3f278bda` |
 | HSP（本次 debug 签名） | `e415480b03b7257bf0ea887b10194ed646fca2dba43192b79245d330e02c9e47` |
 
 > HAP/HSP 含签名材料 → 随签名变化；上表为本次 debug 签名的参考值。其余件与签名无关。
-> **对齐精确源只改自编件**：`libjvm`/`libjli` 变；官方 26 lib、`libc6.so`、`modules.slim`、数据 tar **均不变**。
+> **对齐精确源只改自编件**：`libjvm`/`libjli` 变；官方 26 lib、`libc6.so`、`modules.slim`、数据 tar **均不变**（*该次 2026-09-13；2026-09-27 因新增 `lib/patch/jdk.zipfs/**` 补丁类 ⇒ 数据 tar 变、令牌升 `-r2`，见 §6*）。
 
 ## 三块机制
 
@@ -179,18 +184,50 @@ OHOS 分体 patch（3 处）：
 - HotSpot 分体 patch（`os_linux.cpp` 2 处）：`java.home` 认 `OHOS_JAVA_HOME`、`dll_dir` 认 `OHOS_DL_DIR`（上游假设 `lib/<variant>/` 会**多剥一层** `arm64` → `Failed setting boot class path` / `Unable to load jimage library`）。
 
 ### 5) 数据瘦身（`linux_slim_jre.sh` + 裁 `bin/`）
-官方**完整 JDK 数据**远超 MC 所需 → 瘦到 **41,158,374 B / 35 文件**：
+官方**完整 JDK 数据**远超 MC 所需 → 基础瘦身 **41,158,374 B / 35 文件**（2026-09-27 再加 36 个 `jdk.zipfs` 补丁类 → **41,233,017 B / 71 文件**，见 §6）：
 1. **`lib/modules`**：容器里用官方 JDK26 的 `jlink` 按原 HOML 模块集裁，**两处 26 版适配**：
    - 剔除 **`jdk.crypto.cryptoki`**（其 native `libj2pkcs11` 已删，保留会不一致）；
    - 剔除 **`jdk.jsobject`**（**JDK26 已移除该模块**，保留 jlink 报错）。
    → **43 模块** + `--compress=zip-6`。
 2. **`bin/`**：只留 `java keytool jfr jwebserver rmiregistry`（JDK26 无 `jrunscript` → 实留 **5** 个）。
-- **数据门（防混合）**：`Install` 解压后写 `<installDir>/meow_jre_data`（令牌 `26.0.2.1+1-7-r1`）；ArkTS `Paths.JRE_DATA_TOKEN`/`JavaEnvScanner` 同步校验；令牌不符 → 未就绪 + `Install` 清目录重解压。**⚠️ 改随包 JRE 数据的任何内容（模块集/文件）都必须同步升令牌**（native `kJreDataToken` + ArkTS `JRE_DATA_TOKEN`）。**只换 el1 `.so`（数据不变）→ 令牌不动。**
+- **数据门（防混合）**：`Install` 解压后写 `<installDir>/meow_jre_data`（令牌 `26.0.2.1+1-7-r2`）；ArkTS `Paths.JRE_DATA_TOKEN`/`JavaEnvScanner` 同步校验；令牌不符 → 未就绪 + `Install` 清目录重解压。**⚠️ 改随包 JRE 数据的任何内容（模块集/文件）都必须同步升令牌**（native `kJreDataToken` + ArkTS `JRE_DATA_TOKEN`）。**只换 el1 `.so`（数据不变）→ 令牌不动。**
+  - **r1 → r2（2026-09-27）**：本次新增 `lib/patch/jdk.zipfs/**`（jdk.zipfs best-effort-chmod 补丁类，见 §6）属"改数据内容" ⇒ 令牌同步升 `-r2`；老 r1 用户端显示「须升级」并重解压。
 - **旧 JRE 数据自动清理**：`Install` 会扫 `filesDir/meow-jres/`，删除**非当前 id** 的兄弟目录（换版本/改名后遗留的孤儿），幂等、失败仅告警不阻断（`PurgeStaleJreData`）。
   - **UI**：app 区分 **须升级**（有数据但令牌不符 → 显示「升级」+ 令牌 旧→新）vs **未解压**（显示「解压」）；须升级时**禁用所有版本的「启动」**。
 - 模块集 = 原 HOML（已知 MC 1.6.x–26.3 可用）；实机验证见 §校验。
 
-## 校验（2026-09-12）
+### 6) jdk.zipfs 补丁（手机 Fabric remap）
+
+**问题（2026-09-27 手机实机，HUAWEI Mate XT）**：Fabric 首次启动时，其 `tiny-remapper` 经 `jdk.zipfs`
+往 `<gameDir>/.fabric/remappedJars/*.jar` 写盘；`ZipFileSystem.sync()` 会**无条件** `Files.setPosixFilePermissions`
+（chmod）。手机的游戏目录落在**用户存储**（FUSE/hmdfs，**拒绝 chmod**）⇒ `Operation not permitted` ⇒ Fabric 崩、进不了游戏。
+
+**修法 = best-effort chmod（只改 Java 类，jar 字节不变）**：把那次 `chmod` 改成"失败即忽略"。
+补丁点 = `ref/jdk26u/src/jdk.zipfs/share/classes/jdk/nio/zipfs/ZipFileSystem.java:2076-2078`
+（补丁本体 `patches/zipfs_chmod_best_effort.py`，顶部 docstring 写明"为什么"）。
+
+**为什么用 `--patch-module`（而不是换 `jmod` 或重打 `lib/modules`）**：
+- 直接替换 `lib/modules`（jimage）或 `jmods` 会**改动模块哈希 / 触发镜像一致性**问题，且要重跑 jlink；
+- `--patch-module jdk.zipfs=<dir>` 是 **JDK 官方机制**：启动时**只覆盖那一个模块的类**，
+  **不动** `lib/modules`(jimage) / `jmods` / **任何模块哈希**；
+- 我们**不 patch `java.base`**（只碰 `jdk.zipfs`），blast radius 最小。
+
+**安全性**：只改变 chmod 的失败语义（失败即忽略）——**被写入的 jar 字节完全不变**。
+
+**怎么用**：
+1. 容器内 `sh tools/jre26/linux_build_zipfs_patch.sh` → `stuffs/research/jdk26/out-linux/zipfs-patch/`
+   （36 个 `jdk.zipfs` 类，**不含 `module-info.class`**；整套包以保证与我们改过的 `ZipFileSystem` 自洽）；
+2. 宿主 `sh tools/jre26/rebuild_for_meowcraft.sh … --zipfs-patch stuffs/research/jdk26/out-linux/zipfs-patch`
+   → 放进 `home/lib/patch/jdk.zipfs/`（该参数给错/缺类会**硬错**）；
+3. 打包进数据 tar（`pack_jre_data.py`）随 `rawfile/meow_jre.tar.gz` 走；启动器 `MinecraftLauncher` 加
+   `--patch-module jdk.zipfs=<jreHome>/lib/patch/jdk.zipfs`（`GameLauncher` 先做**存在性检查**，不存在则不加）。
+
+**怎么撤**：删 `home/lib/patch/jdk.zipfs`（重打 tar）+ 去掉那条 `--patch-module` argv（+ 令牌回退 r1）。
+
+**影响面**：2in1（可 chmod）上 catch 不触发 ⇒ 行为**完全不变**；其它 `zipfs` 使用者仅在 chmod 失败时才改变（且只是"少设权限"）。
+**实机结论（用户确认，2026-09-27）**：手机 Fabric **能直接进游戏**，**后续安装 mod 也没问题**。
+
+## 校验（2026-09-12；2026-09-27 追加 jdk.zipfs 行）
 
 | 项 | 值 |
 |---|---|
@@ -198,8 +235,9 @@ OHOS 分体 patch（3 处）：
 | 兼容层 `libc6.so` | **无版本**导出；符号满足性 PASS；**无需为 26 增补** |
 | 自编 `libjli.so` | NEEDED=`libz.so`+`libc.so`；编译自 `jdk-26.0.2.1-ga` |
 | 自编 `libjvm.so`（容器编，glibc） | 27,707,544 B；魔改后 NEEDED=`libc.so`+`libc6.so`×2；符号满足性 PASS |
-| 数据瘦身 | data tar → **41,158,374 B**（35 文件）；`lib/modules` → **42,748,043 B**（43 模块） |
-| 实机 | **MC 可玩**（用户实测） |
+| 数据瘦身 | data tar → **41,233,017 B**（71 文件 = 35 基础 + 36 个 `jdk.zipfs` 补丁类〔`lib/patch/jdk.zipfs/**` 40 条目〕；旧 41,158,374 B / 35 文件）；`lib/modules` → **42,748,043 B**（43 模块） |
+| jdk.zipfs 补丁（2026-09-27） | 容器编 `jdk.zipfs` 整套类（36 个 `.class`，**不含** `module-info.class`）→ `home/lib/patch/jdk.zipfs/`；`ZipFileSystem.class` sha256 `9347f3c4be3f52f7e10e3f0cc3cdc2021080151bac72a4c5332b8511112fab0b`；令牌 `-r2` |
+| 实机 | **MC 可玩**（用户实测）；**手机 Fabric 可进游戏 + 装 mod**（2026-09-27 用户实机确认） |
 | 逐字节（现网 vs 组装） | `libc6.so`/`libjli.so`/`libjvm.so` 均 **OK** |
 
 ## 坑（务必记住）
@@ -226,7 +264,7 @@ OHOS 分体 patch（3 处）：
 | 3 | 类文件 major `69` → **`70`**；`-DJDK_MAJOR_VERSION=26` | `build_libjli_ohos.sh` |
 | 4 | jlink 模块集**剔除新增** `jdk.jsobject`（26 已移除） | `linux_slim_jre.sh` |
 | 5 | 容器 `$WORK` → **`$HOME/meow-jvm26`**（避免复用 25 的 boot JDK） | `linux_*.sh` |
-| 6 | 随包命名改为**版本无关**：HSP 模块 `meowjre`、JRE id `meow_jre`、rawfile `meow_jre.tar.gz`（旧 `meowjre25`/`meowjre26` 已废）；JRE 版本只由**数据门令牌** `26.0.2.1+1-7-r1` 体现 | 工程 + `rebuild_for_meowcraft.sh` |
+| 6 | 随包命名改为**版本无关**：HSP 模块 `meowjre`、JRE id `meow_jre`、rawfile `meow_jre.tar.gz`（旧 `meowjre25`/`meowjre26` 已废）；JRE 版本只由**数据门令牌**体现（现 `26.0.2.1+1-7-r2`，见 §5/§6） | 工程 + `rebuild_for_meowcraft.sh` |
 | 7 | **无需改**：`glibc_compat.c`、`patch_dynstr.py`、`assemble_jre.sh`、`build_shim.sh`、`verify_symbols.py`、两个 patch | — |
 
 > **为什么命名要版本无关**：HSP 模块名若绑 JRE 版本（`meowjre25`/`meowjre26`），每升一次 JRE 就会在设备上留下一个**删不掉的旧 HSP**（app 无权重删，只有 `hdc uninstall` 清）。改为固定名后，升级 = 「HSP 原地替换 + 数据门走『须升级 → 升级』」，不产生残留；`filesDir/meow-jres/` 侧另有 `PurgeStaleJreData` 兜底清孤儿目录。

@@ -28,7 +28,11 @@ LWJGL/gson/jspecify 走 Maven Central（脚本自动下载 + `.sha1` 校验）�
 tar（`openjdk-26.0.2.1_linux-aarch64_bin.tar.gz`，sha256 `b96b265a4a1a36c02454148891aa58ca63303cbc2d1b7979c33b4fe99e09117b`）
 + OpenJDK 源码 **`https://github.com/openjdk/jdk26u`**（**更新仓**）的 **`jdk-26.0.2.1-ga`** tag（供自编 `libjli`+`libjvm`；
 commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61` 精确对齐**）
-+ 用户提供的 **openEuler 24.03 aarch64 容器**（编 `libjvm`；设备不能执行编译产物）。**零黑箱。**
++ 用户提供的 **openEuler 24.03 aarch64 容器**（编 `libjvm`；设备不能执行编译产物）。
++ **Java 类补丁走 `--patch-module`**（不换 `jmod`/不动模块哈希）：随包 JRE 数据含 `lib/patch/jdk.zipfs/**`
+  （`jdk.zipfs` 的 `ZipFileSystem.sync()` best-effort-chmod 类补丁，解手机用户存储 FUSE 拒 chmod 致 Fabric remap 崩），
+  由容器脚本 `tools/jre26/linux_build_zipfs_patch.sh` 编出、`rebuild_for_meowcraft.sh --zipfs-patch <dir>` 投放到 `home/lib/patch/jdk.zipfs/`，
+  启动器加 `--patch-module jdk.zipfs=<JRE数据>/lib/patch/jdk.zipfs`。见 `tools/jre26/README.md` §6。**零黑箱。**
 
 ## 2. 工具清单
 
@@ -39,7 +43,7 @@ commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61
 | `gl4es/` | `libgl4es.so` | 自编 **gl4es v1.1.7** OHOS 移植（桌面固定管线 GL → 原生 GLES 翻译层）；**MC ≤1.16**（含 1.6.x–1.12.2，经 LWJGL2 `extgl` 取址）的渲染翻译层 |
 | `openal/` | `libopenal.so` | OpenAL Soft **1.24.3** OHOS 移植（OHAudio 默认后端 + 导出 `ALC_SOFT_system_events`） |
 | `freetype/` | `libfreetype.so` | FreeType 2.13.3 OHOS 交叉编 |
-| `jre26/` | 随包 JRE 集（`libs/*.so` + `java.home` 数据） | **魔改官方 OpenJDK 26.0.2.1(glibc) 跑 OHOS(musl)，零黑箱**：官方 26 lib **原地改 `.dynstr`** + `libc6.so` 兼容层 + **自编 `libjli`** + **自编 `libjvm`**（openEuler 容器编，两件均带 OHOS 分体 patch，源 = 更新仓 `jdk26u` @ `jdk-26.0.2.1-ga`）；数据经 jlink 瘦身。见 `tools/jre26/README.md` |
+| `jre26/` | 随包 JRE 集（`libs/*.so` + `java.home` 数据） | **魔改官方 OpenJDK 26.0.2.1(glibc) 跑 OHOS(musl)，零黑箱**：官方 26 lib **原地改 `.dynstr`** + `libc6.so` 兼容层 + **自编 `libjli`** + **自编 `libjvm`**（openEuler 容器编，两件均带 OHOS 分体 patch，源 = 更新仓 `jdk26u` @ `jdk-26.0.2.1-ga`）；数据经 jlink 瘦身；另含 `lib/patch/jdk.zipfs`（best-effort chmod 类补丁，`--patch-module` 投放，见该 README §6）。见 `tools/jre26/README.md` |
 | `jre25/` | —（历史配方） | **25 时代**的随包 JRE 配方/溯源（已发布版本）；随包 JRE 已升级到 26，**勿用于当前随包**。见 `tools/jre25/README.md` |
 | `sdl/` | `libSDL3.so` | 自编 OHOS **SDL3**（fork tag `release-3.4.14`）+ 自研 **`ohos` 驱动**（窗口/EGL/输入/grab/**Vulkan WSI**）；**MC 26.3** 的平台绑定 |
 | `shaderc/` | `libshaderc.so`、`libspirv-cross.so` | 自编（glslang/SPIRV-Tools 静态并入；按官方 natives `.git` 钉修订）；**MC 26.3 `renderpearl`** 用 |
@@ -110,16 +114,18 @@ sh tools/meow-launcher/build_meow_launcher.sh            # launcher.jar（人跑
 # JRE 集（魔改官方 glibc 件跑 OHOS，零黑箱；完整步骤见 tools/jre26/README.md 的「复现」）
 #   0) 输入：解官方 tar 到 stuffs/research/jdk26/_inspect；clone **更新仓** openjdk/jdk26u → ref/jdk26u，
 #      再 worktree jdk26u-src @ `jdk-26.0.2.1-ga`（26.0.x 不在主线 openjdk/jdk）
-#   1) 容器(openEuler/aarch64)：装环境 + 编 libjvm(glibc) +（仅换官方输入时）jlink 瘦 modules
+#   1) 容器(openEuler/aarch64)：装环境 + 编 libjvm(glibc) +（仅换官方输入时）jlink 瘦 modules + 编 jdk.zipfs 补丁类
 sh tools/jre26/linux_bootstrap.sh              # 容器内：装工具链 + boot JDK
 sh tools/jre26/linux_build_jvm.sh              # 容器内：out-linux/libjvm.so（glibc，可复现；默认源 ref/jdk26u）
 sh tools/jre26/linux_slim_jre.sh               # 容器内：out-linux/modules.slim（仅换官方输入时需要）
-#   2) 宿主：组装（魔改 26 官方件 + 自编 libc6/libjli + 魔改 libjvm + 数据瘦身）
+sh tools/jre26/linux_build_zipfs_patch.sh      # 容器内：out-linux/zipfs-patch/（36 个 jdk.zipfs 类，best-effort chmod）
+#   2) 宿主：组装（魔改 26 官方件 + 自编 libc6/libjli + 魔改 libjvm + 数据瘦身 + zipfs 类补丁）
 sh tools/jre26/rebuild_for_meowcraft.sh \
     --official-jdk stuffs/research/jdk26/_inspect/jdk-26.0.2.1 \
     --jdk-src      stuffs/research/jdk26/jdk26u-src \
     --libjvm       stuffs/research/jdk26/out-linux/libjvm.so \
     --modules-slim stuffs/research/jdk26/out-linux/modules.slim \
+    --zipfs-patch  stuffs/research/jdk26/out-linux/zipfs-patch \
     --out          stuffs/research/jdk26/out
 
 # C. 部署（改 libs 后必须先清模块 build；见下）
@@ -142,7 +148,7 @@ devecocli run --module entry meowjre --device <serial>
 - **extras tar 组包配方（可复现，逐字节已验证）**：基座 tar 需含 `launcher.jar` + **未 shade 的** `gson-<v>.jar`（可另含 lwjgl jar，`pack_extras.py` 会丢弃同名 `lwjgl*`），然后
   `python3 tools/relocate_gson.py <base.tar.gz>` → `python3 tools/lwjgl/pack_extras.py --base-tar <base.tar.gz> --jar lwjgl-3.4.3.jar=<built> --require lwjgl-3.4.3.jar --out <final>`
   → 覆盖 `entry/.../rawfile/meowcraft_extras.tar.gz` 并**升 `EXTRAS_VERSION`**。
-- **JRE 可复现**：`libc6.so`/`libjli.so`、官方 26 件魔改、数据 tar（`tools/jre26/pack_jre_data.py`）均**逐字节**；自编 `libjvm` 同 OS/工具链/源/**同路径** + `SOURCE_DATE_EPOCH=1784133400`（`jdk-26.0.2.1-ga` 提交）**2× cmp 一致**（`d28164cd…`；`linux_verify_jvm_repro.sh` 默认 2，`MEOW_REPRO_N` 可调高。见 `tools/jre26/README.md` §可复现性）。
+- **JRE 可复现**：`libc6.so`/`libjli.so`、官方 26 件魔改、数据 tar（`tools/jre26/pack_jre_data.py`，含 `lib/patch/jdk.zipfs`）均**逐字节**；自编 `libjvm` 同 OS/工具链/源/**同路径** + `SOURCE_DATE_EPOCH=1784133400`（`jdk-26.0.2.1-ga` 提交）**2× cmp 一致**（`d28164cd…`；`linux_verify_jvm_repro.sh` 默认 2，`MEOW_REPRO_N` 可调高。见 `tools/jre26/README.md` §可复现性）。
 - **★ `git -C <repo> …` 里的路径基准是 `<repo>`，不是你的 cwd（2026-09-19 事故）**：`git -C ref/SDL worktree add --detach ref/SDL-3.4.14 …`
   会在 `ref/SDL/` **里面**建出 `ref/SDL/ref/SDL-3.4.14`（文档里多处曾这么写，已改）。⇒ **建/删 worktree 一律用绝对路径**（或相对该 repo 的 `../…`）；
   删错建的树也用绝对路径 + `worktree prune`，并顺手清掉留下的**空父目录**。自证：`git -C <repo> worktree list`。

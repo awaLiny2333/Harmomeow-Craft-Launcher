@@ -21,7 +21,7 @@ export const JRE_ID_MEOW: string = 'meow_jre';
  * （与 native `jre_launcher.h::kJreDataToken` 同值），否则 in-place 更新会「新 .so + 旧数据」混合。
  * **JRE 版本升级即改此令牌**（id 不变）→ UI 显示「须升级 → 升级」。
  */
-export const JRE_DATA_TOKEN: string = '26.0.2.1+1-7-r1';
+export const JRE_DATA_TOKEN: string = '26.0.2.1+1-7-r2';
 
 /** JRE 数据令牌文件名（<installDir>/meow_jre_data）。 */
 export const JRE_DATA_TOKEN_FILE: string = 'meow_jre_data';

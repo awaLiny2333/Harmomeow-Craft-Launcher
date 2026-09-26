@@ -116,6 +116,17 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   // 显式写 `MEOW_VK_SHIM=0`。
   const vulkanBackendSelected =
     renderer.graphicsBackend.length > 0 && supportsVulkanBackend(mcVersion);
+  // jdk.zipfs 补丁目录（随包 JRE 数据里的 lib/patch/jdk.zipfs）：**存在才**加 `--patch-module`，
+  // 否则 JVM 初始化即失败。见 MinecraftLauncher.LaunchOptions.zipfsPatchDir 与 tools/jre26/。
+  let zipfsPatchDir = '';
+  try {
+    const patchDir = `${jreHomeDir(ctx.filesDir)}/lib/patch/jdk.zipfs`;
+    if (fileIo.accessSync(patchDir)) {
+      zipfsPatchDir = patchDir;
+    }
+  } catch (e) {
+    zipfsPatchDir = '';
+  }
   const argv = buildLaunchArgv({
     gameRoot: gameRoot,
     gameDir: gameDir,
@@ -142,6 +153,7 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     // 选了 Vulkan 档时才让 MC 去试（26.2+ 才认这个游戏参数；失败仍回退 GL）。见 RendererPolicy。
     graphicsBackend: vulkanBackendSelected ? renderer.graphicsBackend : undefined,
     jvmArgs: settings.jvmArgs,
+    zipfsPatchDir: zipfsPatchDir,
     logsDir: logsDir,
   });
   if (argv.length === 0) {

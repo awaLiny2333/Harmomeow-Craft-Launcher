@@ -140,6 +140,12 @@ export interface LaunchOptions {
   graphicsBackend?: string;
   /** 额外 JVM 参数（实验/调优）：空格/换行分隔，原样追加（放在固定参数之前，允许被覆盖）。 */
   jvmArgs?: string;
+  /** 随包 JRE 里 `jdk.zipfs` 补丁目录（`<jreHome>/lib/patch/jdk.zipfs`）。非空 = 给 JVM 加
+   *  `--patch-module jdk.zipfs=<dir>`：用 JDK 官方机制**只覆盖那一个类**（`ZipFileSystem.sync()`
+   *  的 chmod 变 best-effort，规避手机用户存储(FUSE) 拒绝 chmod 导致 Fabric 首次 remap 崩），
+   *  **不动 `lib/modules`(jimage) / `jmods` / 模块哈希**。目录不存在时调用方须传空（否则 JVM
+   *  初始化即 `patch module ... does not exist` 失败）。 */
+  zipfsPatchDir?: string;
 }
 
 /**
@@ -217,6 +223,12 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   // "版本隔离"开关的唯一作用点就是这里；user.home 保持 .minecraft 根（不参与隔离）。
   argv.push('-Duser.dir=' + gameDir);
   argv.push('-Duser.home=' + opts.gameRoot);
+  // jdk.zipfs 补丁（best-effort chmod）：用 JDK 官方 `--patch-module` 只覆盖那一个类，
+  // 不动 lib/modules(jimage)/jmods/模块哈希。仅当随包 JRE 带了该目录时才加（见 GameLauncher 的存在性检查）。
+  if (opts.zipfsPatchDir !== undefined && opts.zipfsPatchDir.length > 0) {
+    argv.push('--patch-module');
+    argv.push(`jdk.zipfs=${opts.zipfsPatchDir}`);
+  }
   if (opts.runDir !== undefined && opts.runDir.length > 0) {
     argv.push(`-Djava.io.tmpdir=${opts.runDir}`);
     argv.push(`-Djna.tmpdir=${nativesDir}`);

@@ -8,17 +8,20 @@
 # 用法:
 #   rebuild_for_meowcraft.sh --official-jdk <官方JDK目录> --jdk-src <JDK26源树> \
 #       --libjvm <自编 glibc libjvm.so> [--modules-slim <modules.slim>] \
-#       [--sdk-native <SDK/native>] [--out <目录>]
+#       [--zipfs-patch <目录>] [--sdk-native <SDK/native>] [--out <目录>]
+#   --zipfs-patch = linux_build_zipfs_patch.sh 的产物目录（只含 jdk/nio/zipfs/ZipFileSystem.class）；
+#                   会被放进 home/lib/patch/jdk.zipfs/，供启动器 `--patch-module` 覆盖那一个类。
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 SDK="${OHOS_SDK_NATIVE:-$HOME/devecow/deveco_tools/sdk/default/openharmony/native}"
-OFF=""; JDKSRC=""; LIBJVM=""; OUT=""; SLIM=""
+OFF=""; JDKSRC=""; LIBJVM=""; OUT=""; SLIM=""; ZIPFS=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --official-jdk) OFF="$2"; shift 2 ;;
         --jdk-src)      JDKSRC="$2"; shift 2 ;;
         --libjvm)       LIBJVM="$2"; shift 2 ;;
         --modules-slim) SLIM="$2"; shift 2 ;;
+        --zipfs-patch)  ZIPFS="$2"; shift 2 ;;
         --sdk-native)   SDK="$2"; shift 2 ;;
         --out)          OUT="$2"; shift 2 ;;
         *) echo "未知参数: $1" >&2; exit 2 ;;
@@ -83,6 +86,21 @@ if [ -n "$SLIM" ] && [ -f "$SLIM" ]; then
         esac
     done
     echo "  已瘦身: modules<-$(basename "$SLIM"); bin 裁至 $(ls "$OUT/home/bin" | wc -l) 个"
+fi
+
+# jdk.zipfs 补丁（--patch-module 用）：把容器编好的 ZipFileSystem.class 放进 home。
+# 用 JDK 官方机制覆盖那一个类 ⇒ 不动 lib/modules / jmods / 模块哈希。
+# **给了 --zipfs-patch 就必须真的放进去了**：目录缺失/类缺失一律**硬错**（否则会静默产出无补丁的 JRE，
+# 手机上 Fabric remap 的 FUSE-chmod 崩会无声复发）。
+if [ -n "$ZIPFS" ]; then
+    [ -d "$ZIPFS" ] || { echo "  ✗ --zipfs-patch 目录不存在: $ZIPFS" >&2; exit 2; }
+    mkdir -p "$OUT/home/lib/patch/jdk.zipfs"
+    cp -r "$ZIPFS/." "$OUT/home/lib/patch/jdk.zipfs/"
+    [ -f "$OUT/home/lib/patch/jdk.zipfs/jdk/nio/zipfs/ZipFileSystem.class" ] \
+        || { echo "  ✗ zipfs 补丁类缺失: $ZIPFS/jdk/nio/zipfs/ZipFileSystem.class" >&2; exit 2; }
+    echo "  + home/lib/patch/jdk.zipfs/ (jdk.zipfs best-effort-chmod patch)"
+else
+    echo "  ! 未传 --zipfs-patch：本次 JRE 不含 jdk.zipfs 补丁（手机用户存储上的 Fabric remap 会再次 EPERM）" >&2
 fi
 
 echo "== 校验 =="
