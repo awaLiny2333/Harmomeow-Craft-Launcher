@@ -206,7 +206,7 @@
     },
     {
       "name": "version_glthread_hint",
-      "value": "GPU 调用交独立线程，帧数更高、加载稍慢；仅 OpenGLv4 后端生效（选其它后端不生效）"
+      "value": "GPU 调用交独立线程，帧数更高、加载稍慢；OpenGLv4 与 GL4ES 后端生效"
     },
     {
       "name": "version_compute_label",

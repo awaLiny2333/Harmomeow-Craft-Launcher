@@ -10,7 +10,7 @@ import { readAppGlobalSettings } from './AppSettings';
 import { readInstanceSettings, ensureInstanceLogsDir } from './InstanceSettings';
 import { MEOW_HOME_DIR, MC_RUN_DIR_PREFIX, NATIVES_DIR, jreHomeDir,
   hspLibsDir, versionDir } from '../constants/Paths';
-import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H, RENDERER_ENV } from '../constants/LaunchDefaults';
+import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H, RENDERER_ENV, RENDERER_ENV_GL4ES } from '../constants/LaunchDefaults';
 import { rendererForVersion, guardNeedsSync, supportsVulkanBackend } from './RendererPolicy';
 
 const LOG_DOMAIN = 0x0001;
@@ -156,14 +156,18 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   hilog.info(LOG_DOMAIN, LOG_TAG, 'CMD: %{public}s', maskedCmd.substring(0, 3000));
   hilog.info(LOG_DOMAIN, LOG_TAG, 'CMD_TAIL: %{public}s',
     maskedCmd.substring(Math.max(0, maskedCmd.length - 800)));
-  // 线程化渲染（glthread）：**逐版本开关（默认开，可在「编辑版本」里关）**；且**仅现代渲染路径
-  // （OpenGLv4/桌面 GL）**有效——gl4es/legacy 无此机制（桥对它们本就置 GALLIUM_THREAD=0）。
+  // 线程化渲染（glthread）：**逐版本开关（默认开，可在「编辑版本」里关）**。
+  // ★2026-09-26：对**桌面 GL（OpenGLv4）**与 **GL4ES**（core/FPE）**都生效**。更正历史口径——
+  // GL4ES 的 GLES 后端同样是 Mesa（`libGLESv3.so`→`libgallium-25.0.1.so`→Zink→Vulkan→Maleoon），
+  // 故 `GALLIUM_THREAD` 对 GL4ES 路径同样有效：实测 GL4ES(core) MC 1.20.6 由 **50–60 → 90 FPS**。
   // 拼在用户「额外渲染环境变量」**之前** → 用户可显式覆盖。
-  const glthread = instance.glThreadEnabled && renderer.env === RENDERER_ENV;
+  const glthread = instance.glThreadEnabled
+    && (renderer.env === RENDERER_ENV || renderer.env === RENDERER_ENV_GL4ES);
   // Mesa glthread 的 UAF **只对 26.x 实测会崩**；≤1.21.x 从不因它崩，而它们（尤其 1.21.10 主菜单
   // ~2800 次/秒的小图上传）会被「每次同步」拖垮 → 对 ≤1.21.x 关掉守卫的同步（守卫退化为纯透传，
   // glthread 收益照拿）。见 notes 20-design/lwjgl3-并代可行性.md / glthread-B方案-GL-guard.md §2。
-  const guardSyncNone = glthread && !guardNeedsSync(mcVersion);
+  // ⚠️ 随包 **GL guard 只挂在桌面 GL 路径**；GL4ES 路径无 guard ⇒ 该行对它是 no-op（无消费者）。
+  const guardSyncNone = glthread && renderer.env === RENDERER_ENV && !guardNeedsSync(mcVersion);
   const userRenderEnv = settings.renderEnv;
   // ★能力屏蔽（通用接口，2026-09-16）：**一份策略 → 两个执行点**。
   // 策略是运行时数据：内置默认（见下），或用户在「额外渲染环境变量」里显式给的
@@ -216,13 +220,15 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     + `\n${userRenderEnv}`;
   // 用户「额外渲染环境变量」里若**显式**写 none，会让守卫对"本需要同步的版本"也纯透传（fail-open）——
   // 不改用户语义（用户优先），但记一条 WARN 便于实机排障（见 notes 00-current/运行时环境变量.md 回滚阶梯）。
-  if (glthread && guardNeedsSync(mcVersion) && userForcedGuardSyncNone(userRenderEnv)) {
+  if (glthread && renderer.env === RENDERER_ENV && guardNeedsSync(mcVersion)
+    && userForcedGuardSyncNone(userRenderEnv)) {
     hilog.warn(LOG_DOMAIN, LOG_TAG,
       'extra render env forces MEOW_GUARD_SYNC=none on a version that needs the guard sync (UAF risk)');
   }
   hilog.info(LOG_DOMAIN, LOG_TAG,
     'glthread=%{public}s guardSync=%{public}s renderer=%{public}s capMask=%{public}s computeShader=%{public}s',
-    glthread ? 'on' : 'off', guardSyncNone ? 'none(auto)' : 'per-call', renderer.env,
+    glthread ? 'on' : 'off',
+    renderer.env === RENDERER_ENV ? (guardSyncNone ? 'none(auto)' : 'per-call') : '-', renderer.env,
     capMask.length > 0 ? `on(${capMask.join(',')})` : 'off',
     instance.computeShaderMasked ? 'on(default)' : 'off(user)');
   await startJvm(ctx, [java, ...argv], renderer.lib, renderer.env, renderer.glProfile, renderEnv);

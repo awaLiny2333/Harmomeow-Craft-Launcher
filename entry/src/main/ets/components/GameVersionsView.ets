@@ -413,9 +413,10 @@ export struct GameVersionsView {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'renderer %{public}s = %{public}s', versionId, backend);
   }
 
-  /** 该版本的「线程化渲染」是否可用：**只有 OpenGLv4（桌面 GL）后端**有效，其余后端灰化。 */
+  /** 该版本的「线程化渲染」是否可用：**OpenGLv4（桌面 GL）与 GL4ES** 后端有效，其余后端灰化。 */
   private glThreadSupported(v: GameVersion): boolean {
-    return rendererForVersion(v.mcVersion, this.editingSettings.rendererBackend).env === RENDERER_ENV;
+    const env = rendererForVersion(v.mcVersion, this.editingSettings.rendererBackend).env;
+    return env === RENDERER_ENV || env === RENDERER_ENV_GL4ES;
   }
 
   /** 切换「屏蔽 GL_ARB_compute_shader」（默认**开** = 屏蔽；关掉 = 用户知情承担崩溃风险）。 */
@@ -956,8 +957,8 @@ export struct GameVersionsView {
       .width('100%')
       .alignItems(VerticalAlign.Center);
 
-      // 线程化渲染（逐版本）：**只对 OpenGLv4（桌面 GL）后端生效** —— 其它后端**灰化提示**（仍可编辑，
-      // 值照存；只是启动时不会生效，见 GameLauncher 的 renderer.env 门控）。
+      // 线程化渲染（逐版本）：**对 OpenGLv4（桌面 GL）与 GL4ES 后端生效** —— 其它后端**灰化提示**
+      // （仍可编辑，值照存；只是启动时不会生效，见 GameLauncher 的 renderer.env 门控）。
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
           Text($r('app.string.version_glthread_label'))

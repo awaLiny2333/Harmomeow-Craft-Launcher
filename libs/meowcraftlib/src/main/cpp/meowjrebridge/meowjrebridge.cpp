@@ -300,10 +300,13 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         if (!headless) {
             setenv("vblank_mode", "0", 1);
         }
-        // GALLIUM_THREAD 基值 = 0（**关**）。要用 glthread 由**上层**覆盖（高级选项「线程化渲染」
-        // 默认开 → launcher 拼 `GALLIUM_THREAD=1`，仅现代路径）。本平台 glthread 会触发 Mesa
-        // `tc_texture_subdata` 的 UAF，由随包 **GL guard**（libmeowglguard.so）对 `glTexSubImage2D`
-        // 加后置同步兜底修复；**下方 pre-dlopen 后有失效安全**（guard 未武装则强制回 0）。
+        // GALLIUM_THREAD 基值 = 0（**关**）。要用 glthread 由**上层**覆盖（「编辑版本 → 线程化渲染」
+        // 逐版本开关，默认开 → launcher 拼 `GALLIUM_THREAD=1`；**桌面 GL 与 GL4ES 后端都生效**
+        // ——2026-09-26 更正：GL4ES 的 GLES 后端亦是 Mesa/Zink，`GALLIUM_THREAD` 同样有效）。
+        // 本平台 glthread 会触发 Mesa `tc_texture_subdata` 的 UAF：**桌面 GL 路径**由随包
+        // **GL guard**（libmeowglguard.so）对 `glTexSubImage2D` 加后置同步兜底修复（**下方 pre-dlopen
+        // 后有失效安全**：guard 未武装 → 强制回 0，**仅对 openglv4**）；**GL4ES 路径无 guard**
+        // （≤1.21.x 未观察到该 UAF 崩溃）。
         // 详见 notes 20-design/glthread-B方案-GL-guard.md。
         if (!headless) {
             setenv("GALLIUM_THREAD", "0", 1);
