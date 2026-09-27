@@ -271,7 +271,7 @@ export struct GameDirsView {
             // 已激活：显示「打开文件夹」按钮（在系统文件管理器中打开该目录）；
             // 未激活：提示文字 + 「激活」按钮（已激活无需再授权）。
             if (this.state.activated.includes(obj.item.uri)) {
-              Button($r('app.string.game_dirs_open_folder'))
+              Button($r('app.string.icon_open_folder'))
                 .onClick(() => showInFiles(obj.item.uri, this.context()));
             } else {
               Text($r('app.string.game_dirs_inactive'));

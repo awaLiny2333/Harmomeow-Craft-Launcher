@@ -51,11 +51,57 @@ export interface MicrosoftResult {
   notAfter: number;
 }
 
-/** refresh_token 失效 → 必须重新登录（对齐 HMCL 的 CredentialExpiredException）。 */
-export class CredentialExpiredError extends Error {
-  constructor(message: string) {
-    super(message);
+/**
+ * 登录错误码：逻辑层只给「码」，UI 层映射到 string 资源（逻辑层不硬编码文案，见 工程与规范 §二.7）。
+ * refresh_token 失效对应 CREDENTIAL_EXPIRED（对齐 HMCL 的 CredentialExpiredException）。
+ */
+export enum MsAuthErrorCode {
+  UNKNOWN = 0,
+  CLIENT_ID_MISSING,
+  NETWORK,
+  DEVICE_CODE_EXPIRED,
+  DECLINED,
+  TIMEOUT,
+  CREDENTIAL_EXPIRED,
+  NO_REFRESH_TOKEN,
+  NO_ENTITLEMENT,
+  PROFILE_BAD,
+  MSA_MISSING,
+  XBL_HTTP,
+  MC_LOGIN_HTTP,
+  MC_PROFILE_HTTP,
+  XSTS_BANNED,
+  XSTS_NO_XBOX,
+  XSTS_REGION,
+  XSTS_ADULT,
+  XSTS_FAMILY,
+  XSTS_BAD_RESPONSE,
+  XSTS_GENERIC,
+  OAUTH_GENERIC,
+  OAUTH_HTTP,
+}
+
+/** 登录错误：携带错误码（+ 可选 HTTP 状态 / 原始细节），供 UI 层选文案、日志留证。 */
+export class MsAuthError extends Error {
+  readonly code: MsAuthErrorCode;
+  readonly status: number;
+  readonly detail: string;
+
+  constructor(code: MsAuthErrorCode, status: number = 0, detail: string = '') {
+    super(`MsAuthError(${code})`);
+    this.name = 'MsAuthError';
+    this.code = code;
+    this.status = status;
+    this.detail = detail;
   }
+}
+
+/** 把任意 catch 到的错误归一为 MsAuthError（非本类型 → UNKNOWN）。 */
+export function asMsAuthError(e: Error): MsAuthError {
+  if (e instanceof MsAuthError) {
+    return e;
+  }
+  return new MsAuthError(MsAuthErrorCode.UNKNOWN, 0, e.message);
 }
 
 interface HttpResp {
@@ -173,7 +219,7 @@ async function httpSend(url: string, method: http.RequestMethod, header: Record<
     const text = resp.result === undefined ? '' : resp.result as string;
     return { code: resp.responseCode, text: text };
   } catch (e) {
-    throw new Error(`网络请求失败：${(e as Error).message}`);
+    throw new MsAuthError(MsAuthErrorCode.NETWORK, 0, (e as Error).message);
   } finally {
     req.destroy();
   }
@@ -208,7 +254,7 @@ async function getJson(url: string, bearer: string): Promise<HttpResp> {
 /** client_id 守卫：未配置（空）时给出可读错误。 */
 function requireClientId(clientId: string): void {
   if (clientId.length === 0) {
-    throw new Error('未配置 Microsoft client_id：请在「高级选项」填写你自注册的 Azure 公有客户端 id');
+    throw new MsAuthError(MsAuthErrorCode.CLIENT_ID_MISSING);
   }
 }
 
@@ -220,7 +266,7 @@ export async function requestDeviceCode(clientId: string): Promise<DeviceCode> {
   const r = await postForm(DEVICE_CODE_URL, [['client_id', clientId], ['scope', SCOPE]]);
   const body = JSON.parse(r.text) as DeviceCodeResp;
   if (r.code !== 200 || body.device_code === undefined || body.user_code === undefined) {
-    throw new Error(describeMsError(r.code, body.error, body.error_description));
+    throw describeMsError(r.code, body.error, body.error_description);
   }
   return {
     deviceCode: body.device_code,
@@ -259,14 +305,14 @@ export async function pollMsaToken(device: DeviceCode, clientId: string): Promis
         intervalMs += 5000;
         continue;
       case 'expired_token':
-        throw new Error('设备码已过期，请重试');
+        throw new MsAuthError(MsAuthErrorCode.DEVICE_CODE_EXPIRED);
       case 'authorization_declined':
-        throw new Error('用户拒绝授权');
+        throw new MsAuthError(MsAuthErrorCode.DECLINED);
       default:
-        throw new Error(describeMsError(r.code, err.error, err.error_description));
+        throw describeMsError(r.code, err.error, err.error_description);
     }
   }
-  throw new Error('登录超时，请重试');
+  throw new MsAuthError(MsAuthErrorCode.TIMEOUT);
 }
 
 /** 用 refresh_token 续期 MSA token（refresh_token 会轮换，调用方须保存新值）。 */
@@ -281,9 +327,9 @@ export async function refreshMsaToken(refreshToken: string, clientId: string): P
   const body = JSON.parse(r.text) as TokenResp;
   if (r.code !== 200 || body.access_token === undefined) {
     if (body.error === 'invalid_grant') {
-      throw new CredentialExpiredError('登录凭据已失效，请重新登录');
+      throw new MsAuthError(MsAuthErrorCode.CREDENTIAL_EXPIRED);
     }
-    throw new Error(describeMsError(r.code, body.error, body.error_description));
+    throw describeMsError(r.code, body.error, body.error_description);
   }
   return body;
 }
@@ -304,7 +350,7 @@ export async function authenticateXbl(msaAccessToken: string): Promise<XblStep> 
   const body = JSON.parse(r.text) as XblResp;
   const uhs = xuiOf(body);
   if (r.code !== 200 || body.Token === undefined || uhs.length === 0) {
-    throw new Error(`Xbox Live 认证失败（HTTP ${r.code}）`);
+    throw new MsAuthError(MsAuthErrorCode.XBL_HTTP, r.code);
   }
   return { token: body.Token, uhs: uhs };
 }
@@ -320,12 +366,12 @@ export async function authorizeXsts(xblToken: string): Promise<XblStep> {
   const r = await postJson(XSTS_URL, json, '');
   if (r.code !== 200) {
     const xerr = extractXerr(r.text);
-    throw new Error(describeXstsError(xerr, r.code));
+    throw describeXstsError(xerr, r.code);
   }
   const body = JSON.parse(r.text) as XblResp;
   const uhs = xuiOf(body);
   if (body.Token === undefined || uhs.length === 0) {
-    throw new Error('XSTS 授权返回异常');
+    throw new MsAuthError(MsAuthErrorCode.XSTS_BAD_RESPONSE, r.code);
   }
   return { token: body.Token, uhs: uhs };
 }
@@ -336,7 +382,7 @@ export async function loginWithXbox(uhs: string, xstsToken: string): Promise<McL
   const r = await postJson(MC_LOGIN_URL, json, '');
   const body = JSON.parse(r.text) as McLoginResp;
   if (r.code !== 200 || body.access_token === undefined) {
-    throw new Error(`Minecraft 登录失败（HTTP ${r.code}）`);
+    throw new MsAuthError(MsAuthErrorCode.MC_LOGIN_HTTP, r.code);
   }
   const expiresIn = body.expires_in ?? 86400;
   return { accessToken: body.access_token, notAfter: Date.now() + expiresIn * 1000 };
@@ -352,11 +398,11 @@ export async function hasMcEntitlement(mcToken: string): Promise<boolean> {
 export async function fetchMcProfile(mcToken: string): Promise<McProfile> {
   const r = await getJson(MC_PROFILE_URL, mcToken);
   if (r.code !== 200) {
-    throw new Error(`获取 Minecraft 档案失败（HTTP ${r.code}）：该账户可能未拥有 Java 版或未创建档案`);
+    throw new MsAuthError(MsAuthErrorCode.MC_PROFILE_HTTP, r.code);
   }
   const body = JSON.parse(r.text) as McProfileResp;
   if (body.id === undefined || body.name === undefined) {
-    throw new Error('Minecraft 档案响应异常');
+    throw new MsAuthError(MsAuthErrorCode.PROFILE_BAD, r.code);
   }
   return { id: body.id, name: body.name };
 }
@@ -385,13 +431,13 @@ export interface McProfile {
 /** 由 MSA token 走完整链得到最终产物（新登与刷新共用）。 */
 async function finishWithMsa(msa: TokenResp): Promise<MicrosoftResult> {
   if (msa.access_token === undefined || msa.refresh_token === undefined) {
-    throw new Error('MSA token 缺失');
+    throw new MsAuthError(MsAuthErrorCode.MSA_MISSING);
   }
   const xbl = await authenticateXbl(msa.access_token);
   const xsts = await authorizeXsts(xbl.token);
   const login = await loginWithXbox(xsts.uhs, xsts.token);
   if (!(await hasMcEntitlement(login.accessToken))) {
-    throw new Error('该账户未拥有 Minecraft Java 版');
+    throw new MsAuthError(MsAuthErrorCode.NO_ENTITLEMENT);
   }
   const profile = await fetchMcProfile(login.accessToken);
   return {
@@ -439,28 +485,29 @@ function extractXerr(text: string): number {
   }
 }
 
-function describeXstsError(xerr: number, code: number): string {
+function describeXstsError(xerr: number, code: number): MsAuthError {
   if (xerr === 2148916227) {
-    return '该 Xbox 账户已被封禁';
+    return new MsAuthError(MsAuthErrorCode.XSTS_BANNED, code);
   }
   if (xerr === 2148916233) {
-    return '该账户没有 Xbox Live 账号（请先在 xbox.com 创建）';
+    return new MsAuthError(MsAuthErrorCode.XSTS_NO_XBOX, code);
   }
   if (xerr === 2148916235) {
-    return '该账户所在国家/地区不支持 Xbox Live';
+    return new MsAuthError(MsAuthErrorCode.XSTS_REGION, code);
   }
   if (xerr === 2148916236 || xerr === 2148916237) {
-    return '该账户需要完成成人验证';
+    return new MsAuthError(MsAuthErrorCode.XSTS_ADULT, code);
   }
   if (xerr === 2148916238) {
-    return '未成年账户需先加入 Microsoft 家庭组';
+    return new MsAuthError(MsAuthErrorCode.XSTS_FAMILY, code);
   }
-  return `XSTS 授权失败（HTTP ${code}${xerr !== 0 ? `, XErr ${xerr}` : ''}）`;
+  return new MsAuthError(MsAuthErrorCode.XSTS_GENERIC, code, xerr !== 0 ? `${xerr}` : '');
 }
 
-function describeMsError(code: number, error?: string, desc?: string): string {
+function describeMsError(code: number, error?: string, desc?: string): MsAuthError {
   if (error !== undefined && error.length > 0) {
-    return `微软登录失败：${error}${desc !== undefined && desc.length > 0 ? `（${desc}）` : ''}`;
+    const tail = desc !== undefined && desc.length > 0 ? `（${desc}）` : '';
+    return new MsAuthError(MsAuthErrorCode.OAUTH_GENERIC, code, `${error}${tail}`);
   }
-  return `微软登录失败（HTTP ${code}）`;
+  return new MsAuthError(MsAuthErrorCode.OAUTH_HTTP, code);
 }

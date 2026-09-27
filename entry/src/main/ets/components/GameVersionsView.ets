@@ -28,6 +28,7 @@ import {
   launchInMainProcess, LAUNCH_OK, LAUNCH_ERR_NO_ACCOUNT, LAUNCH_ERR_MS_EXPIRED
 } from '../common/data/VersionLaunch';
 import { getInstallerState, InstallerState, INSTALL_ERR_INSTALL, INSTALL_ERR_LOADER, INSTALL_ERR_MANIFEST, INSTALL_ERR_NO_WRITE, INSTALL_ERR_NONE, LOADER_KIND_FABRIC, LOADER_KIND_NEO_FORGE, LOADER_KIND_VANILLA } from '../common/state/InstallerState';
+import { msAuthErrorText } from './MsAuthErrorText';
 import { getLauncherState, LauncherState } from '../common/state/LauncherState';
 import { AccountState, getAccountState } from '../common/state/AccountState';
 
@@ -145,8 +146,8 @@ export struct GameVersionsView {
   /** 编辑按钮文案：该行未展开显示"编辑"，展开中显示"完成"。 */
   private editLabel(v: GameVersion): Resource {
     return this.isEditingIn(v, this.state.selected)
-      ? $r('app.string.common_done')
-      : $r('app.string.common_edit');
+      ? $r('app.string.icon_done')
+      : $r('app.string.icon_edit');
   }
 
   /**
@@ -281,10 +282,10 @@ export struct GameVersionsView {
     // v 恒为面板实例 → 隔离态与面板同源（editingSettings），不再查 selected 目录的镜像。
     const isolated = this.editingSettings.isolation;
     this.getUIContext().showAlertDialog({
-      title: $r('app.string.version_delete_title'),
+      title: $r('app.string.version_edit_delete'),
       message: isolated
-        ? $r('app.string.version_delete_message_isolated', v.id)
-        : $r('app.string.version_delete_message', v.id, v.id),
+        ? $r('app.string.version_edit_delete_message_isolated', v.id)
+        : $r('app.string.version_edit_delete_message', v.id, v.id),
       primaryButton: {
         value: $r('app.string.common_cancel'),
         action: () => {
@@ -321,7 +322,7 @@ export struct GameVersionsView {
     if (!deleteVersionDir(root, v.id)) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'delete failed: %{public}s', v.id);
       this.getUIContext().showAlertDialog({
-        message: $r('app.string.version_delete_failed'),
+        message: $r('app.string.version_edit_delete_failed'),
       });
       return;
     }
@@ -481,13 +482,13 @@ export struct GameVersionsView {
   async launch(v: GameVersion): Promise<void> {
     const out = await launchInMainProcess(this.context(), v);
     if (out.code === LAUNCH_ERR_NO_ACCOUNT) {
-      this.getUIContext().showAlertDialog({ message: $r('app.string.versions_need_account') });
+      this.getUIContext().showAlertDialog({ message: $r('app.string.launch_precond_need_account') });
       return;
     }
     if (out.code === LAUNCH_ERR_MS_EXPIRED) {
       this.getUIContext().showAlertDialog({
-        title: $r('app.string.accounts_login_expired'),
-        message: out.detail,
+        title: $r('app.string.accounts_status_login_expired'),
+        message: msAuthErrorText(out.msError),
       });
       return;
     }
@@ -527,7 +528,7 @@ export struct GameVersionsView {
       return $r('app.string.download_error_no_write');
     }
     if (this.installer.errorKind === INSTALL_ERR_MANIFEST) {
-      return $r('app.string.download_error_manifest');
+      return $r('app.string.common_list_error');
     }
     return $r('app.string.download_error_install');
   }
@@ -535,8 +536,8 @@ export struct GameVersionsView {
   /** 下载源 Select 选项（镜像 / 官方）。 */
   private sourceOptions(): SelectOption[] {
     return [
-      { value: $r('app.string.download_source_mirror') },
-      { value: $r('app.string.download_source_official') },
+      { value: $r('app.string.source_mirror') },
+      { value: $r('app.string.source_official_mojang') },
     ];
   }
 
@@ -588,9 +589,9 @@ export struct GameVersionsView {
   /** 加载器 Select 选项（原版 / Fabric / NeoForge）。 */
   private loaderOptions(): SelectOption[] {
     return [
-      { value: $r('app.string.loader_vanilla') },
-      { value: $r('app.string.loader_fabric') },
-      { value: $r('app.string.loader_neoforge') },
+      { value: $r('app.string.version_type_vanilla') },
+      { value: $r('app.string.version_type_fabric') },
+      { value: $r('app.string.version_type_neoforge') },
     ];
   }
 
@@ -603,11 +604,11 @@ export struct GameVersionsView {
 
   private loaderValue(): Resource {
     if (this.installer.loaderKind === LOADER_KIND_FABRIC) {
-      return $r('app.string.loader_fabric');
+      return $r('app.string.version_type_fabric');
     }
     return this.installer.loaderKind === LOADER_KIND_NEO_FORGE
-      ? $r('app.string.loader_neoforge')
-      : $r('app.string.loader_vanilla');
+      ? $r('app.string.version_type_neoforge')
+      : $r('app.string.version_type_vanilla');
   }
 
   /** NeoForge 的版本门槛：仅 1.20.2+（低于则不给拉列表/不提供安装）。 */
@@ -641,8 +642,8 @@ export struct GameVersionsView {
   /** 该 loader 的下载源下拉项（镜像 / 官方；官方文案按 loader 区分，Fabric=官方（FabricMC））。 */
   private loaderSourceOptions(): SelectOption[] {
     return [
-      { value: $r('app.string.loader_source_mirror') },
-      { value: $r('app.string.loader_source_official_fabric') },
+      { value: $r('app.string.source_mirror') },
+      { value: $r('app.string.source_official_fabric') },
     ];
   }
 
@@ -652,8 +653,8 @@ export struct GameVersionsView {
 
   private loaderSourceValue(): Resource {
     return this.loaderSourceIndex() === 1
-      ? $r('app.string.loader_source_official_fabric')
-      : $r('app.string.loader_source_mirror');
+      ? $r('app.string.source_official_fabric')
+      : $r('app.string.source_mirror');
   }
 
   /** 该 loader 的版本号数组（Fabric = loader 版本；NeoForge = loader 版本）。 */
@@ -908,7 +909,7 @@ export struct GameVersionsView {
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1);
-        Button($r('app.string.common_done'))
+        Button($r('app.string.icon_done'))
           .onClick(() => {
             this.editingId = '';
           });
@@ -921,8 +922,8 @@ export struct GameVersionsView {
       // 版本隔离（标题 + 说明放进一个 Column，与右侧开关并列）
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
-          Text($r('app.string.version_isolation_label'));
-          Text($r('app.string.version_isolation_hint'))
+          Text($r('app.string.version_edit_isolation_label'));
+          Text($r('app.string.version_edit_isolation_hint'))
             .opacity(OPACITY_SECONDARY);
         }
         .layoutWeight(1)
@@ -938,8 +939,8 @@ export struct GameVersionsView {
       // 渲染后端（逐版本）：推荐 / OpenGLv4 / GL4ES（兼容）
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
-          Text($r('app.string.version_renderer_label'));
-          Text($r('app.string.version_renderer_hint'))
+          Text($r('app.string.version_edit_renderer_label'));
+          Text($r('app.string.version_edit_renderer_hint'))
             .opacity(OPACITY_SECONDARY);
         }
         .layoutWeight(1)
@@ -961,9 +962,9 @@ export struct GameVersionsView {
       // （仍可编辑，值照存；只是启动时不会生效，见 GameLauncher 的 renderer.env 门控）。
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
-          Text($r('app.string.version_glthread_label'))
+          Text($r('app.string.version_edit_glthread_label'))
             .opacity(this.glThreadSupported(this.editing) ? 1 : OPACITY_SECONDARY);
-          Text($r('app.string.version_glthread_hint'))
+          Text($r('app.string.version_edit_glthread_hint'))
             .opacity(OPACITY_SECONDARY);
         }
         .layoutWeight(1)
@@ -984,8 +985,8 @@ export struct GameVersionsView {
       // 同一种"灰化提示不禁用"的处理方式）。
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
-          Text($r('app.string.version_compute_label'));
-          Text($r('app.string.version_compute_hint'))
+          Text($r('app.string.version_edit_compute_label'));
+          Text($r('app.string.version_edit_compute_hint'))
             .opacity(OPACITY_SECONDARY);
         }
         .layoutWeight(1)
@@ -1002,12 +1003,12 @@ export struct GameVersionsView {
 
       // 操作行：左「打开文件夹」（在系统文件管理器中打开该实例目录） / 右「删除版本」（危险）
       Row({ space: LAYOUT_SPACE }) {
-        Button($r('app.string.version_open_folder'))
+        Button($r('app.string.icon_open_folder'))
           .onClick(() => {
             // 目标目录用「已授权目录 URI + 相对子路径」拼出（文件管理器认 URI 命名空间）。
             showInFiles(versionDirUri(this.editingDirUri, this.editing.id), this.context());
           });
-        Button($r('app.string.version_delete'))
+        Button($r('app.string.version_edit_delete'))
           .backgroundColor($r('app.color.danger'))
           .enabled(!this.state.gameRunning)
           .onClick(() => this.confirmDelete(this.editing));
@@ -1041,18 +1042,18 @@ export struct GameVersionsView {
           Text($r('app.string.versions_empty'));
         }
         if (!this.state.jreReady) {
-          Text(this.state.jreNeedsUpgrade ? $r('app.string.versions_jre_need_upgrade')
-            : $r('app.string.versions_jre_not_ready'))
+          Text(this.state.jreNeedsUpgrade ? $r('app.string.launch_precond_jre_need_upgrade')
+            : $r('app.string.launch_precond_jre_not_ready'))
             .opacity(OPACITY_SECONDARY)
             .width('100%');
         }
         if (!this.accountReady()) {
-          Text($r('app.string.versions_need_account'))
+          Text($r('app.string.launch_precond_need_account'))
             .opacity(OPACITY_SECONDARY)
             .width('100%');
         }
         if (this.state.gameRunning) {
-          Text($r('app.string.versions_game_running'))
+          Text($r('app.string.launch_precond_game_running'))
             .opacity(OPACITY_SECONDARY)
             .width('100%');
         }
@@ -1098,7 +1099,7 @@ export struct GameVersionsView {
                         this.toggleEdit(obj.item);
                       });
                     // 启动：JRE 未就绪 / 无账户 / 游戏已在运行时禁用，避免空启动/重复开
-                    Button($r('app.string.common_launch'))
+                    Button($r('app.string.icon_launch'))
                       .enabled(this.state.jreReady && this.accountReady() && !this.state.gameRunning)
                       .onClick(() => {
                         this.launch(obj.item);
@@ -1143,8 +1144,8 @@ export struct GameVersionsView {
                 Select(this.sourceOptions())
                   .selected(this.installer.source === SOURCE_OFFICIAL ? 1 : 0)
                   .value(this.installer.source === SOURCE_OFFICIAL
-                    ? $r('app.string.download_source_official')
-                    : $r('app.string.download_source_mirror'))
+                    ? $r('app.string.source_official_mojang')
+                    : $r('app.string.source_mirror'))
                   .onSelect((index: number) => {
                     this.setDownloadSource(index === 1 ? SOURCE_OFFICIAL : SOURCE_MIRROR);
                   })
@@ -1152,7 +1153,7 @@ export struct GameVersionsView {
                   .selectedOptionFontColor($r('app.color.brand'))
                   .enabled(this.installer.installingId.length === 0)
                   .layoutWeight(1);
-                Button($r('app.string.download_fetch'))
+                Button($r('app.string.common_list_fetch'))
                   .enabled(this.installer.installingId.length === 0
                     && !this.installer.manifestLoading)
                   .onClick(() => this.installer.refreshManifest());
@@ -1252,17 +1253,17 @@ export struct GameVersionsView {
                   .width('100%')
                   .alignItems(VerticalAlign.Center);
                   if (this.installer.fabricLoadersLoading) {
-                    Text($r('app.string.loader_loading'))
+                    Text($r('app.string.common_list_loading'))
                       .opacity(OPACITY_SECONDARY)
                       .width('100%');
                   } else if (this.installer.errorKind === INSTALL_ERR_LOADER) {
-                    Text($r('app.string.loader_error'))
+                    Text($r('app.string.common_list_error'))
                       .opacity(OPACITY_SECONDARY)
                       .width('100%');
                     Button($r('app.string.common_retry'))
                       .onClick(() => this.installer.refreshFabricLoaders(this.installTargetId));
                   } else if (!this.installer.fabricLoadersLoaded) {
-                    Text($r('app.string.loader_fetch_hint'))
+                    Text($r('app.string.common_list_loading'))
                       .opacity(OPACITY_SECONDARY)
                       .width('100%');
                   } else if (this.installer.fabricLoaders.length === 0) {
@@ -1301,17 +1302,17 @@ export struct GameVersionsView {
                       .width('100%');
                   } else {
                     if (this.installer.neoLoadersLoading) {
-                      Text($r('app.string.loader_loading'))
+                      Text($r('app.string.common_list_loading'))
                         .opacity(OPACITY_SECONDARY)
                         .width('100%');
                     } else if (this.installer.errorKind === INSTALL_ERR_LOADER) {
-                      Text($r('app.string.loader_error'))
+                      Text($r('app.string.common_list_error'))
                         .opacity(OPACITY_SECONDARY)
                         .width('100%');
                       Button($r('app.string.common_retry'))
                         .onClick(() => this.installer.refreshNeoLoaders(this.installTargetId));
                     } else if (!this.installer.neoLoadersLoaded) {
-                      Button($r('app.string.loader_fetch_hint'))
+                      Button($r('app.string.common_list_fetch'))
                         .onClick(() => this.installer.refreshNeoLoaders(this.installTargetId));
                     } else if (this.installer.neoLoaders.length === 0) {
                       Text($r('app.string.loader_neoforge_empty'))
@@ -1350,7 +1351,7 @@ export struct GameVersionsView {
               .alignItems(HorizontalAlign.Start);
             }
             if (this.installer.manifestLoading) {
-              Text($r('app.string.download_loading'))
+              Text($r('app.string.common_list_loading'))
                 .opacity(OPACITY_SECONDARY);
             } else if (this.installer.errorKind === INSTALL_ERR_MANIFEST) {
               Text(this.errorText())
@@ -1414,7 +1415,7 @@ export struct GameVersionsView {
                         }
                         .layoutWeight(1)
                         .alignItems(HorizontalAlign.Start);
-                        Button($r('app.string.download_install'))
+                        Button($r('app.string.icon_install'))
                           .enabled(this.installer.installingId.length === 0
                             && !this.state.gameRunning)
                           .onClick(() => this.openInstallPanel(obj.item));

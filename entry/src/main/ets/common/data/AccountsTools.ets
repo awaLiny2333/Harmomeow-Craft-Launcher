@@ -6,7 +6,7 @@ import { util } from '@kit.ArkTS';
 import { loadAppSettings, loadAppSettingsOrDefault, loadAccounts, writeAccounts,
   writeAppSettings, tryReadAccounts, accountsFileExists } from './AppSettings';
 import { ACCOUNTS_DIR, OFFLINE_TOKEN } from '../constants/LaunchDefaults';
-import { CredentialExpiredError, MicrosoftResult, refreshMicrosoft, validateMcToken } from './MicrosoftAuth';
+import { MicrosoftResult, MsAuthError, MsAuthErrorCode, refreshMicrosoft, validateMcToken } from './MicrosoftAuth';
 import { SettingsTools } from './SettingsTools';
 
 const LOG_DOMAIN = 0x0001;
@@ -227,7 +227,7 @@ export class AccountsTools {
    * - `force=true` 无条件刷新；否则 token 未过期（留 60s 余量）直接返回。
    * - `validate=true` 时未过期也调一次 `/minecraft/profile` 抓"提前吊销"（网络异常则信任本地 token）。
    * - 过期/吊销 → 用 refresh_token 走完整链换新 MC token（refresh_token 会轮换并落库）。
-   * - refresh_token 失效 → 抛 `CredentialExpiredError`（调用方提示重新登录）。
+   * - refresh_token 失效 → 抛 `MsAuthError(CREDENTIAL_EXPIRED)`（调用方提示重新登录）。
    */
   async ensureMicrosoftFresh(account: Account, force: boolean = false,
     validate: boolean = false): Promise<Account> {
@@ -251,7 +251,7 @@ export class AccountsTools {
     }
     const rt = account.refreshToken ?? '';
     if (rt.length === 0) {
-      throw new CredentialExpiredError('缺少 refresh token，请重新登录');
+      throw new MsAuthError(MsAuthErrorCode.NO_REFRESH_TOKEN);
     }
     const r = await refreshMicrosoft(rt, this.readMsClientId());
     const updated = this.updateMicrosoft(account.id, r);

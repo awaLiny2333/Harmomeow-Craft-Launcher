@@ -13,56 +13,12 @@
       "value": "Harmomeow Craft"
     },
     {
-      "name": "game_dirs_title",
-      "value": "游戏目录"
+      "name": "reason_allow_writable_code_memory",
+      "value": "用于驱动 Java 游戏"
     },
     {
-      "name": "game_dirs_empty",
-      "value": "尚未添加 .minecraft 目录"
-    },
-    {
-      "name": "game_dirs_select_hint",
-      "value": "选择目录"
-    },
-    {
-      "name": "game_dirs_add",
-      "value": "添加文件夹"
-    },
-    {
-      "name": "game_dirs_open_folder",
-      "value": "󰃅"
-    },
-    {
-      "name": "game_dirs_inactive",
-      "value": "未激活"
-    },
-    {
-      "name": "game_dirs_remove_title",
-      "value": "移除目录"
-    },
-    {
-      "name": "game_dirs_remove_message",
-      "value": "确定移除游戏目录 %s ？只解除记忆与授权，目录里的文件都不会被动。"
-    },
-    {
-      "name": "settings_export",
-      "value": "导出设置"
-    },
-    {
-      "name": "settings_export_confirm_message",
-      "value": "将把应用设置（游戏目录、账户列表、高级选项与触控布局）导出到你选择的目录。其中包含微软登录凭据（access/refresh token），请妥善保管、勿分享给他人。"
-    },
-    {
-      "name": "settings_export_success",
-      "value": "已导出到：%s"
-    },
-    {
-      "name": "settings_export_failed",
-      "value": "导出失败：请检查目标目录是否可写，或换个目录重试"
-    },
-    {
-      "name": "settings_export_partial",
-      "value": "已导出，但部分内容无法读取，已跳过：%s"
+      "name": "reason_lock_cursor",
+      "value": "用于锁定游戏窗口内的鼠标以支持视角控制"
     },
     {
       "name": "common_activate",
@@ -89,20 +45,132 @@
       "value": "刷新"
     },
     {
-      "name": "common_edit",
+      "name": "common_copy",
+      "value": "复制"
+    },
+    {
+      "name": "common_download",
+      "value": "下载"
+    },
+    {
+      "name": "common_retry",
+      "value": "重试"
+    },
+    {
+      "name": "common_auto",
+      "value": "自动"
+    },
+    {
+      "name": "common_list_fetch",
+      "value": "获取版本列表"
+    },
+    {
+      "name": "common_list_loading",
+      "value": "正在获取版本列表"
+    },
+    {
+      "name": "common_list_error",
+      "value": "获取版本列表失败"
+    },
+    {
+      "name": "icon_edit",
       "value": "󰁳"
     },
     {
-      "name": "common_done",
+      "name": "icon_done",
       "value": "󰀓"
     },
     {
-      "name": "common_launch",
+      "name": "icon_launch",
       "value": "󰂴"
+    },
+    {
+      "name": "icon_open_folder",
+      "value": "󰃅"
+    },
+    {
+      "name": "icon_install",
+      "value": "󰙧"
+    },
+    {
+      "name": "settings_export",
+      "value": "导出设置"
+    },
+    {
+      "name": "settings_export_confirm_message",
+      "value": "将把应用设置（游戏目录、账户列表、高级选项与触控布局）导出到你选择的目录。其中包含微软登录凭据（access/refresh token），请妥善保管、勿分享给他人。"
+    },
+    {
+      "name": "settings_export_success",
+      "value": "已导出到：%s"
+    },
+    {
+      "name": "settings_export_failed",
+      "value": "导出失败：请检查目标目录是否可写，或换个目录重试"
+    },
+    {
+      "name": "settings_export_partial",
+      "value": "已导出，但部分内容无法读取，已跳过：%s"
+    },
+    {
+      "name": "launch_last",
+      "value": "继续玩：%s"
+    },
+    {
+      "name": "launch_failed",
+      "value": "启动失败：版本路径无效或窗口打开失败，请重试"
+    },
+    {
+      "name": "launch_precond_need_account",
+      "value": "尚无账户，无法启动：请先在下方账户区添加并选择一个账户"
+    },
+    {
+      "name": "launch_precond_jre_not_ready",
+      "value": "JRE 未就绪，无法启动：请先在下方 Java 环境区解压"
+    },
+    {
+      "name": "launch_precond_jre_need_upgrade",
+      "value": "JRE 数据须升级，无法启动：请先在下方 Java 环境区升级"
+    },
+    {
+      "name": "launch_precond_game_running",
+      "value": "游戏运行中：请先关闭游戏窗口再启动"
+    },
+    {
+      "name": "game_dirs_title",
+      "value": "游戏目录"
+    },
+    {
+      "name": "game_dirs_empty",
+      "value": "尚未添加 .minecraft 目录"
+    },
+    {
+      "name": "game_dirs_select_hint",
+      "value": "选择目录"
+    },
+    {
+      "name": "game_dirs_add",
+      "value": "添加文件夹"
+    },
+    {
+      "name": "game_dirs_inactive",
+      "value": "未激活"
+    },
+    {
+      "name": "game_dirs_remove_title",
+      "value": "移除目录"
+    },
+    {
+      "name": "game_dirs_remove_message",
+      "value": "确定移除游戏目录 %s ？只解除记忆与授权，目录里的文件都不会被动。"
     },
     {
       "name": "versions_title",
       "value": "游戏版本"
+    },
+    {
+      "name": "versions_empty",
+      "value": "未找到已安装的版本"
     },
     {
       "name": "versions_need_authorize",
@@ -113,64 +181,8 @@
       "value": "请先在上方选择一个游戏目录"
     },
     {
-      "name": "versions_empty",
-      "value": "未找到已安装的版本"
-    },
-    {
       "name": "versions_jre_suffix",
       "value": "· JRE %d"
-    },
-    {
-      "name": "versions_jre_not_ready",
-      "value": "JRE 未就绪，无法启动：请先在下方 Java 环境区解压"
-    },
-    {
-      "name": "versions_jre_need_upgrade",
-      "value": "JRE 数据须升级，无法启动：请先在下方 Java 环境区升级"
-    },
-    {
-      "name": "versions_need_account",
-      "value": "尚无账户，无法启动：请先在下方账户区添加并选择一个账户"
-    },
-    {
-      "name": "versions_game_running",
-      "value": "游戏运行中：请先关闭游戏窗口再启动"
-    },
-    {
-      "name": "launch_failed",
-      "value": "启动失败：版本路径无效或窗口打开失败，请重试"
-    },
-    {
-      "name": "launch_last",
-      "value": "继续玩：%s"
-    },
-    {
-      "name": "version_isolation_label",
-      "value": "启用版本隔离"
-    },
-    {
-      "name": "version_isolation_hint",
-      "value": "存档 / 选项 / 日志独立存储，版本不打架，新安装默认开启"
-    },
-    {
-      "name": "version_release_label",
-      "value": "发行日期"
-    },
-    {
-      "name": "version_json_label",
-      "value": "JSON"
-    },
-    {
-      "name": "version_type_label",
-      "value": "版本类型"
-    },
-    {
-      "name": "version_edit_title",
-      "value": "编辑版本 - %s - %s"
-    },
-    {
-      "name": "version_edit_title_nofolder",
-      "value": "编辑版本 - %s"
     },
     {
       "name": "version_type_vanilla",
@@ -193,54 +205,6 @@
       "value": "未知"
     },
     {
-      "name": "version_renderer_label",
-      "value": "渲染后端 MEOWCRAFT_RENDERER"
-    },
-    {
-      "name": "version_renderer_hint",
-      "value": "推荐 = （≥1.17 GL / ≤1.16 GL4ES；GL 败则 GL4ES）"
-    },
-    {
-      "name": "version_glthread_label",
-      "value": "线程化渲染 GALLIUM_THREAD"
-    },
-    {
-      "name": "version_glthread_hint",
-      "value": "GPU 调用交独立线程，帧数更高、加载稍慢；OpenGLv4 与 GL4ES 后端生效"
-    },
-    {
-      "name": "version_compute_label",
-      "value": "屏蔽 GL_ARB_compute_shader"
-    },
-    {
-      "name": "version_compute_hint",
-      "value": "本质置 MEOW_MASK_EXTENSIONS=GL_ARB_compute_shader；提高稳定性；默认开启"
-    },
-    {
-      "name": "version_delete",
-      "value": "删除版本"
-    },
-    {
-      "name": "version_open_folder",
-      "value": "󰃅"
-    },
-    {
-      "name": "version_delete_title",
-      "value": "删除版本"
-    },
-    {
-      "name": "version_delete_message",
-      "value": "确定删除版本 %s ？将删除其版本文件（versions/%s/），且不可恢复。"
-    },
-    {
-      "name": "version_delete_message_isolated",
-      "value": "版本 %s 已启用版本隔离：其存档、选项与日志都落在该版本目录内，删除将一并清除，且不可恢复。"
-    },
-    {
-      "name": "version_delete_failed",
-      "value": "删除失败：文件可能被占用，或该目录无写入权限。"
-    },
-    {
       "name": "renderer_auto",
       "value": "推荐"
     },
@@ -257,6 +221,62 @@
       "value": "Vulkan（26.2+，实验）"
     },
     {
+      "name": "version_edit_title",
+      "value": "编辑版本 - %s - %s"
+    },
+    {
+      "name": "version_edit_title_nofolder",
+      "value": "编辑版本 - %s"
+    },
+    {
+      "name": "version_edit_isolation_label",
+      "value": "启用版本隔离"
+    },
+    {
+      "name": "version_edit_isolation_hint",
+      "value": "存档 / 选项 / 日志独立存储，版本不打架，新安装默认开启"
+    },
+    {
+      "name": "version_edit_renderer_label",
+      "value": "渲染后端 MEOWCRAFT_RENDERER"
+    },
+    {
+      "name": "version_edit_renderer_hint",
+      "value": "推荐 = （≥1.17 GL / ≤1.16 GL4ES；GL 败则 GL4ES）"
+    },
+    {
+      "name": "version_edit_glthread_label",
+      "value": "线程化渲染 GALLIUM_THREAD"
+    },
+    {
+      "name": "version_edit_glthread_hint",
+      "value": "GPU 调用交独立线程，帧数更高、加载稍慢；OpenGLv4 与 GL4ES 后端生效"
+    },
+    {
+      "name": "version_edit_compute_label",
+      "value": "屏蔽 GL_ARB_compute_shader"
+    },
+    {
+      "name": "version_edit_compute_hint",
+      "value": "本质置 MEOW_MASK_EXTENSIONS=GL_ARB_compute_shader；提高稳定性；默认开启"
+    },
+    {
+      "name": "version_edit_delete",
+      "value": "删除版本"
+    },
+    {
+      "name": "version_edit_delete_message",
+      "value": "确定删除版本 %s ？将删除其版本文件（versions/%s/），且不可恢复。"
+    },
+    {
+      "name": "version_edit_delete_message_isolated",
+      "value": "版本 %s 已启用版本隔离：其存档、选项与日志都落在该版本目录内，删除将一并清除，且不可恢复。"
+    },
+    {
+      "name": "version_edit_delete_failed",
+      "value": "删除失败：文件可能被占用，或该目录无写入权限。"
+    },
+    {
       "name": "java_env_title",
       "value": "Java 环境"
     },
@@ -265,7 +285,7 @@
       "value": "已就绪"
     },
     {
-      "name": "java_env_missing",
+      "name": "java_env_not_extracted",
       "value": "未解压"
     },
     {
@@ -273,11 +293,11 @@
       "value": "暂无可用的 Java 运行时"
     },
     {
-      "name": "java_env_install",
+      "name": "java_env_extract",
       "value": "解压"
     },
     {
-      "name": "java_env_installing",
+      "name": "java_env_extracting",
       "value": "解压中"
     },
     {
@@ -293,12 +313,176 @@
       "value": "令牌 %s → %s"
     },
     {
-      "name": "reason_allow_writable_code_memory",
-      "value": "用于驱动 Java 游戏"
+      "name": "accounts_title",
+      "value": "账户"
     },
     {
-      "name": "reason_lock_cursor",
-      "value": "用于锁定游戏窗口内的鼠标以支持视角控制"
+      "name": "accounts_empty",
+      "value": "尚未添加账户"
+    },
+    {
+      "name": "accounts_add_offline",
+      "value": "添加离线账户"
+    },
+    {
+      "name": "accounts_add_ms",
+      "value": "微软登录"
+    },
+    {
+      "name": "accounts_type_offline",
+      "value": "离线"
+    },
+    {
+      "name": "accounts_type_ms",
+      "value": "微软"
+    },
+    {
+      "name": "accounts_name_placeholder",
+      "value": "玩家名（[A-Za-z0-9_]，≤16）"
+    },
+    {
+      "name": "accounts_name_invalid",
+      "value": "名字非法或已存在：仅允许字母/数字/下划线，长度 1–16"
+    },
+    {
+      "name": "accounts_uuid_pending",
+      "value": "UUID：待生成"
+    },
+    {
+      "name": "accounts_ms_instruction",
+      "value": "在浏览器打开 %s 并输入下面的代码："
+    },
+    {
+      "name": "accounts_ms_open",
+      "value": "打开浏览器"
+    },
+    {
+      "name": "accounts_ms_waiting",
+      "value": "等待授权…"
+    },
+    {
+      "name": "accounts_ms_no_client_id",
+      "value": "未配置 Microsoft client_id：请先在「高级选项」填写你自注册的 Azure 公有客户端 id"
+    },
+    {
+      "name": "accounts_logout",
+      "value": "退登"
+    },
+    {
+      "name": "accounts_relogin",
+      "value": "重登"
+    },
+    {
+      "name": "accounts_status_logged_out",
+      "value": "已登出"
+    },
+    {
+      "name": "accounts_status_login_expired",
+      "value": "登录已过期"
+    },
+    {
+      "name": "accounts_status_valid_until",
+      "value": "登录凭证有效期至 %s"
+    },
+    {
+      "name": "accounts_status_expired",
+      "value": "登录凭证已过期，启动时会自动续期"
+    },
+    {
+      "name": "accounts_status_unknown",
+      "value": "登录凭证有效期未知"
+    },
+    {
+      "name": "ms_err_unknown",
+      "value": "登录失败，请重试"
+    },
+    {
+      "name": "ms_err_network",
+      "value": "网络请求失败：%s"
+    },
+    {
+      "name": "ms_err_device_code_expired",
+      "value": "设备码已过期，请重试"
+    },
+    {
+      "name": "ms_err_declined",
+      "value": "用户拒绝授权"
+    },
+    {
+      "name": "ms_err_timeout",
+      "value": "登录超时，请重试"
+    },
+    {
+      "name": "ms_err_credential_expired",
+      "value": "登录凭据已失效，请重新登录"
+    },
+    {
+      "name": "ms_err_no_refresh_token",
+      "value": "缺少 refresh token，请重新登录"
+    },
+    {
+      "name": "ms_err_no_entitlement",
+      "value": "该账户未拥有 Minecraft Java 版"
+    },
+    {
+      "name": "ms_err_profile_bad",
+      "value": "Minecraft 档案响应异常"
+    },
+    {
+      "name": "ms_err_msa_missing",
+      "value": "MSA token 缺失"
+    },
+    {
+      "name": "ms_err_xbl_http",
+      "value": "Xbox Live 认证失败（HTTP %d）"
+    },
+    {
+      "name": "ms_err_mc_login_http",
+      "value": "Minecraft 登录失败（HTTP %d）"
+    },
+    {
+      "name": "ms_err_mc_profile_http",
+      "value": "获取 Minecraft 档案失败（HTTP %d）：该账户可能未拥有 Java 版或未创建档案"
+    },
+    {
+      "name": "ms_err_xsts_banned",
+      "value": "该 Xbox 账户已被封禁"
+    },
+    {
+      "name": "ms_err_xsts_no_xbox",
+      "value": "该账户没有 Xbox Live 账号（请先在 xbox.com 创建）"
+    },
+    {
+      "name": "ms_err_xsts_region",
+      "value": "该账户所在国家/地区不支持 Xbox Live"
+    },
+    {
+      "name": "ms_err_xsts_adult",
+      "value": "该账户需要完成成人验证"
+    },
+    {
+      "name": "ms_err_xsts_family",
+      "value": "未成年账户需先加入 Microsoft 家庭组"
+    },
+    {
+      "name": "ms_err_xsts_bad",
+      "value": "XSTS 授权返回异常"
+    },
+    {
+      "name": "ms_err_xsts_generic",
+      "value": "XSTS 授权失败（HTTP %d）"
+    },
+    {
+      "name": "ms_err_xsts_generic_xerr",
+      "value": "XSTS 授权失败（HTTP %d，XErr %s）"
+    },
+    {
+      "name": "ms_err_oauth_generic",
+      "value": "微软登录失败：%s"
+    },
+    {
+      "name": "ms_err_oauth_http",
+      "value": "微软登录失败（HTTP %d）"
     },
     {
       "name": "advanced_title",
@@ -317,14 +501,6 @@
       "value": "游戏窗口右下角显示当前鼠标有效采样率（Hz）"
     },
     {
-      "name": "advanced_touch_as_mouse",
-      "value": "触屏当鼠标"
-    },
-    {
-      "name": "advanced_touch_as_mouse_hint",
-      "value": "单指点按=左键单击；拖动=移动光标；游戏内拖动=转视角"
-    },
-    {
       "name": "advanced_cpu_count",
       "value": "CPU 线程数"
     },
@@ -341,98 +517,6 @@
       "value": "留空 = 自动（JVM 默认）"
     },
     {
-      "name": "accounts_title",
-      "value": "账户"
-    },
-    {
-      "name": "accounts_empty",
-      "value": "尚未添加账户"
-    },
-    {
-      "name": "accounts_add_offline",
-      "value": "添加离线账户"
-    },
-    {
-      "name": "accounts_name_placeholder",
-      "value": "玩家名（[A-Za-z0-9_]，≤16）"
-    },
-    {
-      "name": "accounts_name_invalid",
-      "value": "名字非法或已存在：仅允许字母/数字/下划线，长度 1–16"
-    },
-    {
-      "name": "accounts_type_offline",
-      "value": "离线"
-    },
-    {
-      "name": "accounts_type_microsoft",
-      "value": "微软"
-    },
-    {
-      "name": "accounts_uuid_pending",
-      "value": "UUID：待派生"
-    },
-    {
-      "name": "accounts_add_microsoft",
-      "value": "微软登录"
-    },
-    {
-      "name": "accounts_ms_instruction",
-      "value": "在浏览器打开 %s 并输入下面的代码："
-    },
-    {
-      "name": "accounts_ms_open",
-      "value": "打开浏览器"
-    },
-    {
-      "name": "accounts_ms_waiting",
-      "value": "等待授权…"
-    },
-    {
-      "name": "accounts_ms_error",
-      "value": "登录失败：%s"
-    },
-    {
-      "name": "accounts_ms_no_client_id",
-      "value": "未配置 Microsoft client_id：请先在「高级选项」填写你自注册的 Azure 公有客户端 id"
-    },
-    {
-      "name": "common_copy",
-      "value": "复制"
-    },
-    {
-      "name": "accounts_refresh",
-      "value": "刷新"
-    },
-    {
-      "name": "accounts_logout",
-      "value": "退登"
-    },
-    {
-      "name": "accounts_relogin",
-      "value": "重登"
-    },
-    {
-      "name": "accounts_logged_out",
-      "value": "已登出"
-    },
-    {
-      "name": "accounts_login_expired",
-      "value": "登录已过期"
-    },
-    {
-      "name": "accounts_status_valid_until",
-      "value": "登录凭证有效期至 %s"
-    },
-    {
-      "name": "accounts_status_expired",
-      "value": "登录凭证已过期，启动时会自动续期"
-    },
-    {
-      "name": "accounts_status_unknown",
-      "value": "登录凭证有效期未知"
-    },
-    {
       "name": "advanced_scroll_speed",
       "value": "滚轮速度 (%)"
     },
@@ -441,12 +525,72 @@
       "value": "留空 = 100（正常）；越大越快"
     },
     {
+      "name": "advanced_render_scale",
+      "value": "显示缩放"
+    },
+    {
+      "name": "advanced_render_scale_hint",
+      "value": "渲染分辨率 = 窗口 / N，再放大铺满；越高越省 GPU、画面越糊；过高可能导致画面渲染异常"
+    },
+    {
+      "name": "advanced_render_scale_off",
+      "value": "1x（关闭）"
+    },
+    {
+      "name": "advanced_render_env",
+      "value": "额外渲染环境变量（实验）"
+    },
+    {
+      "name": "advanced_render_env_hint",
+      "value": "K=V，英文分号分隔，启动前注入；原样追加到实例设置；留空 = 遵守版本实例设置；改动下次游戏生效"
+    },
+    {
+      "name": "advanced_jvm_args",
+      "value": "额外 JVM 参数（实验）"
+    },
+    {
+      "name": "advanced_jvm_args_hint",
+      "value": "空格分隔，原样追加到启动参数；留空 = 不传；改动下次游戏生效"
+    },
+    {
+      "name": "advanced_ms_client_id",
+      "value": "微软 client_id"
+    },
+    {
+      "name": "advanced_ms_client_id_hint",
+      "value": "留空 = 微软登录不可用；需自注册 Azure 公有客户端（个人账户 + 允许公共客户端流）"
+    },
+    {
+      "name": "advanced_touch_as_mouse",
+      "value": "触屏当鼠标"
+    },
+    {
+      "name": "advanced_touch_as_mouse_hint",
+      "value": "单指点按=左键单击；拖动=移动光标；游戏内拖动=转视角"
+    },
+    {
+      "name": "advanced_touch_controls",
+      "value": "触屏虚拟按键"
+    },
+    {
+      "name": "advanced_touch_controls_hint",
+      "value": "方向键在左下；右下攻击/交互/跳/蹲/包/左/右；顶部 ESC/输入/TAB"
+    },
+    {
       "name": "advanced_touch_sensitivity",
       "value": "触屏灵敏度 (%)"
     },
     {
       "name": "advanced_touch_sensitivity_hint",
       "value": "留空 = 默认（正常）；越大转视角越快"
+    },
+    {
+      "name": "advanced_touch_scale",
+      "value": "虚拟按键缩放 (%)"
+    },
+    {
+      "name": "advanced_touch_scale_hint",
+      "value": "越大按钮越大；留空 = 默认"
     },
     {
       "name": "advanced_touch_inset_top",
@@ -481,84 +625,32 @@
       "value": "把左侧按键从屏幕左边推开；避让系统手势区 / 圆角；留空 = 默认"
     },
     {
-      "name": "advanced_touch_scale",
-      "value": "虚拟按键缩放 (%)"
-    },
-    {
-      "name": "advanced_touch_scale_hint",
-      "value": "越大按钮越大；留空 = 默认"
-    },
-    {
-      "name": "advanced_render_scale",
-      "value": "显示缩放"
-    },
-    {
-      "name": "advanced_render_scale_hint",
-      "value": "渲染分辨率 = 窗口 / N，再放大铺满；越高越省 GPU、画面越糊；过高可能导致画面渲染异常"
-    },
-    {
-      "name": "render_scale_off",
-      "value": "1x（关闭）"
-    },
-    {
-      "name": "advanced_render_env",
-      "value": "额外渲染环境变量（实验）"
-    },
-    {
-      "name": "advanced_render_env_hint",
-      "value": "K=V，英文分号分隔，启动前注入；原样追加到实例设置；留空 = 遵守版本实例设置；改动下次游戏生效"
-    },
-    {
-      "name": "advanced_jvm_args",
-      "value": "额外 JVM 参数（实验）"
-    },
-    {
-      "name": "advanced_jvm_args_hint",
-      "value": "空格分隔，原样追加到启动参数；留空 = 不传；改动下次游戏生效"
-    },
-    {
-      "name": "advanced_ms_client_id",
-      "value": "微软 client_id"
-    },
-    {
-      "name": "advanced_ms_client_id_hint",
-      "value": "留空 = 微软登录不可用；需自注册 Azure 公有客户端（个人账户 + 允许公共客户端流）"
-    },
-    {
-      "name": "advanced_auto",
-      "value": "自动"
-    },
-    {
-      "name": "game_input_rate",
-      "value": "鼠标采样 %d Hz"
-    },
-    {
-      "name": "common_download",
-      "value": "下载"
-    },
-    {
-      "name": "common_retry",
-      "value": "重试"
+      "name": "download_panel_title",
+      "value": "下载新版本"
     },
     {
       "name": "download_close",
       "value": "收起"
     },
     {
-      "name": "download_panel_title",
-      "value": "下载新版本"
-    },
-    {
-      "name": "download_loading",
-      "value": "正在获取版本列表"
-    },
-    {
       "name": "download_empty",
       "value": "未获取到可下载版本"
     },
     {
-      "name": "download_install",
-      "value": "󰙧"
+      "name": "download_fetch_hint",
+      "value": "选择下载源后，点「获取版本列表」"
+    },
+    {
+      "name": "download_progress",
+      "value": "%d / %d"
+    },
+    {
+      "name": "download_file_progress",
+      "value": "%s / %s"
+    },
+    {
+      "name": "download_confirm_install",
+      "value": "确认安装"
     },
     {
       "name": "download_instance_for",
@@ -573,20 +665,12 @@
       "value": "实例名称（默认与版本号相同）"
     },
     {
-      "name": "download_confirm_install",
-      "value": "确认安装"
-    },
-    {
       "name": "download_instance_name_invalid",
       "value": "实例名称非法：不能为空、不能以 . 或空格结尾，且不能包含 / \\ : * ? \" < > | 或控制字符"
     },
     {
       "name": "download_instance_name_conflict",
       "value": "该实例名称已存在，请换一个名称"
-    },
-    {
-      "name": "download_progress",
-      "value": "%d / %d"
     },
     {
       "name": "download_phase_files",
@@ -605,36 +689,12 @@
       "value": "写入版本"
     },
     {
-      "name": "download_error_manifest",
-      "value": "获取版本列表失败"
-    },
-    {
       "name": "download_error_install",
       "value": "安装失败"
     },
     {
       "name": "download_error_no_write",
       "value": "目录无写入权限，请重新授权后再下载"
-    },
-    {
-      "name": "download_source_mirror",
-      "value": "镜像（BMCLAPI）"
-    },
-    {
-      "name": "download_source_official",
-      "value": "官方（Mojang）"
-    },
-    {
-      "name": "download_file_progress",
-      "value": "%s / %s"
-    },
-    {
-      "name": "download_fetch",
-      "value": "获取版本列表"
-    },
-    {
-      "name": "download_fetch_hint",
-      "value": "选择下载源后，点「获取版本列表」"
     },
     {
       "name": "download_type_release",
@@ -649,16 +709,36 @@
       "value": "其他"
     },
     {
-      "name": "loader_vanilla",
-      "value": "原版"
+      "name": "source_mirror",
+      "value": "镜像（BMCLAPI）"
     },
     {
-      "name": "loader_fabric",
-      "value": "Fabric"
+      "name": "source_official_mojang",
+      "value": "官方（Mojang）"
     },
     {
-      "name": "loader_neoforge",
-      "value": "NeoForge"
+      "name": "source_official_fabric",
+      "value": "官方（FabricMC）"
+    },
+    {
+      "name": "loader_source_label",
+      "value": "下载源"
+    },
+    {
+      "name": "loader_source_hint",
+      "value": "遇到网络问题可以切换尝试"
+    },
+    {
+      "name": "loader_version_label",
+      "value": "版本"
+    },
+    {
+      "name": "loader_version_hint",
+      "value": "一般推荐使用最新版"
+    },
+    {
+      "name": "loader_empty",
+      "value": "未获取到可用版本"
     },
     {
       "name": "loader_neoforge_unsupported",
@@ -667,58 +747,6 @@
     {
       "name": "loader_neoforge_empty",
       "value": "该版本没有可用的 NeoForge"
-    },
-    {
-      "name": "loader_source_label",
-      "value": "下载源"
-    },
-    {
-      "name": "loader_source_mirror",
-      "value": "镜像（BMCLAPI）"
-    },
-    {
-      "name": "loader_source_official_fabric",
-      "value": "官方（FabricMC）"
-    },
-    {
-      "name": "loader_version_label",
-      "value": "版本"
-    },
-    {
-      "name": "loader_source_hint",
-      "value": "遇到网络问题可以切换尝试"
-    },
-    {
-      "name": "loader_version_hint",
-      "value": "一般推荐使用最新版"
-    },
-    {
-      "name": "loader_loading",
-      "value": "正在获取 Fabric 版本列表"
-    },
-    {
-      "name": "loader_error",
-      "value": "获取 Fabric 版本列表失败"
-    },
-    {
-      "name": "loader_fetch_hint",
-      "value": "正在获取 Fabric 版本列表…"
-    },
-    {
-      "name": "loader_empty",
-      "value": "未获取到 Fabric 版本"
-    },
-    {
-      "name": "loader_stable",
-      "value": "稳定版"
-    },
-    {
-      "name": "advanced_touch_controls",
-      "value": "触屏虚拟按键"
-    },
-    {
-      "name": "advanced_touch_controls_hint",
-      "value": "方向键在左下；右下攻击/交互/跳/蹲/包/左/右；顶部 ESC/输入/TAB"
     },
     {
       "name": "touch_btn_attack",
@@ -791,6 +819,10 @@
     {
       "name": "touch_dir_down_right",
       "value": "D+S"
+    },
+    {
+      "name": "game_input_rate",
+      "value": "鼠标采样 %d Hz"
     }
   ]
 }

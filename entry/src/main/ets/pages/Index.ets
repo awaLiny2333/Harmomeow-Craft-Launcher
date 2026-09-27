@@ -9,6 +9,7 @@ import {
 } from '../common/data/VersionLaunch';
 import { SettingsTools } from '../common/data/SettingsTools';
 import { AccountView } from '../components/AccountView';
+import { msAuthErrorText } from '../components/MsAuthErrorText';
 import { AdvancedOptionsView } from '../components/AdvancedOptionsView';
 import { GameDirsView } from '../components/GameDirsView';
 import { GameVersionsView } from '../components/GameVersionsView';
@@ -102,13 +103,13 @@ struct Index {
     const v = new GameVersion(this.state.lastLaunchVersion, '', this.state.lastLaunchJsonPath, '', 0, '', '', '', '');
     const out = await launchInMainProcess(ctx, v);
     if (out.code === LAUNCH_ERR_NO_ACCOUNT) {
-      this.getUIContext().showAlertDialog({ message: $r('app.string.versions_need_account') });
+      this.getUIContext().showAlertDialog({ message: $r('app.string.launch_precond_need_account') });
       return;
     }
     if (out.code === LAUNCH_ERR_MS_EXPIRED) {
       this.getUIContext().showAlertDialog({
-        title: $r('app.string.accounts_login_expired'),
-        message: out.detail,
+        title: $r('app.string.accounts_status_login_expired'),
+        message: msAuthErrorText(out.msError),
       });
       return;
     }

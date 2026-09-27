@@ -1,5 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { Account, AccountsTools, ACCOUNT_TYPE_MICROSOFT } from './AccountsTools';
+import { asMsAuthError, MsAuthError } from './MicrosoftAuth';
 import { GameVersion } from './VersionScanner';
 import { GameLaunchParams } from '../state/GameLaunchParams';
 import { windowHolder } from '../state/WindowHolder';
@@ -17,17 +18,17 @@ import { WINDOW_DEFAULT_H, WINDOW_DEFAULT_W, WINDOW_DEFAULT_X, WINDOW_DEFAULT_Y 
 export const LAUNCH_OK: number = 0;
 /** 无可用账户（未选中）→ 调用方提示"尚无账户"。 */
 export const LAUNCH_ERR_NO_ACCOUNT: number = 1;
-/** 微软登录已失效 → 调用方提示重新登录（detail 为原因）。 */
+/** 微软登录已失效 → 调用方提示重新登录（msError 为可解析的错误码）。 */
 export const LAUNCH_ERR_MS_EXPIRED: number = 2;
 /** jsonPath 反推游戏根失败（记录/路径已失效）→ "继续上次"据此自愈清记录。 */
 export const LAUNCH_ERR_BAD_PATH: number = 3;
 /** 游戏窗打开失败（startAbility 失败）→ 瞬时问题，不清记录。 */
 export const LAUNCH_ERR_OPEN_FAILED: number = 4;
 
-/** 启动结果（code + 可展示的 detail）。 */
+/** 启动结果（code + 可解析的错误，供调用方映射文案）。 */
 export class LaunchOutcome {
   code: number = LAUNCH_OK;
-  detail: string = '';
+  msError: MsAuthError | null = null;
 }
 
 /**
@@ -62,7 +63,7 @@ export async function launchInMainProcess(ctx: common.UIAbilityContext,
       await accounts.ensureMicrosoftFresh(account, false, true);
     } catch (e) {
       out.code = LAUNCH_ERR_MS_EXPIRED;
-      out.detail = (e as Error).message;
+      out.msError = asMsAuthError(e as Error);
       return out;
     }
   }

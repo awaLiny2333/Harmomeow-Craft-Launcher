@@ -6,7 +6,8 @@ import {
 } from '../common/constants/Constants';
 import { Account, AccountsTools, ACCOUNT_TYPE_MICROSOFT, formatExpiry, isValidPlayerName } from '../common/data/AccountsTools';
 import { AccountState, getAccountState } from '../common/state/AccountState';
-import { DeviceCode, loginMicrosoft } from '../common/data/MicrosoftAuth';
+import { asMsAuthError, DeviceCode, loginMicrosoft } from '../common/data/MicrosoftAuth';
+import { msAuthErrorText } from './MsAuthErrorText';
 import { SettingsTools } from '../common/data/SettingsTools';
 
 /**
@@ -43,7 +44,7 @@ export struct AccountView {
 
   private typeLabel(t: string): Resource {
     return t === ACCOUNT_TYPE_MICROSOFT
-      ? $r('app.string.accounts_type_microsoft')
+      ? $r('app.string.accounts_type_ms')
       : $r('app.string.accounts_type_offline');
   }
 
@@ -115,7 +116,7 @@ export struct AccountView {
 
   /** 发起微软登录（Device Code Flow）；updateId 非空 = 对已存在账户就地重新登录。 */
   private async doMicrosoftLogin(updateId: string): Promise<void> {
-    this.state.msError = '';
+    this.state.msError = null;
     this.state.msNoClientId = false;
     this.state.msDeviceUserCode = '';
     this.state.msDeviceUri = '';
@@ -138,7 +139,7 @@ export struct AccountView {
       }
       this.state.reload(this.context());
     } catch (e) {
-      this.state.msError = (e as Error).message;
+      this.state.msError = asMsAuthError(e as Error);
     } finally {
       this.state.msLoggingIn = false;
       this.state.msDeviceUserCode = '';
@@ -152,14 +153,14 @@ export struct AccountView {
 
   /** 刷新微软账户 token（强制续期）；失败（含 refresh 失效）显示错误。 */
   private async refreshMs(account: Account): Promise<void> {
-    this.state.msError = '';
+    this.state.msError = null;
     this.state.msNoClientId = false;
     this.state.msLoggingIn = true;
     try {
       await new AccountsTools(this.context()).ensureMicrosoftFresh(account, true);
       this.state.reload(this.context());
     } catch (e) {
-      this.state.msError = (e as Error).message;
+      this.state.msError = asMsAuthError(e as Error);
     } finally {
       this.state.msLoggingIn = false;
     }
@@ -245,7 +246,7 @@ export struct AccountView {
               // 微软账户操作：刷新 / 退出登录；已登出则重新登录
               if (obj.item.type === ACCOUNT_TYPE_MICROSOFT) {
                 if ((obj.item.accessToken ?? '').length === 0) {
-                  Text($r('app.string.accounts_logged_out'))
+                  Text($r('app.string.accounts_status_logged_out'))
                     .opacity(OPACITY_SECONDARY);
                   Button($r('app.string.accounts_relogin'))
                     .enabled(!this.state.msLoggingIn)
@@ -253,7 +254,7 @@ export struct AccountView {
                       this.doMicrosoftLogin(obj.item.id);
                     });
                 } else {
-                  Button($r('app.string.accounts_refresh'))
+                  Button($r('app.string.common_refresh'))
                     .enabled(!this.state.msLoggingIn)
                     .onClick(() => {
                       this.refreshMs(obj.item);
@@ -288,7 +289,7 @@ export struct AccountView {
         .onSubmit(() => this.addOffline());
       // 微软正版登录（Device Code Flow：浏览器输码 → 轮询）最左 + 添加离线账户（名字进入即校验；回车/添加均可）
       Row({ space: LAYOUT_SPACE }) {
-        Button($r('app.string.accounts_add_microsoft'))
+        Button($r('app.string.accounts_add_ms'))
           .enabled(!this.state.msLoggingIn)
           .onClick(() => this.startMicrosoftLogin());
         Button($r('app.string.accounts_add_offline'))
@@ -324,8 +325,8 @@ export struct AccountView {
       if (this.state.msNoClientId) {
         Text($r('app.string.accounts_ms_no_client_id'))
           .opacity(OPACITY_SECONDARY);
-      } else if (this.state.msError.length > 0) {
-        Text($r('app.string.accounts_ms_error', this.state.msError))
+      } else if (this.state.msError !== null) {
+        Text(msAuthErrorText(this.state.msError))
           .opacity(OPACITY_SECONDARY);
       }
     }

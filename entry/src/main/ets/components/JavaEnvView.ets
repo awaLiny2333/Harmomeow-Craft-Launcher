@@ -91,7 +91,7 @@ export struct JavaEnvView {
                   .textOverflow({ overflow: TextOverflow.Ellipsis });
                 Text(obj.item.installed ? $r('app.string.java_env_ready')
                   : (obj.item.needsUpgrade ? $r('app.string.java_env_need_upgrade')
-                     : $r('app.string.java_env_missing')))
+                     : $r('app.string.java_env_not_extracted')))
                   .opacity(OPACITY_SECONDARY)
                   .maxLines(1);
               }
@@ -114,9 +114,9 @@ export struct JavaEnvView {
 
             // 行内操作：未就绪可解压；就绪无动作（后续可放"启动验证"等）
             if (!obj.item.installed) {
-              Button(this.installingId === obj.item.id ? $r('app.string.java_env_installing')
+              Button(this.installingId === obj.item.id ? $r('app.string.java_env_extracting')
                 : (obj.item.needsUpgrade ? $r('app.string.java_env_upgrade')
-                   : $r('app.string.java_env_install')))
+                   : $r('app.string.java_env_extract')))
                 .enabled(this.installingId.length === 0)
                 .onClick(() => this.install(obj.item));
             }

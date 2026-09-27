@@ -1,6 +1,7 @@
 import { AppStorageV2 } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { Account, AccountsTools } from '../data/AccountsTools';
+import { MsAuthError } from '../data/MicrosoftAuth';
 
 /**
  * 账户共享状态（跨组件通过 AppStorageV2 共享同一实例）。
@@ -29,7 +30,7 @@ export class AccountState {
   @Trace msLoggingIn: boolean = false;
   @Trace msDeviceUserCode: string = '';
   @Trace msDeviceUri: string = '';
-  @Trace msError: string = '';
+  @Trace msError: MsAuthError | null = null;
   /** 未配置 client_id 的专用提示（UI 走 resource，避免在逻辑里硬编码文案）。 */
   @Trace msNoClientId: boolean = false;
 

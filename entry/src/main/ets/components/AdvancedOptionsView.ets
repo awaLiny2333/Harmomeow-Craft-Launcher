@@ -128,19 +128,19 @@ export struct AdvancedOptionsView {
 
   private cpuPlaceholder(): string | Resource {
     // 自动值即本机探测核数；探测失败才退回"自动"文案。
-    return this.detectedCpus > 0 ? `${this.detectedCpus}` : $r('app.string.advanced_auto');
+    return this.detectedCpus > 0 ? `${this.detectedCpus}` : $r('app.string.common_auto');
   }
 
   /** 显示缩放 Select 选项（1x（关闭）/ 1.5x / 2x / 3x / 4x）。 */
   private scaleOptions(): SelectOption[] {
     return RENDER_SCALE_OPTIONS.map((n: number): SelectOption => ({
-      value: n === 1 ? $r('app.string.render_scale_off') : `${n}x`,
+      value: n === 1 ? $r('app.string.advanced_render_scale_off') : `${n}x`,
     }));
   }
 
   private scaleValue(): string | Resource {
     const n = RENDER_SCALE_OPTIONS[this.scaleIndex];
-    return n === 1 ? $r('app.string.render_scale_off') : `${n}x`;
+    return n === 1 ? $r('app.string.advanced_render_scale_off') : `${n}x`;
   }
 
   private setScale(index: number): void {
@@ -418,7 +418,7 @@ export struct AdvancedOptionsView {
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start);
 
-        TextInput({ text: this.maxHeapText, placeholder: $r('app.string.advanced_auto') })
+        TextInput({ text: this.maxHeapText, placeholder: $r('app.string.common_auto') })
           .type(InputType.Number)
           .width(120)
           .onChange((v: string) => {
