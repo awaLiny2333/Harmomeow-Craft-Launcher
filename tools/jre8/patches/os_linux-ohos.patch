@@ -1,0 +1,60 @@
+diff --git a/hotspot/src/os/linux/vm/os_linux.cpp b/hotspot/src/os/linux/vm/os_linux.cpp
+index 09c40560..5a6ab94a 100644
+--- a/hotspot/src/os/linux/vm/os_linux.cpp
++++ b/hotspot/src/os/linux/vm/os_linux.cpp
+@@ -402,6 +402,15 @@ void os::init_system_properties_values() {
+     if (pslash != NULL) {
+       *pslash = '\0';            // Get rid of /{client|server|hotspot}.
+     }
++    // [meow OHOS patch] Split layout: our JRE natives are flat in OHOS_DL_DIR (el1), NOT under
++    // <java_home>/lib/<arch>/<variant>/. The derivation above (from libjvm.so's own path) is
++    // meaningless here, so prefer OHOS_DL_DIR when the host exported it.
++    {
++      const char *ohosDl = ::getenv("OHOS_DL_DIR");
++      if (ohosDl != NULL && ohosDl[0] != '\0') {
++        jio_snprintf(buf, bufsize, "%s", ohosDl);
++      }
++    }
+     Arguments::set_dll_dir(buf);
+ 
+     if (pslash != NULL) {
+@@ -414,6 +423,14 @@ void os::init_system_properties_values() {
+         }
+       }
+     }
++    // [meow OHOS patch] java.home is the DATA dir (rt.jar / lib/security / lib/<arch>/jvm.cfg),
++    // which is NOT the el1 dir that libjvm.so lives in. Prefer OHOS_JAVA_HOME (set by the host).
++    {
++      const char *ohosHome = ::getenv("OHOS_JAVA_HOME");
++      if (ohosHome != NULL && ohosHome[0] != '\0') {
++        jio_snprintf(buf, bufsize, "%s", ohosHome);
++      }
++    }
+     Arguments::set_java_home(buf);
+     set_boot_path('/', ':');
+   }
+@@ -595,6 +612,24 @@ void os::Linux::libpthread_init() {
+ # define _CS_GNU_LIBPTHREAD_VERSION 3
+ # endif
+ 
++  // [meow OHOS patch] musl does not implement confstr(_CS_GNU_LIBC_VERSION /
++  // _CS_GNU_LIBPTHREAD_VERSION). Upstream then concludes "glibc < 2.3.2" and flips the whole VM
++  // onto the **LinuxThreads** model (default thread stack sizes, thread creation path, ...), and
++  // it dereferences gnu_get_libc_version()/gnu_get_libc_release() (glibc-only symbols).
++  // musl is 1:1 threads == NPTL semantics, so pin the version strings and skip the probing.
++  // ⚠️ 必须写 `::getenv`：JDK 8 的 `class os` 有成员 `static bool getenv(const char*, char*, int)`
++  // （os.hpp:178）⇒ 在 os 的成员函数里裸写 getenv 会被**成员遮蔽**、报 "no matching function"。
++  // JDK 26 的 os 没有这个成员（故 jre26 的补丁包裸写 getenv 能编；这里是 JDK 8 专有的坑）。
++  if (::getenv("OHOS_JAVA_HOME") != NULL || ::getenv("OHOS_DL_DIR") != NULL) {
++     static char _meow_glibc_version[] = "glibc 2.17";
++     static char _meow_libpthread_version[] = "NPTL 2.17";
++     os::Linux::set_glibc_version(_meow_glibc_version);
++     os::Linux::set_libpthread_version(_meow_libpthread_version);
++     os::Linux::set_is_NPTL();
++     os::Linux::set_is_floating_stack();
++     return;
++  }
++
+   size_t n = confstr(_CS_GNU_LIBC_VERSION, NULL, 0);
+   if (n > 0) {
+      char *str = (char *)malloc(n, mtInternal);

@@ -34,6 +34,11 @@ commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61
   由容器脚本 `tools/jre26/linux_build_zipfs_patch.sh` 编出、`rebuild_for_meowcraft.sh --zipfs-patch <dir>` 投放到 `home/lib/patch/jdk.zipfs/`，
   启动器加 `--patch-module jdk.zipfs=<JRE数据>/lib/patch/jdk.zipfs`。见 `tools/jre26/README.md` §6。**零黑箱。**
 
+**第二套 JRE（legacy 段）输入**（见 `tools/jre8/`）：Eclipse Adoptium **Temurin 8u504-b01**（aarch64 Linux，**glibc**，JDK 全量）
+tar（`OpenJDK8U-jdk_aarch64_linux_hotspot_8u504b01.tar.gz`，sha256 `57b7ed8af9d48542bb49ff7894448040b17bea0a48b41677d11ecaec6129768d`）
++ 源码 **`https://github.com/openjdk/jdk8u`** @ `jdk8u504-b01`（commit `4efe3643`）→ `ref/jdk8u`
+（服务 **Forge ≤1.12.2 LaunchWrapper + 1.13–1.16 ModLauncher/Mixin**；为什么必须 ≤13 见该 README §0）。
+
 ## 2. 工具清单
 
 | 工具 | 产出 | 说明 |
@@ -45,6 +50,7 @@ commit `d55edf1cba61…`，**与官方件 `release` 的 `SOURCE=git:d55edf1cba61
 | `freetype/` | `libfreetype.so` | FreeType 2.13.3 OHOS 交叉编 |
 | `jre26/` | 随包 JRE 集（`libs/*.so` + `java.home` 数据） | **魔改官方 OpenJDK 26.0.2.1(glibc) 跑 OHOS(musl)，零黑箱**：官方 26 lib **原地改 `.dynstr`** + `libc6.so` 兼容层 + **自编 `libjli`** + **自编 `libjvm`**（openEuler 容器编，两件均带 OHOS 分体 patch，源 = 更新仓 `jdk26u` @ `jdk-26.0.2.1-ga`）；数据经 jlink 瘦身；另含 `lib/patch/jdk.zipfs`（best-effort chmod 类补丁，`--patch-module` 投放，见该 README §6）。见 `tools/jre26/README.md` |
 | `jre25/` | —（历史配方） | **25 时代**的随包 JRE 配方/溯源（已发布版本）；随包 JRE 已升级到 26，**勿用于当前随包**。见 `tools/jre25/README.md` |
+| `jre8/` | **第二套** JRE 集（legacy：Forge ≤1.12.2 + 1.13–1.16） | **魔改官方 Temurin 8u504(glibc) 跑 OHOS(musl)**：官方 8 lib 原地改 `.dynstr` + `libc6.so` 兼容层（+5 个 JDK8 专有符号）+ **自编 `libjli`**（launcher 在 `jdk/src/{share,solaris}/bin`，需 `ergo.c`+`-DLIBARCHNAME`）+ **自编 `libjvm`**（容器编，除 `java.home`/`dll_dir` 外还 pin NPTL——musl 的 `confstr` 会让上游误判 LinuxThreads）。**不做 rt.jar 裁剪**：官方 `rt.jar` 条目全 STORED，照搬的数据 tar 仅 30.8 MiB（比 26 那套 39.3 MiB 还小）。见 `tools/jre8/README.md` |
 | `sdl/` | `libSDL3.so` | 自编 OHOS **SDL3**（fork tag `release-3.4.14`）+ 自研 **`ohos` 驱动**（窗口/EGL/输入/grab/**Vulkan WSI**）；**MC 26.3** 的平台绑定 |
 | `shaderc/` | `libshaderc.so`、`libspirv-cross.so` | 自编（glslang/SPIRV-Tools 静态并入；按官方 natives `.git` 钉修订）；**MC 26.3 `renderpearl`** 用 |
 | `oshi/` | `oshi-core-<v>-meow.jar` ×10 | CPU 拓扑合成补丁；**现代 9 项 + legacy `oshi-core-1.1`（MC 1.16.x）** |
@@ -129,9 +135,27 @@ sh tools/jre26/rebuild_for_meowcraft.sh \
     --out          stuffs/research/jdk26/out
 
 # C. 部署（改 libs 后必须先清模块 build；见下）
-rm -rf libs/{meowlwjgls,meowjre,meowcraftlib}/build entry/build
-devecocli build --modules entry meowjre      # 注意：不带 --modules 只出 HAP，不出 HSP
-devecocli run --module entry meowjre --device <serial>
+rm -rf libs/{meowlwjgls,meowjre,meowjrelegacy,meowcraftlib}/build entry/build
+devecocli build --modules entry meowjre meowjrelegacy      # 注意：不带 --modules 只出 HAP，不出 HSP
+devecocli run --module entry meowjre meowjrelegacy --device <serial>
+```
+
+**第二套 JRE（legacy）—— `tools/jre8/`**（完整说明见其 README；为什么必须 Java 8 见 `§0`）：
+
+```sh
+#   0) 输入：Temurin 8u504 tar → stuffs/research/jdk8/；源码 openjdk/jdk8u @ jdk8u504-b01 → ref/jdk8u
+#   1) 容器(openEuler/aarch64)：装环境 + 解 boot JDK(Temurin 8) + 编 libjvm（含 OHOS 分体 patch 与 NPTL pin）
+sh tools/jre8/linux_bootstrap.sh               # 容器内：装工具链 + boot JDK
+sh tools/jre8/linux_build_jvm.sh               # 容器内：stuffs/research/jdk8/out-linux/libjvm.so
+#   2) 宿主：组装（shim + 自编 libjli + 官方件改 dynstr + 容器 libjvm + jre/ 数据）；宿主侧可自证
+sh tools/jre8/rebuild_for_meowcraft.sh \
+    --official-jdk stuffs/research/jdk8/_inspect/jdk8u504-b01 \
+    --jdk-src      ref/jdk8u \
+    --libjvm       stuffs/research/jdk8/out-linux/libjvm.so \
+    --out          stuffs/research/jdk8/out
+python3 tools/jre8/pack_jre_data.py --home stuffs/research/jdk8/out/home \
+    --out entry/src/main/resources/rawfile/meow_jre8.tar.gz
+#   3) 随包：铺进 libs/meowjrelegacy/libs/arm64-v8a/（模块名版本中性）→ 清模块 build → build --modules entry meowjre meowjrelegacy
 ```
 
 ## 4. 通用坑（改 libs / 打包 / 部署）
@@ -160,7 +184,7 @@ devecocli run --module entry meowjre --device <serial>
 ## 5. 权威文档
 
 - **工具内详解**：`tools/lwjgl/README.md` §1（**overlay 机制**：为什么要覆盖 / 5 步流水线 / 两层判据 / 加代清单），§2–§4（3.4.3 构建 / 打包 / digests）。
-- **JRE 收编**：`tools/jre26/README.md`（现役：输入/工序/可复现/digests/与 25 差异；源 = 更新仓 `jdk26u` @ `jdk-26.0.2.1-ga`）、`tools/jre25/README.md`（历史）。
+- **JRE 收编**：`tools/jre26/README.md`（现役：输入/工序/可复现/digests/与 25 差异；源 = 更新仓 `jdk26u` @ `jdk-26.0.2.1-ga`）、`tools/jre8/README.md`（**第二套**：legacy Forge 段；触发链/输入溯源/M0 静态验证/与 26 的差异清单）、`tools/jre25/README.md`（历史）。
 - **legacy（MC 1.6.x–1.16.x）**：`tools/lwjgl2/README.md`（LWJGL2 `liblwjgl.so`：生成/编译/随包/踩坑/可复现）、`tools/gl4es/README.md`（gl4es `libgl4es.so`：NOEGL 宿主自持上下文）。
 - **SDL3 / shaderc**：`tools/sdl/README.md`（拉取/补丁/驱动文件/digest）、`tools/shaderc/README.md`；复盘 `notes/20-design/render/SDL3适配-复盘.md`（§一 时间线、**§七 Vulkan 接通**）、方案 `notes/20-design/render/SDL3桥接-设计.md`。
 - 设计/流程：`notes/20-design/launch/launcher净室-设计.md`、`notes/20-design/render/GLFW净室桥-设计.md`、`notes/20-design/lwjgl/LWJGL3世代管理-方案.md`、`notes/20-design/lwjgl/LWJGL3单代收敛-决策依据.md`、`notes/20-design/lwjgl/LWJGL2自编-方案.md`

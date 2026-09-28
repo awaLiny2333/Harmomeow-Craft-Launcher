@@ -1,0 +1,59 @@
+diff --git a/jdk/src/solaris/bin/java_md_solinux.c b/jdk/src/solaris/bin/java_md_solinux.c
+index e5056c44..523a5c2d 100644
+--- a/jdk/src/solaris/bin/java_md_solinux.c
++++ b/jdk/src/solaris/bin/java_md_solinux.c
+@@ -486,6 +486,16 @@ CreateExecutionEnvironment(int *pargc, char ***pargv,
+         mustsetenv = RequiresSetenv(wanted, jvmpath);
+         JLI_TraceLauncher("mustsetenv: %s\n", mustsetenv ? "TRUE" : "FALSE");
+ 
++        /* [meow OHOS patch] The launcher runs in-process (JLI_Launch via dlopen from the app):
++           OHOS can neither re-exec itself nor rely on the upstream /proc/self/exe layout probe.
++           The host already exported OHOS_JAVA_HOME / OHOS_DL_DIR / LD_LIBRARY_PATH, and
++           jrepath/jvmpath/jvmcfg are all filled in by now -> return to the caller instead of
++           going through putenv() + execve(). */
++        if (getenv("OHOS_JAVA_HOME") != NULL || getenv("OHOS_DL_DIR") != NULL) {
++            JLI_MemFree(newargv);
++            return;
++        }
++
+         if (mustsetenv == JNI_FALSE) {
+             JLI_MemFree(newargv);
+             return;
+@@ -786,6 +796,17 @@ GetJVMPath(const char *jrepath, const char *jvmtype,
+ {
+     struct stat s;
+ 
++    /* [meow OHOS patch] Our JRE natives are flat in OHOS_DL_DIR (el1); there is no
++       <jrepath>/lib/<arch>/<jvmtype>/ layout. */
++    {
++        const char *ohosDl = getenv("OHOS_DL_DIR");
++        if (ohosDl != NULL && ohosDl[0] != '\0') {
++            JLI_Snprintf(jvmpath, jvmpathsize, "%s/" JVM_DLL, ohosDl);
++            JLI_TraceLauncher("OHOS_DL_DIR -> %s\n", jvmpath);
++            return (stat(jvmpath, &s) == 0) ? JNI_TRUE : JNI_FALSE;
++        }
++    }
++
+     if (JLI_StrChr(jvmtype, '/')) {
+         JLI_Snprintf(jvmpath, jvmpathsize, "%s/" JVM_DLL, jvmtype);
+     } else {
+@@ -811,6 +832,19 @@ GetJREPath(char *path, jint pathsize, const char * arch, jboolean speculative)
+ {
+     char libjava[MAXPATHLEN];
+ 
++    /* [meow OHOS patch] Split layout: the JRE *data* dir (rt.jar / lib/security / lib/<arch>/jvm.cfg)
++       is OHOS_JAVA_HOME; the natives live elsewhere (OHOS_DL_DIR, see GetJVMPath). Upstream would
++       probe <home>/lib/<arch>/libjava.so, which does not exist in that layout. */
++    {
++        const char *ohosHome = getenv("OHOS_JAVA_HOME");
++        if (ohosHome != NULL && ohosHome[0] != '\0') {
++            JLI_Snprintf(path, pathsize, "%s", ohosHome);
++            path[pathsize - 1] = '\0';
++            JLI_TraceLauncher("OHOS_JAVA_HOME -> %s\n", path);
++            return JNI_TRUE;
++        }
++    }
++
+     if (GetApplicationHome(path, pathsize)) {
+         /* Is JRE co-located with the application? */
+         JLI_Snprintf(libjava, sizeof(libjava), "%s/lib/%s/" JAVA_DLL, path, arch);
