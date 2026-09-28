@@ -7,7 +7,8 @@ import { RENDERER_LIB, VULKAN_LIB_SHIM, VULKAN_LIB_DISABLED, WINDOW_DEFAULT_W, W
   OFFLINE_USERNAME, LAUNCHER_NAME, LAUNCHER_VERSION,
   CLIENT_MOD_NAME, LWJGL_GEN_343, LWJGL_JAR_PREFIX,
   LWJGL_NAME_MAPPER } from '../constants/LaunchDefaults';
-import { MEOW_CLASS_LOADER, MEOW_MAIN_CLASS } from '../constants/LaunchContract';
+import { MEOW_CLASS_LOADER, MEOW_MAIN_CLASS, LAUNCHWRAPPER_MAIN_CLASS,
+  LOADER_FAMILY_PATH_SEGMENTS } from '../constants/LaunchContract';
 import { libraryNames, resolveMergeModuleEntries } from './NeoForgeInstaller';
 import { NATIVES_DIR } from '../constants/Paths';
 import { VersionJson, VersionRule, VersionRuleArg, VERSION_FORM_VANILLA, LOADER_NEO_FORGE,
@@ -248,11 +249,16 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   // NeoForge 同样需要（LWJGL/随包 native/平台伪装都在这一段），只是它**不设** MeowClassLoader、
   // 主类也不走 MeowLauncher（见下方两个分支的 `neoForge` 条件）。
   if (opts.meowcraftLaunch === true || neoForge) {
-    // 自研 system classloader 只服务 vanilla：它让我们在运行期往 classpath 追加 jar。
-    // **Fabric（等加载器）必须走默认 app classloader**：Fabric Knot 要求 loader 类由父加载器持有、
-    // game 类由它自己的 KnotClassLoader 持有；若我们自设 system CL，KnotClassLoader 会把 loader 类
-    // 当 game 类加载 → `verifyNotInTargetCl` 抛错 + mixin 类分裂。故加载器实例不设该 -D。
-    if (resolved.form === VERSION_FORM_VANILLA) {
+    // 自研 system classloader 服务两类实例：
+    // ① vanilla —— 它让我们在运行期往 classpath 追加 jar（MeowLauncher 的 addURL 路径）；
+    // ② **launchwrapper 系**（≤1.12.2 的 Forge 等）—— `net.minecraft.launchwrapper.Launch.<init>`
+    //    里有 `(URLClassLoader) getClassLoader()` 强转，而 JDK 9+ 的 `AppClassLoader` 不再是
+    //    `URLClassLoader` ⇒ 系统 CL 必须是 `MeowClassLoader`（URLClassLoader 子类），否则启动即
+    //    `ClassCastException`（2026-09-28 真机取证，见 notes `Forge支持-改动方案.md` §10 R1）。
+    // **Fabric / NeoForge 仍不得设**：Fabric Knot 要求 loader 类由父加载器持有、game 类由它自己的
+    // KnotClassLoader 持有；我们自设 system CL 会让 KnotClassLoader 把 loader 类当 game 类加载
+    // → `verifyNotInTargetCl` 抛错 + mixin 类分裂；NeoForge 的 BootstrapLauncher 同理依赖默认 app CL。
+    if (resolved.form === VERSION_FORM_VANILLA || isLaunchWrapperMain(json.mainClass)) {
       argv.push(`-Djava.system.class.loader=${MEOW_CLASS_LOADER}`);
     }
     // 渲染后端按 MC 版本选（见 RendererPolicy）：≥1.17 → 桌面 GL libGLv4.so(Zink)；
@@ -709,7 +715,19 @@ export function collectJarSources(gameRoot: string, jsonPath: string, versionId:
   if (resolved === null) {
     return [];
   }
-  const parts = collectFromJson(gameRoot, resolved.json, versionId);
+  let parts = collectFromJson(gameRoot, resolved.json, versionId);
+  // launchwrapper 系（≤1.12.2 的 Forge 等）：**必须把「启动器族」整体摘出平铺目录**。
+  // 机理（2026-09-28 真机两次取证）：
+  //  ① `Launch.<init>` 里 `(URLClassLoader) getClassLoader()` 的强转要求「加载 Launch 的 CL 是
+  //     URLClassLoader」；平铺 `-cp "<dir>/*"` 会让 **app classloader 先命中**（父优先委托）⇒
+  //     即使 -Djava.system.class.loader 已换成 MeowClassLoader，仍崩 `ClassCastException`
+  //     （CCE 的运行时类名即 AppClassLoader）。⇒ 摘出 `Launch` ⇒ 改由 MeowClassLoader 从真 maven 树加载。
+  //  ② 只摘 launchwrapper 还不够：FML 本体（`FMLTweaker` implements `ITweaker`）若仍留在平铺目录，
+  //     app classloader 定义它时解析不到同族的 `ITweaker` ⇒ `NoClassDefFoundError: ITweaker`。
+  //     ⇒ 两个族必须一起摘（静态核对：53 个在册 jar 里只有这两个族引用 launchwrapper）。
+  if (isLaunchWrapperMain(resolved.json.mainClass)) {
+    parts = parts.filter((p: string) => !isLoaderFamilyJar(p));
+  }
   // 继承/补丁实例的客户端 jar 在基座版本目录（叶子目录常无 <id>.jar）——补进 classpath，
   // 这样平铺目录对 Fabric 也自带 MC jar（不依赖自研 classloader 的运行期追加）。
   const baseId = resolved.clientJarId;
@@ -720,6 +738,28 @@ export function collectJarSources(gameRoot: string, jsonPath: string, versionId:
     }
   }
   return parts;
+}
+
+/**
+ * 该版本的主类是否是 launchwrapper（`net.minecraft.launchwrapper.Launch`，≤1.12.2 的 Forge 等）。
+ * 用于决定是否把自研 system classloader 补给这类实例（见 `buildLaunchArgv` 里的注释）：
+ * launchwrapper 的 `Launch.<init>` 会把 `getClassLoader()` 强转成 `URLClassLoader`，
+ * 而 JDK 9+ 的 app classloader 不是它 ⇒ 不换系统 CL 就启动即崩。
+ * 判据取**主类（形态）**而不是 loader 名：老 Forge 的实例 json 是薄 `inheritsFrom`，
+ * 我们的 loader 识别（`detectLoader`）认不出它，但主类是稳定的。
+ */
+export function isLaunchWrapperMain(mainClass: string | undefined): boolean {
+  return mainClass === LAUNCHWRAPPER_MAIN_CLASS;
+}
+
+/** 该 jar 源路径是否属于「启动器族」（launchwrapper / FML 本体，见 LOADER_FAMILY_PATH_SEGMENTS）。 */
+function isLoaderFamilyJar(srcPath: string): boolean {
+  for (const seg of LOADER_FAMILY_PATH_SEGMENTS) {
+    if (srcPath.includes(seg)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
