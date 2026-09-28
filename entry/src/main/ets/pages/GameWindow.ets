@@ -394,6 +394,8 @@ struct GameWindow {
       // 隐形 IME 客户端：1x1、透明、可获焦、命中全透传。
       // hitTestBehavior(None)：不拦截鼠标/不显示文本 I 光标/不响应点击，
       // 焦点仅由代码 requestFocus('ime-input') 控制。视觉零新增。
+      // enableKeyboardOnFocus(true)：本组件只由代码获焦 ⇒ 显式声明"非点击获焦也要绑定输入法"
+      // （官方默认值 true，自 API 10 起；这里写明是因为"拉软键盘"整条路都靠它）。
       TextInput({ text: this.imeText, placeholder: '' })
         .id('ime-input')
         .width(1)
@@ -401,6 +403,7 @@ struct GameWindow {
         .opacity(0)
         .hitTestBehavior(HitTestMode.None)
         .focusable(true)
+        .enableKeyboardOnFocus(true)
         .enterKeyType(EnterKeyType.Send)
         .onChange((value: string) => {
           this.input?.syncImeText(value);
@@ -416,6 +419,16 @@ struct GameWindow {
         .onKeyPreIme((event: KeyEvent) => {
           this.input?.preImeKey(event);
           return false;
+        })
+        // 焦点自证行：FocusController.requestFocus() 返回 void（SDK 如此），无法判成败 ⇒
+        // 用本组件的 onFocus/onBlur 直接观测"焦点是否真落地"。覆盖层「输入」键拉软键盘时，
+        // 期望看到 requestFocus ime-input 之后紧跟一条 ime-input focus；只有前者没有后者
+        // 就是"请求被系统拒了"（软键盘不会弹，见 notes 输入方案）。
+        .onFocus(() => {
+          hilog.info(LOG_DOMAIN, LOG_TAG, 'ime-input focus');
+        })
+        .onBlur(() => {
+          hilog.info(LOG_DOMAIN, LOG_TAG, 'ime-input blur');
         });
 
       // 虚拟触屏按键覆盖层：设置 touchControls 开启时渲染，叠在 XComponent 之上。
@@ -428,6 +441,10 @@ struct GameWindow {
           },
           onScroll: (notches: number) => {
             this.input?.scrollVirtual(notches);
+          },
+          // 顶部「输入」：grab 内 = 开 MC 聊天框；非 grab = 拉起软键盘（MC 的 GUI 自己不会弹）。
+          onSoftKeyboard: () => {
+            this.input?.requestSoftKeyboard();
           },
         });
       }

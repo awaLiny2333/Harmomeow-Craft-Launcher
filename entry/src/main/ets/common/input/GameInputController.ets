@@ -1234,6 +1234,72 @@ export class GameInputController {
   }
 
   /**
+   * 覆盖层「输入」键（顶部中间的"输入"方块）：语义按 grab 分岔。
+   * - **grab（游戏内）**：保持原行为 —— 轻点一次 T，让 MC 自己打开聊天框；MC 随即释放 grab ⇒
+   *   既有轮询自动激活 IME。这条路径实机是对的，不动。
+   * - **非 grab（主菜单 / 服务器列表等任何 MC GUI）**：MC 不认 T，也**不会**弹软键盘 ——
+   *   它只把字符喂给自己画的 EditBox ⇒ 这里直接把隐形 IME 客户端拉起来：焦点落在它身上 ⇒
+   *   系统弹软键盘 ⇒ 打字经 syncImeText 送进 MC 当前聚焦的输入框。
+   * 两条分支共用一条：**用户显式点了「输入」⇒ Esc 冷却窗不该挡用户动作**（冷却只为挡轮询抢焦点）。
+   */
+  requestSoftKeyboard(): void {
+    this.clearImeCooldown();
+    // 现读 grab（不走 16ms 轮询缓存）：点击是"用户当刻"的动作，缓存可能滞后一帧，
+    // 刚进 / 刚出 grab 的那个窗口里会走错分支（该窗口内点「输入」等于白点一次）。
+    if (this.isGrabbingNow()) {
+      this.pressVirtual(GLFW_KEY_T, false, true);
+      this.pressVirtual(GLFW_KEY_T, false, false);
+      return;
+    }
+    this.showSoftKeyboard();
+  }
+
+  /** 现读 native 的 grab 位；桥未就绪时退回轮询缓存值。 */
+  private isGrabbingNow(): boolean {
+    const b = this.bridge;
+    if (b === undefined || b.meowGetGrabbing === undefined) {
+      return this.grabNative;
+    }
+    return b.meowGetGrabbing() !== 0;
+  }
+
+  /** 清掉 Esc 冷却（关掉定时器并复位）。 */
+  private clearImeCooldown(): void {
+    if (this.imeCooldownTimer >= 0) {
+      clearTimeout(this.imeCooldownTimer);
+      this.imeCooldownTimer = -1;
+    }
+    this.imeCooldown = false;
+  }
+
+  /**
+   * 非 grab 下拉起软键盘。三条依据：
+   * 1. **焦点是唯一可用开关** —— 官方 FAQ：`requestFocus` 获焦后软键盘自动弹起；而 `inputMethod` 的
+   *    `showSoftKeyboard()` 要 `ohos.permission.CONNECT_IME_ABILITY`（系统级），三方应用拿不到。
+   * 2. **焦点没有变化时系统不会重新绑定输入法** —— 菜单态本控制器会自动激活 IME（轮询 → `activateIme`），
+   *    `imeActive` 往往已是 true；此时键盘若被收起，再 `requestFocus` 同一个组件是 no-op
+   *    ⇒ 先把焦点移到 XComponent，下一个任务再要回来，制造一次真正的焦点变化。
+   * 3. `imeActive === false` 时焦点**必在 XComponent**（`deactivateIme()` 末尾就把焦点还给它，开窗初值是
+   *    `defaultFocus`）⇒ `activateIme()` 里的 `focus('ime-input')` 本身就是一次真实焦点变化，无需再加。
+   *    焦点是否真落地，看页面 `ime-input` 的 onFocus / onBlur 自证行。
+   */
+  private showSoftKeyboard(): void {
+    this.clearImePending();
+    if (!this.imeActive) {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'soft keyboard: activate');
+      this.activateIme();
+      return;
+    }
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'soft keyboard: refocus');
+    this.focus('game-xc');
+    setTimeout(() => {
+      if (this.imeActive && !this.disposed) {
+        this.focus('ime-input');
+      }
+    }, IME_REFOCUS_AFTER_CLICK_MS);
+  }
+
+  /**
    * GLFW 键码 -> HarmonyOS KeyCode（仅覆盖虚拟覆盖层用到的键：字母 / 空格 / Esc / 修饰键；
    * 只做本文件需要的反向，未知返回 0 = 仅发送、不记 pressed，不做全表反向）。
    */

@@ -2,7 +2,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
 import { TOUCH_CONTROL_BUTTON_SIZE, TOUCH_CONTROL_GAP, TOUCH_CONTROL_BG,
   TOUCH_CONTROL_BORDER_RADIUS, TOUCH_CONTROLS_INSET_DEFAULT } from '../common/constants/Constants';
-import { GLFW_KEY_SPACE, GLFW_KEY_ESCAPE, GLFW_KEY_T, GLFW_MOUSE_BUTTON_1,
+import { GLFW_KEY_SPACE, GLFW_KEY_ESCAPE, GLFW_MOUSE_BUTTON_1,
   GLFW_MOUSE_BUTTON_2 } from '../common/input/GlfwInput';
 import { GameInputController } from '../common/input/GameInputController';
 import { SettingsTools } from '../common/data/SettingsTools';
@@ -149,6 +149,10 @@ export struct TouchControlsView {
   @Param onScroll: (notches: number) => void = () => {
   };
 
+  /** 顶部「输入」键回调：不发键，语义由父组件决定（grab 内 = 开聊天，非 grab = 拉起软键盘）。 */
+  @Param onSoftKeyboard: () => void = () => {
+  };
+
   /** 是否处于 grab（游戏内锁视角）：由父组件 GameWindow 传入，仅此时渲染左右两簇；顶部始终渲染。 */
   @Param grabbing: boolean = false;
 
@@ -157,6 +161,12 @@ export struct TouchControlsView {
 
   /** 各独立按键（右下七个 + 顶部三个）当前按下的 GLFW 键码，仅用于高亮。 */
   @Local private pressedCodes: number[] = [];
+
+  /** 其中属于**鼠标键**的那些码（攻击 / 交互 = 0 / 1）：只给 releaseAll 判补发原语用，不参与渲染。 */
+  private pressedMouseCodes: number[] = [];
+
+  /** 顶部「输入」键的按下态（仅高亮用）：它不发键，故必须独立于 pressedCodes。 */
+  @Local private softKeyboardDown: boolean = false;
 
   /** 滚轮按键（右下左 / 右）当前按下的格数（+1 上 / -1 下），仅用于高亮。 */
   @Local private pressedScroll: number[] = [];
@@ -234,11 +244,16 @@ export struct TouchControlsView {
   private releaseAll(): void {
     this.emit(this.activeDir, false, false);
     this.activeDir = DIR_NONE;
+    // 补发释放必须带上**各自的** isMouse：攻击 / 交互是鼠标键（0/1），按键盘键补发会漏掉
+    // mouse-up ⇒ MC 侧那个鼠标键一直"按着"（离开 grab 收起动作簇 / 关窗时最容易撞上）。
     for (const code of this.pressedCodes) {
-      this.onVirtual(code, false, false);
+      this.onVirtual(code, this.pressedMouseCodes.includes(code), false);
     }
     this.pressedCodes = [];
+    this.pressedMouseCodes = [];
     this.pressedScroll = [];
+    // 「输入」键不发键，只需清高亮（不进 pressedCodes ⇒ 不会被上面的补发释放波及）。
+    this.softKeyboardDown = false;
     this.dirFingerId = -1;
   }
 
@@ -255,7 +270,7 @@ export struct TouchControlsView {
   }
 
   /** 独立维护单个按键的按下态：换新数组赋值以保证 V2 刷新；相同状态不改动。 */
-  private setPressed(code: number, down: boolean): void {
+  private setPressed(code: number, isMouse: boolean, down: boolean): void {
     const index: number = this.pressedCodes.indexOf(code);
     if (down && index < 0) {
       const next: number[] = this.pressedCodes.slice();
@@ -265,6 +280,13 @@ export struct TouchControlsView {
       const next: number[] = this.pressedCodes.slice();
       next.splice(index, 1);
       this.pressedCodes = next;
+    }
+    // 记下"这个码是以鼠标键按下的"：只给 releaseAll 用（它必须用鼠标原语补发 mouse-up）。
+    const at: number = this.pressedMouseCodes.indexOf(code);
+    if (down && isMouse && at < 0) {
+      this.pressedMouseCodes.push(code);
+    } else if ((!down || !isMouse) && at >= 0) {
+      this.pressedMouseCodes.splice(at, 1);
     }
   }
 
@@ -289,10 +311,10 @@ export struct TouchControlsView {
 
   private onButtonTouch(codes: number[], isMouse: boolean, event: TouchEvent): void {
     if (event.type === TouchType.Down) {
-      this.setPressed(codes[0], true);
+      this.setPressed(codes[0], isMouse, true);
       this.emit(codes, isMouse, true);
     } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-      this.setPressed(codes[0], false);
+      this.setPressed(codes[0], isMouse, false);
       this.emit(codes, isMouse, false);
     }
   }
@@ -654,13 +676,41 @@ export struct TouchControlsView {
       });
   }
 
+  /**
+   * 顶部「输入」键：不发键，按下即回调 onSoftKeyboard（grab 内 = 开聊天，非 grab = 拉起软键盘）。
+   * 高亮态独立于 pressedCodes —— 它从不发键，混进去会被 releaseAll 补发一个凭空的多余键 UP。
+   * 其余与 topButton 一致（同尺寸 / 同 region 登记，排除区与布局对齐不受影响）。
+   */
+  @Builder
+  private chatButton(label: Resource, regionIndex: number): void {
+    Text(label)
+      .width(this.buttonSize)
+      .height(this.buttonSize)
+      .fontSize(this.buttonFont)
+      .fontColor(Color.White)
+      .textAlign(TextAlign.Center)
+      .backgroundColor(this.softKeyboardDown ? $r('app.color.brand') : TOUCH_CONTROL_BG)
+      .borderRadius(this.buttonRadius)
+      .onAreaChange((oldValue: Area, newValue: Area) => {
+        this.onRegionArea(regionIndex, oldValue, newValue);
+      })
+      .onTouch((event: TouchEvent) => {
+        if (event.type === TouchType.Down) {
+          this.softKeyboardDown = true;
+          this.onSoftKeyboard();
+        } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+          this.softKeyboardDown = false;
+        }
+      });
+  }
+
   build() {
     Stack() {
       Column() {
         // 上区中间：ESC / 输入 / Tab（水平居中，三个同尺寸方块）。
         Row({ space: this.gap }) {
           this.topButton(GLFW_KEY_ESCAPE, $r('app.string.touch_btn_pause'), 2);
-          this.topButton(GLFW_KEY_T, $r('app.string.touch_btn_chat'), 3);
+          this.chatButton($r('app.string.touch_btn_chat'), 3);
           this.topButton(GLFW_KEY_TAB, $r('app.string.touch_btn_tab'), 4);
         }
         .width('100%')
