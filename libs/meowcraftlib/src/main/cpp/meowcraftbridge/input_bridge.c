@@ -33,6 +33,13 @@
 #include <string.h>
 #include <time.h>
 
+/* 顺序有意义，勿调换：oh_input_manager.h 用到 OH_PixelmapNative**（OH_Input_GetCursorInfo），
+ * 但只前向声明 `struct OH_PixelmapNative`、不给同名 typedef —— 旧 SDK 里那行 typedef 就在该头内，
+ * 新 SDK（hmos-clt，2026-09-28 更新）把它删了 ⇒ 本文件是 **C**（C++ 才有隐式 tag→类型名）直接编不过：
+ *   error: must use 'struct' tag to refer to type 'OH_PixelmapNative'
+ * 该别名现由 image_framework 的 pixelmap 原生头唯一提供（新旧 SDK 都有），故先把它引进来。
+ * 本文件不使用任何 pixelmap API，只为补齐类型名。 */
+#include <multimedia/image_framework/image/pixelmap_native.h>
 #include <multimodalinput/oh_input_manager.h>
 #include <window_manager/oh_window_event_filter.h>
 
