@@ -29,15 +29,25 @@ export const LOADER_FABRIC: string = 'fabric';
 export const LOADER_LEGACY_FABRIC: string = 'legacy_fabric';
 /** NeoForge（**仅 MC 1.20.2+**）。 */
 export const LOADER_NEO_FORGE: string = 'neoforge';
+/** Forge（含 1.7.10–1.12.2 的 launchwrapper 系与 1.13+ 的 ModLauncher/Bootstrap 系）。 */
+export const LOADER_FORGE: string = 'forge';
 
 /** 原版游戏补丁层的 id（HMCL GameComponentType.GAME）。 */
 const PATCH_ID_GAME: string = 'game';
-/** HMCL 补丁 id：普通/legacy Fabric / NeoForge。 */
+/** HMCL 补丁 id：普通/legacy Fabric / Forge / NeoForge。 */
 const PATCH_ID_FABRIC: string = 'fabric';
 const PATCH_ID_LEGACY_FABRIC: string = 'legacyfabric';
 const PATCH_ID_NEO_FORGE: string = 'neoforge';
+const PATCH_ID_FORGE: string = 'forge';
 /** NeoForge 识别兜底：FML 家族库（patch id 缺失时用）。 */
 const NEO_FORGE_LIBRARY_PREFIX: string = 'net.neoforged.fancymodloader:';
+/**
+ * Forge 识别兜底：Forge 自己的制品组（patch id 缺失时用）。
+ * ⚠️ **必须排在 `NEO_FORGE_LIBRARY_PREFIX` 之前判定**：Forge 1.20.x（= 47.x）的库表里
+ * **同时**含 `net.minecraftforge:*` 与 `net.neoforged.fancymodloader:*`（2026-09-28 T0 真件实测），
+ * 只按后者判会把 Forge 误判成 NeoForge。
+ */
+const FORGE_LIBRARY_PREFIXES: string[] = ['net.minecraftforge:forge', 'net.minecraftforge:fmlloader'];
 
 // ---- 版本 json 数据模型（仅建模本工程消费到的字段；JSON 键名由外部格式决定）----
 
@@ -466,13 +476,15 @@ function emptyJson(): VersionJson {
 }
 
 /**
- * 加载器识别：补丁 id（`fabric`/`legacyfabric`）或库 `net.fabricmc:fabric-loader`
- * （精确或带 `:` 版本后缀）；出现 `net.legacyfabric:` 组库 → Legacy Fabric。
+ * 加载器识别：补丁 id（`fabric`/`legacyfabric`/`forge`/`neoforge`）或库
+ * （`net.fabricmc:fabric-loader` / `net.legacyfabric:` / `net.minecraftforge:forge|fmlloader` /
+ * `net.neoforged.fancymodloader:`）。**Forge 优先于 NeoForge**（Forge 47 同时带 fancymodloader 库）。
  */
 export function detectLoader(json: VersionJson): string {
   let fabric = false;
   let legacy = false;
   let neoforge = false;
+  let forge = false;
   for (const lib of json.libraries ?? []) {
     const name = lib.name ?? '';
     if (name === 'net.fabricmc:fabric-loader' || name.startsWith('net.fabricmc:fabric-loader:')) {
@@ -480,6 +492,12 @@ export function detectLoader(json: VersionJson): string {
     }
     if (name.startsWith('net.legacyfabric:')) {
       legacy = true;
+    }
+    // Forge：Forge 自己的制品组（patch id 缺失时的兜底判据）。
+    for (const pfx of FORGE_LIBRARY_PREFIXES) {
+      if (name.startsWith(pfx)) {
+        forge = true;
+      }
     }
     // NeoForge：FML 家族库（patch id 缺失时的兜底判据，对齐 HMCL GameComponentType.NEO_FORGE）。
     if (name.startsWith(NEO_FORGE_LIBRARY_PREFIX)) {
@@ -499,8 +517,16 @@ export function detectLoader(json: VersionJson): string {
     if (p.id === PATCH_ID_NEO_FORGE) {
       neoforge = true;
     }
+    if (p.id === PATCH_ID_FORGE) {
+      forge = true;
+    }
   }
-  // NeoForge 优先判定（其库表里也可能出现 fabric 字样，且优先级高于 Fabric）。
+  // 加载器判定顺序：Forge → NeoForge → Fabric/LegacyFabric。
+  // - Forge 先于 NeoForge：Forge 47 的库表里同时有 `net.minecraftforge:*` 与 `net.neoforged.fancymodloader:*`。
+  // - 两者都先于 Fabric：它们的库表里可能出现 fabric 字样。
+  if (forge) {
+    return LOADER_FORGE;
+  }
   if (neoforge) {
     return LOADER_NEO_FORGE;
   }

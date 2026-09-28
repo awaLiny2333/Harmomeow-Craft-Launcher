@@ -189,6 +189,10 @@
       "value": "原版"
     },
     {
+      "name": "version_type_forge",
+      "value": "Forge"
+    },
+    {
       "name": "version_type_neoforge",
       "value": "NeoForge"
     },

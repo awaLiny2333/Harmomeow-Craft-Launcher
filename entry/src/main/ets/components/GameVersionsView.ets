@@ -12,7 +12,7 @@ import {
 import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES,
   RENDERER_BACKEND_VULKAN, RENDERER_BACKEND_GL4ES3 } from '../common/constants/LaunchDefaults';
 import { rendererForVersion } from '../common/data/RendererPolicy';
-import { LOADER_FABRIC, LOADER_LEGACY_FABRIC, LOADER_NEO_FORGE, VERSION_FORM_VANILLA } from '../common/data/VersionResolver';
+import { LOADER_FABRIC, LOADER_LEGACY_FABRIC, LOADER_FORGE, LOADER_NEO_FORGE, VERSION_FORM_VANILLA } from '../common/data/VersionResolver';
 import { SettingsTools } from '../common/data/SettingsTools';
 import {
   InstanceSettings, RendererOverride, readInstanceSettings, writeInstanceSettings
@@ -210,12 +210,15 @@ export struct GameVersionsView {
   }
 
   /**
-   * 版本类型展示：原版 / Fabric / Legacy Fabric / 未知。
-   * 「未知」= 有继承/补丁形态但加载器识别不出（如 Forge/NeoForge/Quilt/整合包等我们暂不点名的 loader）。
+   * 版本类型展示：原版 / Forge / NeoForge / Fabric / Legacy Fabric / 未知。
+   * 「未知」= 有继承/补丁形态但加载器识别不出（Quilt / 整合包等我们暂不点名的 loader）。
    */
   private versionTypeLabel(v: GameVersion): Resource {
     if (v.loader === LOADER_LEGACY_FABRIC) {
       return $r('app.string.version_type_legacy_fabric');
+    }
+    if (v.loader === LOADER_FORGE) {
+      return $r('app.string.version_type_forge');
     }
     if (v.loader === LOADER_NEO_FORGE) {
       return $r('app.string.version_type_neoforge');
