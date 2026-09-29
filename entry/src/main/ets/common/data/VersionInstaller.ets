@@ -1489,7 +1489,16 @@ interface ForgeBmclEntryJson {
   files?: ForgeBmclFileJson[];
 }
 
-/** BMCLAPI 列表里的一个文件项（只用来判"有没有 installer jar"；其 `hash` 见方案文档 §13.6 未决，暂不用于校验）。 */
+/**
+ * BMCLAPI 列表里的一个文件项（当前只用来判"有没有 installer jar"）。
+ *
+ * 方案文档 §13.6 第 1 条（"installer jar 无强校验"）中的 `hash` 一问**已实测收口**（2026-10-01）：
+ * `category == "installer" && format == "jar"` 的 `hash` **就是**官方 maven 上同名 installer jar 的 sha1
+ * （抽样 1.7.10-10.13.4.1614 / 1.7.10-10.13.0.1151 / 1.12.2-14.23.5.2864，三者均与本地或官方文件 sha1 一致）。
+ * ⇒ **镜像源**可对 installer 做 sha1 强校验（强于 HMCL 的结构校验：`ForgeInstallTask.java:83` 只挂
+ * `ZIP_INTEGRITY_CHECK_HANDLER`）；**官方源**（`maven-metadata.xml` 只有目录名）仍无 hash。
+ * 暂未接入安装链（接入需为每次安装多一次 BMCLAPI 往返），故此处只记录结论、不读取该字段。
+ */
 interface ForgeBmclFileJson {
   category?: string;
   format?: string;
@@ -1861,10 +1870,12 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
   const workDir = `${cacheDir}/${FORGE_INSTALLER_DIR}/${loaderSource}/${loaderVersion}`;
   ensureDir(workDir);
   const jarPath = `${workDir}/installer.jar`;
-  if (!exists(jarPath)) {
-    // 候选顺序见 `forgeInstallerCandidates`（镜像源 = [镜像, 官方]；官方源 = [官方]）。
-    // **直接走下载原语**以确保官方兜底不丢：`runDownloads` 只对 `urls[0]` 再做一次前缀展开，
-    // 而 `urls[0]` 若已是镜像地址就展不出官方了。
+  const unzipDir = `${workDir}/unzipped`;
+
+  // 下 installer jar。候选顺序见 `forgeInstallerCandidates`（镜像源 = [镜像, 官方]；官方源 = [官方]）。
+  // **直接走下载原语**以确保官方兜底不丢：`runDownloads` 只对 `urls[0]` 再做一次前缀展开，
+  // 而 `urls[0]` 若已是镜像地址就展不出官方了。
+  const downloadInstaller = async (): Promise<void> => {
     const installerUrls = forgeInstallerCandidates(gameRemote.id, loaderVersion, loaderSource);
     onCount(0, 1);
     onCurrent('forge-installer.jar');
@@ -1883,13 +1894,42 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
       throw new ForgeInstallerUnavailableError(buildId);
     }
     onCount(1, 1);
+  };
+
+  // 解包 installer 并读 `install_profile.json`（先清后解）；任一步失败即视为"这个 jar 不可用"。
+  const extractProfile = async (): Promise<ForgeInstallProfileJson> => {
+    removeTreeBestEffort(unzipDir);
+    ensureDir(unzipDir);
+    onCurrent('installer-profile');
+    await zlib.decompressFile(jarPath, unzipDir);
+    return readJsonFile<ForgeInstallProfileJson>(`${unzipDir}/install_profile.json`);
+  };
+
+  // `installer.jar` 按路径"命中即跳过"⇒ 复用到的文件若已损坏（半截 / 被破坏），必须能**自愈**，
+  // 否则坏文件会被永久复用（每次都在下游解包/读 profile 处失败，且永远不重下）。
+  // HMCL 不靠"路径命中即跳过"：它每次下到临时文件、ZIP 结构校验通过才落盘、用完即删
+  // （ref/HMCL `.../download/forge/ForgeInstallTask.java:76-84`、`:92-93`），坏文件从不进持久位置。
+  // 这里保留跨实例复用的缓存目录，但**复用前先解一次**：解不开、或解出后没有 `install_profile.json`，
+  // 即判为坏文件 → 删除 → 重下再解。于是坏缓存最多只影响当次任务（当次即修），不会永久卡死。
+  let profile: ForgeInstallProfileJson | null = null;
+  if (exists(jarPath)) {
+    try {
+      profile = await extractProfile();
+    } catch (error) {
+      const err = error as BusinessError;
+      hilog.warn(LOG_DOMAIN, LOG_TAG,
+        'cached forge installer unusable, re-downloading: %{public}s (%{public}s)', jarPath, err.message ?? '');
+      try {
+        fileIo.unlinkSync(jarPath);
+      } catch {
+        // 删除失败也继续：`downloadFile` 落盘前会先删目标再 rename。
+      }
+    }
   }
-  const unzipDir = `${workDir}/unzipped`;
-  removeTreeBestEffort(unzipDir);
-  ensureDir(unzipDir);
-  onCurrent('installer-profile');
-  await zlib.decompressFile(jarPath, unzipDir);
-  const profile = readJsonFile<ForgeInstallProfileJson>(`${unzipDir}/install_profile.json`);
+  if (profile === null) {
+    await downloadInstaller();
+    profile = await extractProfile();
+  }
   const form = classifyForgeProfile(profile);
   if (form === FORGE_FORM_UNSUPPORTED) {
     // 明确拒绝（且不留残缺实例）：1.13+ 需外部 JVM；两键皆无 = 格式不认识。
