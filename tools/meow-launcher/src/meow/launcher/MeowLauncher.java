@@ -77,15 +77,28 @@ public final class MeowLauncher {
         McOptions.setDefault("simulationDistance", "5");
         McOptions.save();
 
-        if (System.getProperty("meowcraft.internal.keepForgeSplash") == null) {
-            File splashFile = new File(GameDirs.game, "config/splash.properties");
-            splashFile.getParentFile().mkdirs();
-            if (splashFile.exists()) {
-                writeText(splashFile, readText(splashFile).replace("enabled=true", "enabled=false"));
-            } else {
-                writeText(splashFile, "enabled=false");
-            }
-        }
+        /*
+         * ★2026-09-29 删除：这里原本有一条"替用户关掉 Forge splash"的策略 ——
+         *   若系统属性 `meowcraft.internal.keepForgeSplash` 未设，就把 `<gameRoot>/config/splash.properties`
+         *   写成 `enabled=false`。
+         *
+         * 【为什么当初存在】它是从被替换掉的 **PojavLauncher_iOS 派生 launcher.jar** 继承来的行为契约
+         *   （原属性名 `pojav.internal.keepForgeSplash`，见 notes/20-design/launch/launcher净室-设计.md:55），
+         *   目的：**绕开 FML 控制台 splash 在 GL 栈不支持"共享对象的第二上下文"时的崩溃**。
+         *
+         * 【为什么删掉】
+         *   ① **在我们的目录布局下从未生效**：它写的是 `<gameRoot>/config/splash.properties`，
+         *      而 FML 读的是**相对路径** `config/splash.properties`（CWD = `user.dir` = 每实例隔离目录）
+         *      ⇒ 写错了地方（实测：1.12.2 实例里 FML 自己另生成了 `enabled=true`）。
+         *   ② **违反兼容铁律**：它写进了用户的游戏目录（notes/00-current/工程与规范.md「兼容铁律」）。
+         *   ③ **与 HMCL 不一致**：HMCL 完全不碰 splash（`ref/HMCL/.../DefaultLauncher.java` 只加两条
+         *      `-Dfml.ignoreInvalidMinecraftCertificates/-Dfml.ignorePatchDiscrepancies`）⇒
+         *      按"与 HMCL 双向兼容"的口径，我们也不该做。
+         *   ④ **真正的问题已在正确的地方修好**：我们的 LWJGL2 shim 现在**尊重 `share` 实参**
+         *      （上游契约 `nCreate(peer, attribs, shared_context_handle)`），splash 的第二上下文是**真的**
+         *      —— 2026-09-29 实机日志：`shared ctx created: share=0x… -> ctx=0x… slot=0x…`，
+         *      且 `eglMakeCurrent failed`/`make-current failed` 均归零、splash 正常显示。
+         */
 
         Account account = Account.load(args[0]);
         VersionJson version = VersionLoader.load(args[1]);

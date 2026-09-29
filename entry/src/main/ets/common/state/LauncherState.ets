@@ -3,7 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { GameDir } from '../data/GameDirsTools';
 import { GameVersion, scanVersions, resolveGameRoot } from '../data/VersionScanner';
-import { scanJavaEnv } from '../data/JavaEnvScanner';
+import { scanJavaEnv, JavaEnvInfo } from '../data/JavaEnvScanner';
 import { isGameProcessRunning } from '../data/GameProcessScanner';
 import { SettingsTools } from '../data/SettingsTools';
 import { RendererOverride, readInstanceSettings } from '../data/InstanceSettings';
@@ -48,11 +48,10 @@ export class LauncherState {
    *  行 key 强制重建（见 GameVersionsView）。 */
   @Trace versionEpoch: number = 0;
 
-  /** 内置 JRE 是否已解压就绪（版本区据此禁用"启动"，避免无 JRE 空启动）。 */
-  @Trace jreReady: boolean = false;
-
-  /** JRE 数据须升级（有数据但令牌不符）——版本区据此显示"须升级"型提示而非"未解压"。 */
-  @Trace jreNeedsUpgrade: boolean = false;
+  /** 随包 JRE 的**探测结果**（`scanJavaEnv`），供「Java 环境」区展示。
+   *  注意它只是**展示用数据**：这里**不**判"能不能启动"——启动前检查按该实例实际要用的
+   *  那一套逐套判定（见 `GameLauncher.checkLaunchJre`），不再有"任一套解压就全局放行"的预置门。 */
+  @Trace jreEnvs: JavaEnvInfo[] = [];
 
   /** 游戏 Ability 独立进程是否在运行（版本区据此禁用"启动"，避免重复开游戏）。 */
   @Trace gameRunning: boolean = false;
@@ -134,24 +133,13 @@ export class LauncherState {
   }
 
   /**
-   * 探测内置 JRE 是否已解压就绪（filesDir/meow-jres/<id>/lib/modules 存在；.so 只在 el1）。
-   * 版本区挂载 / Java 环境区安装完成后都会调用，使"启动"按钮可用性全局同步。
+   * 重扫随包 JRE 状态（放进共享态 `jreEnvs`，供「Java 环境」区展示）。
+   * 「Java 环境」区挂载 / 点刷新 / 解压完成后调用；启动时在别处装机也会调它以免那一区停在旧状态。
+   * ⚠️ 只存**数据**、不判"能否启动"：那个判断在点启动时按该实例实际要用的那一套做
+   * （`GameLauncher.checkLaunchJre`）。
    */
-  refreshJre(filesDir: string): void {
-    let ready = false;
-    let needsUpgrade = false;
-    const envs = scanJavaEnv(filesDir);
-    for (const env of envs) {
-      if (env.installed) {
-        ready = true;
-        break;
-      }
-      if (env.needsUpgrade) {
-        needsUpgrade = true;
-      }
-    }
-    this.jreReady = ready;
-    this.jreNeedsUpgrade = !ready && needsUpgrade;
+  refreshJreEnvs(filesDir: string): void {
+    this.jreEnvs = scanJavaEnv(filesDir);
   }
 
   /**

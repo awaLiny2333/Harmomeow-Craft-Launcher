@@ -4,7 +4,8 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { NodeContent, window, display } from '@kit.ArkUI';
 import { launchGame } from '../common/data/GameLauncher';
-import { JreLibModule, FullscreenRequest } from '../common/state/JvmLauncher';
+import { JreLibModule, FullscreenRequest, currentBridge, selectBridge } from '../common/state/JvmLauncher';
+import { resolveLaunchRuntime } from '../common/data/GameLauncher';
 import { gameLaunchParams } from '../common/state/GameLaunchParams';
 import { isLegacyLwjgl, setWindowDisplaySize } from '../common/data/MinecraftLauncher';
 import { readAppGlobalSettings } from '../common/data/AppSettings';
@@ -182,8 +183,8 @@ struct GameWindow {
     this.requestCloseSent = true;
     hilog.info(LOG_DOMAIN, LOG_TAG, 'surface gone -> request game window close');
     try {
-      const jrelib = await import('meowjre') as JreLibModule;
-      jrelib.requestGameWindowClose?.();
+      // 未选定桥（比如还没走到 injectAndLaunch）时静默跳过：这里只是"请游戏优雅关窗"。
+      (await currentBridge())?.requestGameWindowClose?.();
     } catch (e) {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'request close fail: %{public}s', JSON.stringify(e));
     }
@@ -198,11 +199,27 @@ struct GameWindow {
       return;
     }
     try {
-      // 1. 加载 meowjre，先注入 surface（必须在 JVM 启动前）。全链路自研：
+      // 0. **先选定桥**（= 本实例要用的那套 JRE 的 HSP 模块）——必须在**任何桥调用之前**、
+      //    也在注入 surface 之前：每个 HSP 各有一份桥的 native（带 surface/输入共享状态），
+      //    且两模块 `libIsolation` 互不可 dlopen。**2026-09-29 事故**：以前这里直接 `currentBridge()`
+      //    按"默认现代套"加载 ⇒ 选了 legacy 的实例就成了"跑在 meowjre 的桥里 dlopen meowjrelegacy
+      //    的 libjli" ⇒ 被策略拒绝（`No error information`，stat/open 全成功，极难反推）。
+      //    解析与 `launchGame` 同源（`resolveLaunchRuntime`）⇒ 选桥与启动参数不会不一致。
+      const runtime = resolveLaunchRuntime(param.gameRoot, param.versionId, param.jsonPath).runtime;
+      if (!await selectBridge(runtime)) {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'selectBridge(%{public}s) failed, abort launch',
+          runtime.hspModule);
+        return;
+      }
+      // 1. 取已选定的桥，先注入 surface（必须在 JVM 启动前）。全链路自研：
       //    meowSetSurfaceId 创建 OH_NativeWindow 写 env+0；meowResizeSurface 同 sid
       //    只标尺寸，由 render 线程 pump diff apply（GL 分支重建 EGL surface；Vulkan 分支
       //    回写 OHNativeWindow geometry），sid 变更才重建窗。
-      const jrelib = await import('meowjre') as JreLibModule;
+      const jrelib = await currentBridge();
+      if (jrelib === undefined) {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'bridge missing after selectBridge, abort launch');
+        return;
+      }
       this.jrelib = jrelib;
       this.input?.setBridge(jrelib);
       // 原生鼠标增量输入：把 ContentSlot 的 NodeContent 交给 native（挂 NDK 覆盖节点）。

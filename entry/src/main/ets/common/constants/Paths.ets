@@ -12,16 +12,26 @@
 /** JRE 数据根目录（filesDir 下）。 */
 export const JRES_ROOT: string = 'meow-jres';
 
-/** 内置 JRE id（= 安装目录名 = rawfile 名前缀）；**版本无关**，勿带版本号。 */
+/**
+ * 内置 JRE id（= 安装目录名 = rawfile 名前缀）；**版本无关**，勿带版本号。
+ * `JRE_ID_MEOW` = **现代套**（默认）；`JRE_ID_MEOW_LEGACY` = **legacy 套**（OpenJDK 8，
+ * 服务 Forge ≤1.12.2 LaunchWrapper / 1.13–1.16 ModLauncher——那些在现代 JDK 上跑不了：
+ * JDK 14 删了 `java.util.jar.Pack200`、JDK 24 禁了 SecurityManager）。
+ * ⚠️ 这两条只是**字符串常量**；「哪套 JRE 有哪些属性/路径」的**结构性事实**在
+ * [`common/data/JavaRuntime.ets`](../data/JavaRuntime.ets) 的表里（单一来源，勿在此另立平行常量）。
+ */
 export const JRE_ID_MEOW: string = 'meow_jre';
+export const JRE_ID_MEOW_LEGACY: string = 'meow_jre_legacy';
 
 /**
- * [数据门] 随包 JRE 数据版本令牌（java.home 数据内容标识）。
- * 就绪判断要求解压目录内 `meow_jre_data` == 此值；改随包 JRE 数据时必须同步更新
- * （与 native `jre_launcher.h::kJreDataToken` 同值），否则 in-place 更新会「新 .so + 旧数据」混合。
- * **JRE 版本升级即改此令牌**（id 不变）→ UI 显示「须升级 → 升级」。
+ * [数据门] 每 id 的随包 JRE 数据令牌（java.home 数据内容标识）——**逐 id 独立**，勿共用
+ * （共用会产出「新 el1 .so + 旧数据」混合）。就绪判断要求解压目录内 `meow_jre_data` == 该 id 的令牌。
+ * **改某 id 的随包数据必须同步升该 id 的令牌**；native 侧同值镜像见
+ * `entry/src/main/cpp/meowassets/jre_launcher.h::kJreSpecs`。
  */
 export const JRE_DATA_TOKEN: string = '26.0.2.1+1-7-r2';
+/** legacy 套（OpenJDK 8u504）的数据令牌。 */
+export const JRE_DATA_TOKEN_LEGACY: string = '1.8.0_504-b01-r1';
 
 /** JRE 数据令牌文件名（<installDir>/meow_jre_data）。 */
 export const JRE_DATA_TOKEN_FILE: string = 'meow_jre_data';
@@ -73,6 +83,8 @@ export const DOWNLOAD_PART_SUFFIX: string = '.part';
 
 /** JRE HSP 模块名（打包契约，与 build-profile.json5 一致）；**版本无关**。 */
 export const HSP_MEOWJRE: string = 'meowjre';
+/** legacy 套的 HSP 模块名（打包契约）；**版本无关**（禁把 JRE 版本塞进模块名）。 */
+export const HSP_MEOWJRE_LEGACY: string = 'meowjrelegacy';
 
 /** HSP 内 native libs 子路径（打包契约）。 */
 export const HSP_LIBS_SUBPATH: string = 'libs/arm64';
@@ -115,9 +127,9 @@ export function touchControlsBadPath(filesDir: string): string {
   return `${touchControlsSettingsPath(filesDir)}${BAD_FILE_SUFFIX}`;
 }
 
-/** <bundleCodeDir>/meowjre/libs/arm64（JRE/桥 el1 native libs）。 */
-export function hspLibsDir(bundleCodeDir: string): string {
-  return `${bundleCodeDir}/${HSP_MEOWJRE}/${HSP_LIBS_SUBPATH}`;
+/** <bundleCodeDir>/<module>/libs/arm64 —— **指定** HSP 模块的 el1 native libs 目录。 */
+export function hspLibsDirFor(bundleCodeDir: string, moduleName: string): string {
+  return `${bundleCodeDir}/${moduleName}/${HSP_LIBS_SUBPATH}`;
 }
 
 /**

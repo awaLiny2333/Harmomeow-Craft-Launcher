@@ -42,6 +42,10 @@ export const RENDERER_LIB_GL4ES: string = 'libgl4es.so';
 export const RENDERER_ENV_GL4ES: string = 'gl4es';
 /** 逐版本"渲染后端"覆盖值：推荐（按 MC 版本自动）/ 桌面 GL / gl4es。 */
 export const RENDERER_AUTO: string = 'auto';
+
+// ---- 逐实例「Java 环境」覆盖（与渲染后端同构：auto = 交给 JavaPolicy 按 MC 版本 × loader 选） ----
+/** 逐实例 Java 环境覆盖值：`auto`（推荐）。其余取值 = [`JavaRuntime.id`](../data/JavaRuntime.ets)。 */
+export const JAVA_ENV_AUTO: string = 'auto';
 // 逐版本「渲染后端」下拉的第四档：让 MC 去试 **VulkanBackend**（26.2+ 才有）。
 // 它**不改 GL 侧的任何东西**（lib/env 仍是桌面 GL），只让启动器额外给 MC 传游戏参数
 // `--graphicsBackend vulkan`；MC 的候选列表因此变成 {VulkanBackend, GlBackend} ⇒ Vulkan 失败照样回退 GL。
@@ -73,7 +77,7 @@ export const CLIENT_MOD_NAME: string = 'Harmomeow Craft';
 
 // ---- staging（启动支持 jar 载体）----
 /** 内容令牌：meowcraft_extras.tar.gz 内容变更（换 jar / 打补丁）时递增，强制重抽缓存。 */
-export const EXTRAS_VERSION: string = '20260920-focus-autopause';
+export const EXTRAS_VERSION: string = '20260929-launcher-no-splash-policy';
 /** 平铺目录必须保留的公共 jar（其余 .jar 视为残留删除；lwjgl 世代 jar 按版本另行保留）。 */
 export const EXPECTED_EXTRA_JARS: string[] = ['launcher.jar', 'gson-for-launcher.jar'];
 // ---- LWJGL（**现代只随包一代**：3.4.3 服务全部 LWJGL3 版本；legacy ≤1.12.2 仍走 MC 的 LWJGL2）----

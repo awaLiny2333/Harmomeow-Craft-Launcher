@@ -29,21 +29,35 @@ export const LAUNCHWRAPPER_MAIN_CLASS: string = 'net.minecraft.launchwrapper.Lau
 
 /**
  * 「启动器族」的 maven 路径片段：这些制品**必须交给自研 system classloader（MeowClassLoader）加载**，
- * **不能留在平铺 `-cp` 里** —— 否则 app classloader 会抢先定义它们，而它看不到同族的其它类。
+ * **不能留在平铺 `-cp` 里**。
+ *
+ * **判据（本清单的依据）**：只要一个 jar 里**含 `net/minecraft/launchwrapper/ITweaker` 的实现**
+ * （或引用 launchwrapper），它就必须由 MeowClassLoader 定义 —— 否则 app classloader 抢先定义它，
+ * 它就**看不到同族的其它类** ⇒ `NoClassDefFoundError: net/minecraft/launchwrapper/ITweaker`。
+ * 为什么摘掉仍能加载：`MeowLauncher` 会**按版本描述重建 classpath**并把真库树
+ * `addURL` 进系统 CL（`tools/meow-launcher/src/meow/launcher/MeowLauncher.java:98`、`LibraryResolver`）
+ * ⇒ 平铺目录只服务 JLI 的启动，族内件走系统 CL 那条路。
  *
  * - `/net/minecraft/launchwrapper/`：launchwrapper 本体（`Launch` / `LaunchClassLoader` / `ITweaker`）。
- * - `/net/minecraftforge/forge/`、`/net/minecraftforge/fmlloader/`：FML 本体 —— 它的类 implements
- *   `ITweaker` ⇒ 若由 app classloader 定义，它就解析不到 launchwrapper 的 `ITweaker`。
+ * - `/net/minecraftforge/forge/`、`/net/minecraftforge/fmlloader/`：FML 本体（1.7.10 的包名是
+ *   `cpw.mods.fml`，但 **maven 路径同样是 `net/minecraftforge/forge/`** ⇒ 这条判据两代都覆盖）。
+ * - `/optifine/`：**OptiFine 全家** —— 它的 `OptiFineForgeTweaker` implements `ITweaker`，
+ *   且 1.12.2 版还会带自己那份 `optifine/launchwrapper-of/**` 分支。
  *
- * 2026-09-28 真机两次取证：① 只换系统 CL 不够（app classloader 父优先先命中 `Launch` ⇒ `ClassCastException`）；
- * ② 只摘 launchwrapper 也不够（FML universal 仍在平铺 ⇒ 定义 `FMLTweaker` 时 `NoClassDefFoundError: ITweaker`）。
- * **静态核对**（同一轮，扫 53 个在册 jar 的常量池）：**只有这两个族**引用 `net/minecraft/launchwrapper`
- * ⇒ 摘这两个族是充分的。见 notes `Forge支持-改动方案.md` §10 R1。
+ * 取证：
+ * - 2026-09-28（1.12.2 夹具）：① 只换系统 CL 不够（app CL 父优先先命中 `Launch` ⇒ `ClassCastException`）；
+ *   ② 只摘 launchwrapper 也不够（FML universal 仍在平铺 ⇒ 定义 `FMLTweaker` 时 `NoClassDefFoundError: ITweaker`）。
+ * - **2026-09-29 修正**：当时"只扫了 53 个在册 jar ⇒ 只有两个族"的结论**是夹具特化的**——
+ *   换成 Forge+OptiFine 夹具后实测崩在同一条（`optifine.OptiFineForgeTweaker` 由 app CL 定义），
+ *   重扫该夹具 8 个相关 jar 后补上 `/optifine/`。**加新族前请先扫夹具**（扫法见 notes
+ *   `多JRE共存-方案.md`：遍历 `libraries/` 下的 jar，在常量池里找 `net/minecraft/launchwrapper/ITweaker`），
+ *   别凭文件名猜。
  */
 export const LOADER_FAMILY_PATH_SEGMENTS: string[] = [
   '/net/minecraft/launchwrapper/',
   '/net/minecraftforge/forge/',
-  '/net/minecraftforge/fmlloader/'
+  '/net/minecraftforge/fmlloader/',
+  '/optifine/'
 ];
 
 /*

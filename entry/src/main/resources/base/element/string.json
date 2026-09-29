@@ -121,16 +121,24 @@
       "value": "启动失败：版本路径无效或窗口打开失败，请重试"
     },
     {
+      "name": "launch_jre_title",
+      "value": "Java 运行时不就绪"
+    },
+    {
+      "name": "launch_jre_message",
+      "value": "本实例需要 Java %d 的内置运行时，但它在本机尚未就绪（未解压，或数据须升级），无法启动。是否现在准备？准备完成后请再点一次「启动」。"
+    },
+    {
+      "name": "launch_jre_prepared",
+      "value": "Java 运行时已准备就绪，请再点一次「启动」。"
+    },
+    {
+      "name": "launch_jre_prepare_failed",
+      "value": "准备失败：请确认存储空间充足后重试，或在下方「Java 环境」区手动解压。"
+    },
+    {
       "name": "launch_precond_need_account",
       "value": "尚无账户，无法启动：请先在下方账户区添加并选择一个账户"
-    },
-    {
-      "name": "launch_precond_jre_not_ready",
-      "value": "JRE 未就绪，无法启动：请先在下方 Java 环境区解压"
-    },
-    {
-      "name": "launch_precond_jre_need_upgrade",
-      "value": "JRE 数据须升级，无法启动：请先在下方 Java 环境区升级"
     },
     {
       "name": "launch_precond_game_running",
@@ -247,6 +255,22 @@
     {
       "name": "version_edit_renderer_hint",
       "value": "推荐 = （≥1.17 GL / ≤1.16 GL4ES；GL 败则 GL4ES）"
+    },
+    {
+      "name": "version_edit_java_label",
+      "value": "Java 环境 JAVA_HOME"
+    },
+    {
+      "name": "java_env_auto",
+      "value": "自动（推荐）"
+    },
+    {
+      "name": "java_env_modern",
+      "value": "OpenJDK 26（内置）"
+    },
+    {
+      "name": "java_env_legacy",
+      "value": "OpenJDK 8（内置 · legacy 段）"
     },
     {
       "name": "version_edit_glthread_label",

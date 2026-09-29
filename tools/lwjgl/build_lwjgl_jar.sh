@@ -32,7 +32,7 @@
 # Optional:
 #   --official DIR   local fallback dir for stock jars (also source of lwjglx, see below)
 #   --out DIR        output dir for lwjgl.jar (default <work>/out)
-#   --work DIR       scratch dir (default: <outer>/stuffs/research/lwjgl_build-<version>)
+#   --work DIR       scratch dir (default: ${TMPDIR:-/tmp}/lwjgl_build-<version>)
 #   --version VER    LWJGL version to fetch (default 3.4.3)
 #   --cache DIR      Maven cache dir (default <work>/m2)
 #   --maven-base URL Maven repo base (default Maven Central)
@@ -52,7 +52,6 @@ set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"        # Meowcraft/ (app project)
-OUTER="$(cd "$ROOT/.." && pwd)"          # workspace root (holds ref/ + stuffs/)
 
 usage() { sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//; /^set -e/d'; }
 
@@ -103,7 +102,7 @@ for d in $OVERLAYS; do [ "$d" = "$GEN_OVERLAY" ] && found=1; done
   echo "       add: --overlay $GEN_OVERLAY" >&2
   exit 2; }
 [ -n "$OFFICIAL" ] && OFFICIAL="$(cd "$OFFICIAL" && pwd)"
-[ -n "$WORK" ]  || WORK="$OUTER/stuffs/research/lwjgl_build-$VERSION"
+[ -n "$WORK" ]  || WORK="${TMPDIR:-/tmp}/lwjgl_build-$VERSION"
 [ -n "$OUT" ]   || OUT="$WORK/out"
 [ -n "$CACHE" ] || CACHE="$WORK/m2"
 mkdir -p "$WORK" "$OUT" "$CACHE"

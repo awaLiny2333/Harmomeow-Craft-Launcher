@@ -36,12 +36,12 @@
 #       [--with-display] [--compare DIR]
 #
 # Required:
-#   --src DIR         LWJGL2 source tree (ref/lwjgl), with src/hdrs-meow already generated
+#   --src DIR         LWJGL2 source tree, with src/hdrs-meow already generated
 #   --sdk-native DIR  OHOS SDK native dir (contains sysroot/ and llvm/bin)
 #   --out DIR         output dir; receives liblwjgl.so
 #
 # Optional:
-#   --build DIR       out-of-tree build dir (default: <ws>/stuffs/lwjgl2/build)
+#   --build DIR       out-of-tree build dir (default: ${TMPDIR:-/tmp}/lwjgl2-build)
 #   --arch NAME       OHOS arch (default: arm64-v8a)
 #   --jni-inc DIR     dir with jni.h/jni_md.h (default: repo meowcraftbridge headers)
 #   --with-display    also compile the stage-2 display/context/input layer
@@ -54,8 +54,7 @@
 set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/../.." && pwd)"          # Meowcraft/ (app project)
-WS="$(cd "$ROOT/.." && pwd)"               # workspace root (holds ref/ + stuffs/)
+ROOT="$(cd "$HERE/../.." && pwd)"          # Meowcraft/ (app project; --jni-inc default below)
 
 usage() { sed -n '2,/^set -e$/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'; }
 
@@ -182,8 +181,9 @@ require_sym() {
 # ---- build ------------------------------------------------------------------
 # Never delete something we do not own (guard --build before rm -rf).
 if [ -z "$BUILD" ]; then
-  # Scratch belongs under stuffs/, never inside ref/ (ref/ holds source clones only).
-  BUILD="$WS/stuffs/lwjgl2/build"
+  # Env-independent scratch default (never a machine/workspace-specific path; callers
+  # that want an in-tree or workspace scratch dir pass --build).
+  BUILD="${TMPDIR:-/tmp}/lwjgl2-build"
 fi
 case "$BUILD" in
   "/"|""|"$SRC"|"$SRC"/*) echo "error: refusing --build '$BUILD'" >&2; exit 2 ;;

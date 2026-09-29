@@ -10,8 +10,11 @@ import {
   SOURCE_MIRROR, SOURCE_OFFICIAL, TYPE_OTHER, TYPE_RELEASE, TYPE_SNAPSHOT
 } from '../common/constants/DownloadContract';
 import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES,
-  RENDERER_BACKEND_VULKAN, RENDERER_BACKEND_GL4ES3 } from '../common/constants/LaunchDefaults';
+  RENDERER_BACKEND_VULKAN, RENDERER_BACKEND_GL4ES3, JAVA_ENV_AUTO } from '../common/constants/LaunchDefaults';
 import { rendererForVersion } from '../common/data/RendererPolicy';
+import { JavaRuntime, BUNDLED_RUNTIMES } from '../common/data/JavaRuntime';
+import { resolveJavaRuntime } from '../common/data/JavaPolicy';
+import { JRE_ID_MEOW, JRE_ID_MEOW_LEGACY } from '../common/constants/Paths';
 import { LOADER_FABRIC, LOADER_LEGACY_FABRIC, LOADER_FORGE, LOADER_NEO_FORGE, VERSION_FORM_VANILLA } from '../common/data/VersionResolver';
 import { SettingsTools } from '../common/data/SettingsTools';
 import {
@@ -25,10 +28,12 @@ import { GameVersion, resolveGameRoot, compareVersionIds } from '../common/data/
 import { versionDirUri } from '../common/constants/Paths';
 import { deleteVersionDir } from '../common/data/VersionTools';
 import {
-  launchInMainProcess, LAUNCH_OK, LAUNCH_ERR_NO_ACCOUNT, LAUNCH_ERR_MS_EXPIRED
+  launchInMainProcess, LAUNCH_OK, LAUNCH_ERR_NO_ACCOUNT, LAUNCH_ERR_MS_EXPIRED,
+  LAUNCH_ERR_JRE_NOT_READY
 } from '../common/data/VersionLaunch';
 import { getInstallerState, InstallerState, INSTALL_ERR_INSTALL, INSTALL_ERR_LOADER, INSTALL_ERR_MANIFEST, INSTALL_ERR_NO_WRITE, INSTALL_ERR_NONE, LOADER_KIND_FABRIC, LOADER_KIND_NEO_FORGE, LOADER_KIND_VANILLA } from '../common/state/InstallerState';
 import { msAuthErrorText } from './MsAuthErrorText';
+import { promptJreNotReady } from './LaunchJrePrompt';
 import { getLauncherState, LauncherState } from '../common/state/LauncherState';
 import { AccountState, getAccountState } from '../common/state/AccountState';
 
@@ -100,10 +105,9 @@ export struct GameVersionsView {
     return this.getUIContext().getHostContext() as common.UIAbilityContext;
   }
 
-  /** 首次挂载：扫描版本 + 同步 JRE 就绪态 + 开启"游戏中"轮询。 */
+  /** 首次挂载：扫描版本 + 开启"游戏中"轮询。 */
   aboutToAppear(): void {
     this.state.refreshVersions();
-    this.state.refreshJre(this.context().filesDir);
     // 账户就绪态（启动门之一）：与 AccountView 共享同一 AccountState，这里兜底重读一次。
     this.accountState.reload(this.context());
     // 逐版本设置（隔离 / 渲染后端 / 线程化渲染）三个镜像均由 refreshVersions() 一次遍历重建。
@@ -268,7 +272,8 @@ export struct GameVersionsView {
       return;
     }
     const next = new InstanceSettings(on, this.editingSettings.rendererBackend,
-      this.editingSettings.glThreadEnabled, this.editingSettings.computeShaderMasked);
+      this.editingSettings.glThreadEnabled, this.editingSettings.computeShaderMasked,
+      this.editingSettings.javaEnv);
     if (!writeInstanceSettings(root, versionId, next)) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'write isolation failed for %{public}s', versionId);
       this.reloadEditingSettings();
@@ -393,6 +398,72 @@ export struct GameVersionsView {
     return $r('app.string.renderer_auto');
   }
 
+  // ---- 逐实例「Java 环境」下拉（与「渲染后端」同构；**选项由数据表生成** ⇒ 加第三套 JRE 不用改 UI） ----
+
+  /** Java 环境 Select 选项：自动（推荐）+ 每一套**随包** JRE（[`BUNDLED_RUNTIMES`]）。 */
+  private javaEnvOptions(): SelectOption[] {
+    const opts: SelectOption[] = [{ value: $r('app.string.java_env_auto') }];
+    for (const rt of BUNDLED_RUNTIMES) {
+      opts.push({ value: this.javaRuntimeLabel(rt) });
+    }
+    return opts;
+  }
+
+  /** 某套 JRE 的展示名（id → 资源；认不出的 id 退原文，**不静默换标签**）。 */
+  private javaRuntimeLabel(rt: JavaRuntime): ResourceStr {
+    if (rt.id === JRE_ID_MEOW) {
+      return $r('app.string.java_env_modern');
+    }
+    if (rt.id === JRE_ID_MEOW_LEGACY) {
+      return $r('app.string.java_env_legacy');
+    }
+    return rt.id;
+  }
+
+  /** 面板 Java 环境下拉索引（0 = 自动；1.. = `BUNDLED_RUNTIMES` 顺序）。 */
+  private editingJavaEnvIndex(): number {
+    const id = this.editingSettings.javaEnv;
+    for (let i = 0; i < BUNDLED_RUNTIMES.length; i++) {
+      if (BUNDLED_RUNTIMES[i].id === id) {
+        return i + 1;
+      }
+    }
+    return 0;
+  }
+
+  private editingJavaEnvValue(): ResourceStr {
+    const i = this.editingJavaEnvIndex();
+    return i === 0 ? $r('app.string.java_env_auto') : this.javaRuntimeLabel(BUNDLED_RUNTIMES[i - 1]);
+  }
+
+  /**
+   * 该实例**实际会**用哪套 JRE + 理由 —— 与 `GameLauncher` 的启动日志**同源**
+   * （同一个 `resolveJavaRuntime`）⇒ UI 与日志不会互相打脸；这也是"为什么自动选了 8"的自证。
+   */
+  private editingJavaEffective(v: GameVersion): string {
+    const choice = resolveJavaRuntime(v.mcVersion, v.loader, this.editingSettings.javaEnv);
+    return `Java ${choice.runtime.javaMajor} · ${choice.reason}`;
+  }
+
+  /** 切换某版本的 Java 环境（`auto` 或某套 JRE id）；写盘失败从磁盘重读（不撒谎）。 */
+  private setJavaEnv(versionId: string, index: number): void {
+    const javaEnv = index === 0 ? JAVA_ENV_AUTO : BUNDLED_RUNTIMES[index - 1].id;
+    const root = this.editingRoot;
+    if (root.length === 0) {
+      return;
+    }
+    const next = new InstanceSettings(this.editingSettings.isolation,
+      this.editingSettings.rendererBackend, this.editingSettings.glThreadEnabled,
+      this.editingSettings.computeShaderMasked, javaEnv);
+    if (!writeInstanceSettings(root, versionId, next)) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'write javaEnv failed for %{public}s', versionId);
+      this.reloadEditingSettings();
+      return;
+    }
+    this.editingSettings = next;
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'javaEnv %{public}s = %{public}s', versionId, javaEnv);
+  }
+
   /**
    * 切换某版本的渲染后端：写 `editingRoot` 下该实例的 .hmmcraft 文件 → 更新 `editingSettings`；
    * 仅当面板目录仍是当前选中目录时顺带刷 state 镜像。写失败则从磁盘重读恢复 UI（不撒谎）。
@@ -406,7 +477,8 @@ export struct GameVersionsView {
       return;
     }
     const next = new InstanceSettings(this.editingSettings.isolation, backend,
-      this.editingSettings.glThreadEnabled, this.editingSettings.computeShaderMasked);
+      this.editingSettings.glThreadEnabled, this.editingSettings.computeShaderMasked,
+      this.editingSettings.javaEnv);
     if (!writeInstanceSettings(root, versionId, next)) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'write renderer failed for %{public}s', versionId);
       this.reloadEditingSettings();
@@ -430,7 +502,8 @@ export struct GameVersionsView {
       return;
     }
     const next = new InstanceSettings(this.editingSettings.isolation,
-      this.editingSettings.rendererBackend, this.editingSettings.glThreadEnabled, on);
+      this.editingSettings.rendererBackend, this.editingSettings.glThreadEnabled, on,
+      this.editingSettings.javaEnv);
     if (!writeInstanceSettings(root, versionId, next)) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'write compute-shader failed for %{public}s', versionId);
       this.reloadEditingSettings();
@@ -452,7 +525,8 @@ export struct GameVersionsView {
       return;
     }
     const next = new InstanceSettings(this.editingSettings.isolation,
-      this.editingSettings.rendererBackend, on, this.editingSettings.computeShaderMasked);
+      this.editingSettings.rendererBackend, on, this.editingSettings.computeShaderMasked,
+      this.editingSettings.javaEnv);
     if (!writeInstanceSettings(root, versionId, next)) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'write glthread failed for %{public}s', versionId);
       this.reloadEditingSettings();
@@ -473,7 +547,7 @@ export struct GameVersionsView {
     }
   }
 
-  /** 启动门：需已选中账户（与 JRE 就绪同级）。 */
+  /** 启动门：需已选中账户（JRE 是否就绪不在预置门里，改在点启动后检查）。 */
   private accountReady(): boolean {
     return this.accountState.selectedId.length > 0;
   }
@@ -481,11 +555,18 @@ export struct GameVersionsView {
   /**
    * 启动选中版本：由 jsonPath 反推 .minecraft 根 → 弹独立游戏窗口 → 窗口内起 JVM。
    * jsonPath 形如 <root>/versions/<id>/<id>.json。
+   *
+   * 「该实例要用的那套 JRE 是否就绪」是**启动前**在 launchInMainProcess 里判的（不再是预置门）：
+   * 未就绪时返回 LAUNCH_ERR_JRE_NOT_READY → 这里弹对话框（沿用既有解压入口）。
    */
   async launch(v: GameVersion): Promise<void> {
     const out = await launchInMainProcess(this.context(), v);
     if (out.code === LAUNCH_ERR_NO_ACCOUNT) {
       this.getUIContext().showAlertDialog({ message: $r('app.string.launch_precond_need_account') });
+      return;
+    }
+    if (out.code === LAUNCH_ERR_JRE_NOT_READY) {
+      promptJreNotReady(this.getUIContext(), out.jreRuntimeId, out.jreJavaMajor, out.jreNeedsUpgrade);
       return;
     }
     if (out.code === LAUNCH_ERR_MS_EXPIRED) {
@@ -961,6 +1042,30 @@ export struct GameVersionsView {
       .width('100%')
       .alignItems(VerticalAlign.Center);
 
+      // Java 环境（逐版本）：自动（推荐：交给 JavaPolicy 按 MC 版本 × 加载器选）/ 指定某套内置 JRE。
+      // 副行显示**实际会用的那套 + 理由**（与启动日志同源、同一个 resolveJavaRuntime）⇒ 不必猜"自动"选了什么。
+      Row({ space: LAYOUT_SPACE }) {
+        Column({ space: LAYOUT_SPACE_SMALL }) {
+          Text($r('app.string.version_edit_java_label'));
+          Text(this.editingJavaEffective(this.editing))
+            .opacity(OPACITY_SECONDARY)
+            .maxLines(2);
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+        Select(this.javaEnvOptions())
+          .width('auto')
+          .selected(this.editingJavaEnvIndex())
+          .value(this.editingJavaEnvValue())
+          .onSelect((index: number) => {
+            this.setJavaEnv(this.editing.id, index);
+          })
+          .selectedOptionBgColor($r('app.color.brand_bg'))
+          .selectedOptionFontColor($r('app.color.brand'));
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center);
+
       // 线程化渲染（逐版本）：**对 OpenGLv4（桌面 GL）与 GL4ES 后端生效** —— 其它后端**灰化提示**
       // （仍可编辑，值照存；只是启动时不会生效，见 GameLauncher 的 renderer.env 门控）。
       Row({ space: LAYOUT_SPACE }) {
@@ -1044,12 +1149,6 @@ export struct GameVersionsView {
         if (this.state.versions.length === 0) {
           Text($r('app.string.versions_empty'));
         }
-        if (!this.state.jreReady) {
-          Text(this.state.jreNeedsUpgrade ? $r('app.string.launch_precond_jre_need_upgrade')
-            : $r('app.string.launch_precond_jre_not_ready'))
-            .opacity(OPACITY_SECONDARY)
-            .width('100%');
-        }
         if (!this.accountReady()) {
           Text($r('app.string.launch_precond_need_account'))
             .opacity(OPACITY_SECONDARY)
@@ -1101,9 +1200,10 @@ export struct GameVersionsView {
                       .onClick(() => {
                         this.toggleEdit(obj.item);
                       });
-                    // 启动：JRE 未就绪 / 无账户 / 游戏已在运行时禁用，避免空启动/重复开
+                    // 启动：无账户 / 游戏已在运行时禁用，避免空启动/重复开。
+                    // JRE 就绪**不再**在这里预置（改在点启动后检查，未就绪弹对话框，见 launch）。
                     Button($r('app.string.icon_launch'))
-                      .enabled(this.state.jreReady && this.accountReady() && !this.state.gameRunning)
+                      .enabled(this.accountReady() && !this.state.gameRunning)
                       .onClick(() => {
                         this.launch(obj.item);
                       });

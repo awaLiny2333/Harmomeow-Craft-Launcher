@@ -74,32 +74,22 @@ bool RemoveAll(const std::string& path) {
     return rmdir(path.c_str()) == 0;
 }
 
-/* 清理 meow-jres 下「非当前 id」的旧 JRE 数据目录（换版本/改名后遗留的孤儿）。
- * 随包 JRE 同一时刻只有一个 id（镜像 Paths.ets::BUNDLED_JRE_IDS）；旧 id 不会再被加载，
- * 留着只是占空间。若将来随包多个 JRE，须改为只清「已知但不再随包」的 id。 */
-void PurgeStaleJreData(const std::string& jresRoot, const std::string& keepId) {
-    DIR* d = opendir(jresRoot.c_str());
-    if (d == nullptr) {
-        return;
-    }
-    std::vector<std::string> stale;
-    struct dirent* e;
-    while ((e = readdir(d)) != nullptr) {
-        std::string n = e->d_name;
-        if (n == "." || n == ".." || n == keepId) {
-            continue;
+/* 清理**已废弃 id**（kRetiredJreIds 白名单）遗留的 JRE 数据目录（历次改名/退役留下的孤儿）。
+ * ⚠️ 判据是**白名单**，不是「非当前 id」——随包多套 JRE 后，后者会在装一套时**删掉另一套的数据**
+ *（notes `多JRE共存-方案.md` §4「P0 危险」）。幂等；失败仅告警不阻断。 */
+void PurgeRetiredJreData(const std::string& jresRoot) {
+    for (size_t i = 0; i < kRetiredJreIdsCount; ++i) {
+        const std::string p = jresRoot + "/" + kRetiredJreIds[i];
+        struct stat st;
+        if (stat(p.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+            continue;   // 不存在/不是目录 → 无事可做
         }
-        stale.push_back(n);
-    }
-    closedir(d);
-    for (const std::string& n : stale) {
-        std::string p = jresRoot + "/" + n;
         if (RemoveAll(p)) {
             OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
-                         "purged stale JRE data: %{public}s", p.c_str());
+                         "purged retired JRE data: %{public}s", p.c_str());
         } else {
             OH_LOG_Print(LOG_APP, LOG_WARN, LOG_DOMAIN, LOG_TAG,
-                         "purge failed (ignored): %{public}s", p.c_str());
+                         "purge retired failed (ignored): %{public}s", p.c_str());
         }
     }
 }
@@ -244,14 +234,28 @@ bool Install(void* resourceMgr, const std::string& filesDir, const std::string& 
     const std::string assetName = jreId + ".tar.gz";
     const std::string jresRoot = filesDir + "/" + kJresRoot;
     std::string installRoot = jresRoot + "/" + jreId;
-    // 换版本/改名后清理旧 JRE 数据（非当前 id）；幂等，失败仅告警不阻断安装。
-    PurgeStaleJreData(jresRoot, jreId);
-    // 就绪 = 数据关键件 lib/modules 存在（.so 只在 el1，不入数据，不能以 libjli.so 判定）
+    // 规格查表：令牌与就绪标记**随 JRE 家族不同**（现代套 lib/modules；legacy 套 lib/rt.jar）。
+    // 未知 id 一律硬失败，**绝不猜**令牌/标记（猜错会产出「半就绪」环境，比失败更难查）。
+    const JreSpec* spec = nullptr;
+    for (size_t i = 0; i < kJreSpecsCount; ++i) {
+        if (jreId == kJreSpecs[i].id) {
+            spec = &kJreSpecs[i];
+            break;
+        }
+    }
+    if (spec == nullptr) {
+        OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG,
+                     "Install: unknown jreId %{public}s (add it to kJreSpecs)", jreId.c_str());
+        return false;
+    }
+    // 只清理**已废弃 id** 的遗留数据（白名单）；失败仅告警不阻断安装。
+    PurgeRetiredJreData(jresRoot);
+    // 就绪 = 该 id 的「就绪标记」存在（.so 只在 el1，不入数据，不能以 libjli.so 判定）
     //       且 数据令牌一致（否则 in-place 更新会「新 el1 .so + 旧数据」混合）。
-    std::string doneMarker = installRoot + "/lib/modules";
+    std::string doneMarker = installRoot + "/" + spec->readyMarker;
     std::string tokenPath = installRoot + "/" + kJreDataTokenFile;
     if (access(doneMarker.c_str(), F_OK) == 0 &&
-        ReadTextFile(tokenPath) == std::string(kJreDataToken)) {
+        ReadTextFile(tokenPath) == std::string(spec->dataToken)) {
         OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
                      "JRE already installed at %{public}s", installRoot.c_str());
         return true;
@@ -279,7 +283,7 @@ bool Install(void* resourceMgr, const std::string& filesDir, const std::string& 
         OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG, "untar failed");
         return false;
     }
-    if (!WriteFile(tokenPath, kJreDataToken, std::strlen(kJreDataToken))) {
+    if (!WriteFile(tokenPath, spec->dataToken, std::strlen(spec->dataToken))) {
         OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG, "write token failed");
         return false;
     }

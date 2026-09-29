@@ -84,7 +84,7 @@ mkdir -p "$OUT"
 rm -rf "$BUILD"
 
 # Optional Meowcraft fork: overlay a delta tree onto a COPY of the upstream source
-# (the upstream clone under ref/ is never modified). Copy lives next to <build>.
+# (the upstream source clone is never modified). Copy lives next to <build>.
 SRC_USE="$SRC"
 if [ -n "$DELTA" ]; then
   [ -d "$DELTA" ] || { echo "error: --delta dir not found: $DELTA" >&2; exit 2; }

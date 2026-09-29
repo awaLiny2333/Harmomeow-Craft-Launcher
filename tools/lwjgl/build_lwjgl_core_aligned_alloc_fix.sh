@@ -1,7 +1,7 @@
 #!/bin/sh
 # F2 fix: LWJGL core's memAlignedAlloc fallback breaks on OHOS/musl for small alignments.
 #
-# ROOT CAUSE (measured, see stuffs/research/vulkan/fixes/F2-lwjgl-aligned-alloc-musl.md):
+# ROOT CAUSE (measured; evidence note kept in the workspace research area):
 #   * The generator emits (modules/lwjgl/core/src/generated/c/org_lwjgl_system_MemoryAccessJNI.c):
 #         #else
 #             static void* __aligned_alloc(size_t alignment, size_t size) {
@@ -18,7 +18,7 @@
 #     memset(NULL, 0, 0x8000) faults (SIGSEGV/SEGV_MAPERR in musl memset, x0=x1=0, x2=0x8000).
 #
 # FIX: clamp the alignment to >= sizeof(void*) before calling posix_memalign. It is applied to a
-#      throwaway copy of ref/lwjgl3@3.4.3 (ref/ is never modified). The generator template is
+#      throwaway copy of the --src tree@3.4.3 (the source tree is never modified). The generator template is
 #      patched too so a future regeneration keeps the fix.
 #
 # This script builds core ONLY (liblwjgl.so -> installed as liblwjgl_343.so). The crash path lives
@@ -26,28 +26,66 @@
 # and the pointer it installs is core's __aligned_alloc (Java_org_lwjgl_system_MemoryAccessJNI_aligned_alloc
 # returns &__aligned_alloc). liblwjgl_vma.so itself only holds the (BSS) function pointer.
 #
-# Usage:  sh build_lwjgl_core_aligned_alloc_fix.sh [--install] [--libffi-a FILE]
-#         (no --install: build + assert only, output in $WORK/out)
+# Standalone: all external inputs are passed in, nothing is derived from the caller layout
+# (base build file). The canonical Meowcraft invocation (with the workspace paths) is documented
+# in tools/README.md §2「单件脚本」.
+#
+# Usage:  sh build_lwjgl_core_aligned_alloc_fix.sh --src DIR --sdk-native DIR --work DIR \
+#             --libffi-a FILE [--jni-inc DIR] [--tag 3.4.3] [--install]
+#         (no --install: build + assert only, output in <work>/out)
+#
+# Required:
+#   --src DIR         lwjgl3 git clone (must contain the target tag)
+#   --sdk-native DIR  OHOS SDK native dir (sysroot + llvm/bin)
+#   --work DIR        scratch/output dir. The shipped core was built from ONE canonical dir (see
+#                     tools/README.md §2「单件脚本」); the linker records the absolute out path, so
+#                     ONLY that path reproduces the shipped liblwjgl_343.so (byte-for-byte check at end)
+#   --libffi-a FILE   prebuilt target libffi.a
+# Optional:
+#   --jni-inc DIR     dir with jni.h/jni_md.h (default: repo meowcraftbridge headers)
+#   --tag V           lwjgl3 tag (default 3.4.3)
+#   --install         install into libs/meowlwjgls/libs/<abi>/ + update natives.manifest
+#   -h, --help        show this help
 #
 # Assertions: exports unchanged (dynsym set vs the shipped liblwjgl_343.so), DT_NEEDED == libc.so only,
 # .note.ohos present, libffi_ exports >= 40. With --install: backs the old file up first and updates
 # natives.manifest. Finally the built core is compared byte-for-byte (`cmp`) against the shipped
-# liblwjgl_343.so; the shipped file IS this recipe's output at the canonical $OUT, so they must match.
+# liblwjgl_343.so; the shipped file IS this recipe's output at the canonical <work>, so they must match.
 set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PROJ="$(cd "$HERE/../.." && pwd)"            # Harmomeow-Craft-Launcher
-WS="$(cd "$PROJ/.." && pwd)"                 # workspace (ref/, stuffs/)
-REF="$WS/ref/lwjgl3"
-TAG=3.4.3
-WORK="$WS/stuffs/research/lwjgl_f2_align"
+
+usage() { sed -n '2,/^set -e$/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'; }
+
+LWJGL3=""; SDK=""; WORK=""; LIBFFI_A=""; JNIINC=""; TAG=3.4.3; DO_INSTALL=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --src)        LWJGL3="$2";   shift 2 ;;
+    --sdk-native) SDK="$2";      shift 2 ;;
+    --work)       WORK="$2";     shift 2 ;;
+    --libffi-a)   LIBFFI_A="$2"; shift 2 ;;
+    --jni-inc)    JNIINC="$2";   shift 2 ;;
+    --tag)        TAG="$2";      shift 2 ;;
+    --install)    DO_INSTALL=1;  shift ;;
+    -h|--help)    usage; exit 0 ;;
+    *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$LWJGL3" ]   || { echo "error: --src is required (lwjgl3 git clone)" >&2; usage >&2; exit 2; }
+[ -n "$SDK" ]      || { echo "error: --sdk-native is required" >&2; usage >&2; exit 2; }
+[ -n "$WORK" ]     || { echo "error: --work is required (canonical dir: see tools/README.md §2)" >&2; usage >&2; exit 2; }
+[ -n "$LIBFFI_A" ] || { echo "error: --libffi-a is required (prebuilt target libffi.a)" >&2; usage >&2; exit 2; }
+
+REF="$LWJGL3"
+WORK="$(cd "$WORK" 2>/dev/null && pwd || { mkdir -p "$WORK"; cd "$WORK" && pwd; })"
 SRC="$WORK/src"
 OBJ="$WORK/obj"
 OUT="$WORK/out"
 SHIPPED="$PROJ/libs/meowlwjgls/libs/arm64-v8a"
 MANIFEST="$PROJ/libs/meowlwjgls/libs/natives.manifest"
 
-SDK="${OHOS_SDK_NATIVE:-$HOME/devecow/deveco_tools/sdk/default/openharmony/native}"
 SYSROOT="$SDK/sysroot"
 CC="$SDK/llvm/bin/aarch64-unknown-linux-ohos-clang"
 NM="$SDK/llvm/bin/llvm-nm"
@@ -56,17 +94,6 @@ STRIP="$SDK/llvm/bin/llvm-strip"
 OBJCOPY="$SDK/llvm/bin/llvm-objcopy"
 
 JNIINC="${JNIINC:-$PROJ/libs/meowcraftlib/src/main/cpp/meowcraftbridge}"
-LIBFFI_A="${LIBFFI_A:-$WS/stuffs/research/libffi/out-ohos/libffi.a}"
-
-DO_INSTALL=0
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --install)   DO_INSTALL=1; shift ;;
-    --libffi-a)  LIBFFI_A="$2"; shift 2 ;;
-    -h|--help)   sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "unknown option: $1" >&2; exit 2 ;;
-  esac
-done
 
 # ---- sanity ----------------------------------------------------------------
 [ -d "$REF/.git" ] || { echo "error: not a git clone: $REF" >&2; exit 2; }
@@ -196,7 +223,7 @@ echo "   NEEDED : $(  "$READELF" -d "$OUT/liblwjgl.so" | grep NEEDED | sed 's/.*
 if [ "$DO_INSTALL" -eq 1 ]; then
   DST="$SHIPPED/liblwjgl_343.so"
   # Back up OUTSIDE the packaged libs dir (hvigor packages libs/<abi>/*.so) and prove the swap.
-  BAK="$WS/stuffs/research/vulkan/fixes/liblwjgl_343.so.pre-f2"
+  BAK="$WORK/liblwjgl_343.so.pre-f2"
   [ -f "$BAK" ] || cp -p "$DST" "$BAK"
   if cmp -s "$BAK" "$OUT/liblwjgl.so"; then
     echo "error: new core is byte-identical to the pre-fix one; fix not applied" >&2; exit 1

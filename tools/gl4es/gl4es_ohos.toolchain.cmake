@@ -9,12 +9,17 @@
 # only changing the *system name*.
 #
 # Usage:
-#   cmake -G Ninja -S ref/gl4es -B <build> \
-#     -DCMAKE_TOOLCHAIN_FILE=$PWD/tools/gl4es/gl4es_ohos.toolchain.cmake
+#   cmake -G Ninja -S <gl4es-src> -B <build> \
+#     -DCMAKE_TOOLCHAIN_FILE=$PWD/tools/gl4es/gl4es_ohos.toolchain.cmake \
+#     -DOHOS_SDK_NATIVE=<sdk/native>
+#
+# OHOS_SDK_NATIVE must be given via -DOHOS_SDK_NATIVE=<dir> or the $OHOS_SDK_NATIVE env var.
+# There is deliberately NO machine-specific default here (base build files stay
+# environment-independent; environment binding belongs in the wrapper rebuild_for_meowcraft.sh).
 
 set(OHOS_SDK_NATIVE "$ENV{OHOS_SDK_NATIVE}" CACHE PATH "OHOS SDK native dir")
 if(NOT OHOS_SDK_NATIVE)
-  set(OHOS_SDK_NATIVE "$ENV{HOME}/devecow/deveco_tools/sdk/default/openharmony/native" CACHE PATH "" FORCE)
+  message(FATAL_ERROR "OHOS_SDK_NATIVE is not set: pass -DOHOS_SDK_NATIVE=<sdk/native> or set the env var")
 endif()
 
 set(OHOS_ARCH "arm64-v8a" CACHE STRING "")

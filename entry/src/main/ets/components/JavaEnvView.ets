@@ -1,33 +1,23 @@
 import { common } from '@kit.AbilityKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
-import { scanJavaEnv, JavaEnvInfo, JRES_DIR } from '../common/data/JavaEnvScanner';
-import { JRE_DATA_TOKEN } from '../common/constants/Paths';
+import { installRuntime, JavaEnvInfo, JRES_DIR } from '../common/data/JavaEnvScanner';
 import { LauncherState, getLauncherState } from '../common/state/LauncherState';
 import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY } from '../common/constants/Constants';
-
-// native 导出（installJre：rawfile meow_jre.tar.gz -> filesDir/meow-jres/meow_jre）
-import native from 'libmeowassets.so';
-
-const LOG_DOMAIN = 0x0001;
-const LOG_TAG = 'JavaEnvView';
 
 /**
  * Java 环境区块（与 GameVersionsView 平级，由 Index 挂载）。
  *
  * 职责：展示"可用 Java 运行时"的状态——有哪些内置 JRE、是否已解压就绪、
- * 版本号；对未就绪的 JRE 提供"解压"按钮（调 native.installJre）。
- * 安装/探测结果同步到共享 LauncherState.jreReady，供版本区禁用"启动"。
+ * 版本号；对未就绪的 JRE 提供"解压"按钮（走 installRuntime = 既有的 native installJre）。
+ * 探测结果放**共享态** `LauncherState.jreEnvs`（版本区**不再**据此禁用"启动"——那是启动前的检查，
+ * 见 GameLauncher.checkLaunchJre 与 LaunchJrePrompt）。
  *
  * 注意：Repeat 的 key 必须携带 installed（可变状态），否则解压前后 key 不变、
  * item 又非 @Observed 类，ArkUI 不会重渲染该行（表现为"刷新没反应、重启才见"）。
  */
 @ComponentV2
 export struct JavaEnvView {
-  /** 共享应用状态（jreReady 供版本区启动按钮开关）。 */
+  /** 共享应用状态（`jreEnvs` = 探测结果；启动路径上在别处解压时也会刷新它）。 */
   @Local state: LauncherState = getLauncherState();
-
-  /** 探测结果缓存。 */
-  @Local envs: JavaEnvInfo[] = [];
 
   /** 正在解压的 JRE id（避免重复点击）。 */
   @Local installingId: string = '';
@@ -40,27 +30,19 @@ export struct JavaEnvView {
     this.refresh();
   }
 
-  /** 重新探测 Java 环境状态（只读），并同步共享 jreReady。 */
+  /** 重新探测 Java 环境状态（只读）→ 共享态 jreEnvs。 */
   refresh(): void {
-    this.envs = scanJavaEnv(this.context().filesDir);
-    this.state.refreshJre(this.context().filesDir);
+    this.state.refreshJreEnvs(this.context().filesDir);
   }
 
   /** 解压指定 JRE（native 同步解压，约 1~2s，期间按钮转"解压中"防重入）。 */
-  async install(env: JavaEnvInfo): Promise<void> {
+  install(env: JavaEnvInfo): void {
     if (this.installingId.length > 0 || env.installed) {
       return;
     }
     this.installingId = env.id;
-    try {
-      const ctx = this.context();
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'install %{public}s -> filesDir', env.id);
-      const ok = native.installJre(ctx.resourceManager, ctx.filesDir, env.id) as boolean;
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'installJre(%{public}s) -> %{public}s', env.id, String(ok));
-      this.refresh();
-    } catch (e) {
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'install error: %{public}s', JSON.stringify(e));
-    }
+    installRuntime(this.context(), env.id);
+    this.refresh();
     this.installingId = '';
   }
 
@@ -75,11 +57,11 @@ export struct JavaEnvView {
       Text($r('app.string.java_env_title'))
         .fontWeight(FontWeight.Bold);
 
-      if (this.envs.length === 0) {
+      if (this.state.jreEnvs.length === 0) {
         Text($r('app.string.java_env_empty'));
       }
 
-      Repeat<JavaEnvInfo>(this.envs)
+      Repeat<JavaEnvInfo>(this.state.jreEnvs)
         .each((obj: RepeatItem<JavaEnvInfo>) => {
           Row({ space: LAYOUT_SPACE }) {
             Column({ space: LAYOUT_SPACE_SMALL }) {
@@ -98,7 +80,7 @@ export struct JavaEnvView {
               .width('100%');
               // 副行：须升级时展示「令牌 旧 → 新」（防用户迷惑）；否则 <版本> + java.home 路径
               if (obj.item.needsUpgrade) {
-                Text($r('app.string.java_env_token_fmt', obj.item.extractedToken, JRE_DATA_TOKEN))
+                Text($r('app.string.java_env_token_fmt', obj.item.extractedToken, obj.item.requiredToken))
                   .opacity(OPACITY_SECONDARY)
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis });

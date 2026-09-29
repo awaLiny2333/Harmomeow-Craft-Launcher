@@ -11,11 +11,10 @@
 # Usage:
 #   sh tools/lwjgl/rebuild_for_meowcraft.sh [tag]     # default tag: 3.4.3
 #
-# 3.3.x: libffi auto-resolved by build_lwjgl_natives.sh (source tree under
-#        stuffs/research, else the OHOS HNP prebuilt 3.4.4).
-# 3.4.x: the core native links libffi 3.8.0 (ffi_call_plan_*), so a libffi.a is
-#        REQUIRED — take $LWJGL_LIBFFI_A, else stuffs/research/libffi/out-ohos/libffi.a
-#        (build it first with tools/lwjgl/build_libffi.sh).
+# libffi: the core native links libffi (ffi_call_plan_* since 3.8.0). build_lwjgl_natives.sh no
+#        longer auto-discovers a libffi — this wrapper supplies it for 3.4.x+: take $LWJGL_LIBFFI_A,
+#        else the workspace path below (build it first with tools/lwjgl/build_libffi.sh). A retired
+#        3.3.x build would now need an explicit libffi passed through as well.
 #
 # Override the OHOS SDK native dir with $OHOS_SDK_NATIVE if it is not at the
 # default location.

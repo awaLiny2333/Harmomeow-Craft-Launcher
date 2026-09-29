@@ -3,6 +3,7 @@ import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { LOG_DOMAIN } from '../common/constants/Constants';
 import { startJvm } from '../common/state/JvmLauncher';
+import { defaultRuntime } from '../common/data/JavaRuntime';
 import { NeoForgeProcessorJob } from '../common/data/NeoForgeInstaller';
 import { activateDirectory } from '../common/access/FileAccess';
 
@@ -60,6 +61,11 @@ export default class NeoInstallAbility extends UIAbility {
       }
     }
     // headless：渲染器参数全空 ⇒ 桥不加载 GL，只起一个纯工具 JVM。
-    startJvm(this.context, job.argv, '', '', '', '');
+    // JRE 选择：安装期是**工具 JVM**（跑 Forge 的 processor 工具，不是游戏），目前一律用**现代套**
+    // ——这是 NeoForge 1.20.2+ 的既有行为（已发布、可用）。
+    // ⚠️ 未决（见 notes `多JRE共存-方案.md` §5 待办）：legacy Forge 1.13–1.16 的 processor 工具
+    //    是否也需要 Java 8？本 job（`NeoForgeProcessorJob`）里**没有** mcVersion/loader ⇒ 现在无法
+    //    走 JavaPolicy；要判定得先给 job 带上目标实例的 (mcVersion, loader)。
+    startJvm(this.context, job.argv, defaultRuntime(), '', '', '', '');
   }
 }

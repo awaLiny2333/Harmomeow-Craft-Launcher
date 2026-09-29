@@ -14,13 +14,19 @@
 # only user-run step.
 #
 # Usage: sh finalize_for_meowcraft.sh [<launcher.jar>]
-# Default launcher.jar: <outer>/stuffs/research/meow_launcher_build/out/launcher.jar
+# Default launcher.jar: ${TMPDIR:-/tmp}/meow_launcher_build/out/launcher.jar
+#   (= build_meow_launcher.sh 的默认 --work/out，两个脚本保持一致；
+#    若你用的是旧位置 <outer>/stuffs/research/meow_launcher_build/out/launcher.jar，请显式传路径)
 set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 OUTER="$(cd "$ROOT/.." && pwd)"
-LJ="$OUTER/stuffs/research/meow_launcher_build/out/launcher.jar"
+LJ="${TMPDIR:-/tmp}/meow_launcher_build/out/launcher.jar"
+# 兼容旧位置（工具脚本改默认前的产物目录）：存在则用它，避免老流程无参直接失败。
+if [ ! -f "$LJ" ] && [ -f "$OUTER/stuffs/research/meow_launcher_build/out/launcher.jar" ]; then
+    LJ="$OUTER/stuffs/research/meow_launcher_build/out/launcher.jar"
+fi
 [ "$#" -gt 0 ] && LJ="$1"
 
 TAR="$ROOT/entry/src/main/resources/rawfile/meowcraft_extras.tar.gz"

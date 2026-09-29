@@ -66,13 +66,13 @@ tar（`OpenJDK8U-jdk_aarch64_linux_hotspot_8u504b01.tar.gz`，sha256 `57b7ed8af9
 - **`lwjgl/build_lwjgl_core_aligned_alloc_fix.sh`（F2 对齐 clamp）**
   - **用途**：重编 LWJGL core，在生成的 `__aligned_alloc` 里把 `alignment` clamp 到 `>= sizeof(void*)`（修 OHOS musl `posix_memalign` 对小对齐返 EINVAL——VMA 用 `alignof(RegionInfo)==2` 申请 32 MiB 块页表 ⇒ `memset(NULL,…)` SIGSEGV）。
   - **何时需要**：换 LWJGL core 源码/tag 重编、或怀疑该修复丢失时。
-  - **与随包产物**：产出即随包 `liblwjgl_343.so`（`2a6fcf99…`）；旧件备份 `stuffs/research/vulkan/fixes/liblwjgl_343.so.pre-f2`（`16298280…`）。
-  - **如何自证**：默认只编不装，跑完除断言导出集与随包**集合一致**外，还会把 `stuffs/research/lwjgl_f2_align/out/liblwjgl.so` 与随包 `libs/meowlwjgls/libs/arm64-v8a/liblwjgl_343.so` 做**逐字节 `cmp`**（输出 `IDENTICAL` 才算通过；链接器把绝对输出路径写进二进制，故必须用默认 `$WORK` 路径）；加 `--install` 才落盘 + 更新 `natives.manifest`。
+  - **与随包产物**：产出即随包 `liblwjgl_343.so`（`2a6fcf99…`）；本机旧件备份在 `stuffs/research/vulkan/fixes/liblwjgl_343.so.pre-f2`（`16298280…`）。
+  - **如何自证**（base 脚本环境无关：`--src`/`--sdk-native`/`--work`/`--libffi-a` 全由参数传入）：默认只编不装，跑完除断言导出集与随包**集合一致**外，还会把 `<work>/out/liblwjgl.so` 与随包 `libs/meowlwjgls/libs/arm64-v8a/liblwjgl_343.so` 做**逐字节 `cmp`**（输出 `IDENTICAL` 才算通过；链接器把绝对输出路径写进二进制，故 `--work` 必须是构建随包件时的那个路径，本机 = `stuffs/research/lwjgl_f2_align`）；加 `--install` 才落盘 + 更新 `natives.manifest`（`--install` 的备份落在 `<work>/liblwjgl_343.so.pre-f2`）。
 - **`lwjgl/build_lwjgl_vma.sh`（VMA 参数化：`--release` 默认 / `--diagnostic`）**
   - **用途**：自编 `liblwjgl_vma.so`（MC 的所有 Vulkan 分配都走 VMA；LibVma 无 override key ⇒ 缺件是硬失败 "Failed to create VMA allocator"）。VMA 只从 Java 拿 Vulkan 函数指针 ⇒ 无 Vulkan `DT_NEEDED`，libc++ 静态链入（`DT_NEEDED` 仅 `libc.so`）。
   - **何时需要**：VMA 模块重编/升级。`--diagnostic` 仅用于排查函数表 NULL / `memset` 野指针，**不随包**。
-  - **与随包产物**：**默认 release 与随包 `liblwjgl_vma.so` 逐字节一致**（`479a619f…`）；随包的是 release，随包件**不含任何 `[vma]` 串**。release 的可复现性同其它 native：链接器把绝对输出路径写进二进制，故只有用默认 `WORK`（`stuffs/research/vulkan/vma_build`，即该件的原始构建路径）才逐字节一致。
-  - **如何自证**：`sh tools/lwjgl/build_lwjgl_vma.sh && cmp stuffs/research/vulkan/vma_build/out/liblwjgl_vma.so Harmomeow-Craft-Launcher/libs/meowlwjgls/libs/arm64-v8a/liblwjgl_vma.so && echo IDENTICAL`；`--diagnostic` 产物必须 **sha 不同**且 `strings … | grep '\[vma\]'` 命中。
+  - **与随包产物**：**release 模式与随包 `liblwjgl_vma.so` 逐字节一致**（`479a619f…`）；随包的是 release，随包件**不含任何 `[vma]` 串**。release 的可复现性同其它 native：链接器把绝对输出路径写进二进制，故只有用构建该随包件时的那个 `--work`（本机 = `stuffs/research/vulkan/vma_build`）才逐字节一致。
+  - **如何自证**（base 脚本环境无关：`--src`/`--sdk-native` 必填、`--work` 默认 `${TMPDIR:-/tmp}/vma_build`）：`sh tools/lwjgl/build_lwjgl_vma.sh --src <lwjgl3> --sdk-native <sdk/native> --work <work> && cmp <work>/out/liblwjgl_vma.so Harmomeow-Craft-Launcher/libs/meowlwjgls/libs/arm64-v8a/liblwjgl_vma.so && echo IDENTICAL`（本机 `--src ref/lwjgl3`、`--work stuffs/research/vulkan/vma_build`）；`--diagnostic` 产物必须 **sha 不同**且 `strings … | grep '\[vma\]'` 命中。
 
 ## 3. 从零复现顺序（关键产物）
 
@@ -83,15 +83,17 @@ tar（`OpenJDK8U-jdk_aarch64_linux_hotspot_8u504b01.tar.gz`，sha256 `57b7ed8af9
 sh tools/lwjgl/build_libffi.sh --src stuffs/research/libffi/libffi-3.8.0 \
     --sdk-native $SDK/native --out stuffs/research/libffi/out-ohos            # ① libffi 3.8.0（3.4.x natives 用）
 git -C ref/lwjgl3 worktree add --detach "$WS/ref/lwjgl3-3.4.3" 3.4.3          # ② 3.4.3 源码树（$WS = 工作区根；绝对路径见 §4）
-sh tools/lwjgl/build_lwjgl_jar.sh --version 3.4.3 --overlay tools/lwjgl/deltas/overlay \
-    --overlay tools/lwjgl/deltas/overlay-3.4.3      # ③ 3.4.3 jar（人跑 javac）；≥3.4.x 自动补 sdl/vma/spvc/shaderc 模块（MC 26.3）
+sh tools/lwjgl/build_lwjgl_jar.sh --version 3.4.3 --work "$WS/stuffs/research/lwjgl_build-3.4.3" \
+    --overlay tools/lwjgl/deltas/overlay --overlay tools/lwjgl/deltas/overlay-3.4.3   # ③ 3.4.3 jar（人跑 javac）；≥3.4.x 自动补 sdl/vma/spvc/shaderc 模块（MC 26.3）
 sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3                                # ④ 3.4.3 natives → liblwjgl_343{,_opengl,_stb}.so（自动带 libffi）
 # （natives 由 install_natives.sh 统一命名 + 维护 libs/meowlwjgls/libs/natives.manifest；勿手工拷/改名）
 
-# A0. 单件重编 / 诊断脚本（可选；详见 §2 末「单件脚本」）
-sh tools/lwjgl/build_lwjgl_core_aligned_alloc_fix.sh          # F2 对齐修复（默认只编；--install 才随包 + 更新 manifest）
-sh tools/lwjgl/build_lwjgl_vma.sh                             # VMA release（默认；应与随包 liblwjgl_vma.so 逐字节一致）
-#   sh tools/lwjgl/build_lwjgl_vma.sh --diagnostic            # 诊断版（带 [vma] 串；勿随包）
+# A0. 单件重编 / 诊断脚本（可选；详见 §2 末「单件脚本」）。三者 base 脚本路径全参数化，下为本机（$WS = 工作区根）用法：
+sh tools/lwjgl/build_lwjgl_core_aligned_alloc_fix.sh --src "$WS/ref/lwjgl3" --sdk-native "$SDK/native" \
+    --work "$WS/stuffs/research/lwjgl_f2_align" --libffi-a "$WS/stuffs/research/libffi/out-ohos/libffi.a"  # F2 对齐修复（默认只编；--install 才随包 + 更新 manifest）
+sh tools/lwjgl/build_lwjgl_vma.sh --src "$WS/ref/lwjgl3" --sdk-native "$SDK/native" \
+    --work "$WS/stuffs/research/vulkan/vma_build"             # VMA release（应与随包 liblwjgl_vma.so 逐字节一致）
+#   sh tools/lwjgl/build_lwjgl_vma.sh --src "$WS/ref/lwjgl3" --sdk-native "$SDK/native" --diagnostic   # 诊断版（带 [vma] 串；勿随包）
 
 python3 tools/lwjgl/pack_extras.py --base-tar entry/.../rawfile/meowcraft_extras.tar.gz \
     --jar lwjgl-3.4.3.jar=… --out entry/.../rawfile/meowcraft_extras.tar.gz   # ⑤ 组包
@@ -99,10 +101,10 @@ python3 tools/lwjgl/pack_extras.py --base-tar entry/.../rawfile/meowcraft_extras
 # A2. legacy 随包件（MC 1.6.x–1.16.x）
 #   LWJGL2 native：**MC 1.6.x–1.12.2 由 tools/lwjgl2/ 的 liblwjgl.so 支持**（见 tools/lwjgl2/README.md）
 git -C ref/lwjgl apply tools/lwjgl2/patches/0001-generator-filer-bypass.patch   # ① 一次性本地补丁
-sh tools/lwjgl2/generate_sources.sh                                            # ② 生成源码（人跑 javac）
+sh tools/lwjgl2/generate_sources.sh --src ref/lwjgl                              # ② 生成源码（人跑 javac）
 sh tools/lwjgl2/build_lwjgl2_meow.sh --src ref/lwjgl --sdk-native $SDK/native \
-    --out stuffs/lwjgl2 --with-display                                         # ③ 编 liblwjgl.so（stage 2）
-sh tools/lwjgl/install_natives.sh --native liblwjgl.so=stuffs/lwjgl2/liblwjgl.so  # ④ 随包（tag common）
+    --out stuffs/research/lwjgl2/out --with-display                                         # ③ 编 liblwjgl.so（stage 2）
+sh tools/lwjgl/install_natives.sh --native liblwjgl.so=stuffs/research/lwjgl2/out/liblwjgl.so  # ④ 随包（tag common）
 #   gl4es：≤1.16 的 GL→GLES 翻译层（1.6.x–1.12.2 经 LWJGL2 extgl 取址；见 tools/gl4es/README.md）
 sh tools/gl4es/rebuild_for_meowcraft.sh                                        # libgl4es.so
 sh tools/lwjgl/install_natives.sh --native libgl4es.so=stuffs/research/gl4es/out/libgl4es.so
@@ -154,7 +156,7 @@ sh tools/jre8/rebuild_for_meowcraft.sh \
     --libjvm       stuffs/research/jdk8/out-linux/libjvm.so \
     --out          stuffs/research/jdk8/out
 python3 tools/jre8/pack_jre_data.py --home stuffs/research/jdk8/out/home \
-    --out entry/src/main/resources/rawfile/meow_jre8.tar.gz
+    --out entry/src/main/resources/rawfile/meow_jre_legacy.tar.gz
 #   3) 随包：铺进 libs/meowjrelegacy/libs/arm64-v8a/（模块名版本中性）→ 清模块 build → build --modules entry meowjre meowjrelegacy
 ```
 
@@ -176,7 +178,7 @@ python3 tools/jre8/pack_jre_data.py --home stuffs/research/jdk8/out/home \
 - **★ `git -C <repo> …` 里的路径基准是 `<repo>`，不是你的 cwd（2026-09-19 事故）**：`git -C ref/SDL worktree add --detach ref/SDL-3.4.14 …`
   会在 `ref/SDL/` **里面**建出 `ref/SDL/ref/SDL-3.4.14`（文档里多处曾这么写，已改）。⇒ **建/删 worktree 一律用绝对路径**（或相对该 repo 的 `../…`）；
   删错建的树也用绝对路径 + `worktree prune`，并顺手清掉留下的**空父目录**。自证：`git -C <repo> worktree list`。
-- **native 可复现**：同 tag + 同 SDK + **同 `--src`/`--out` 绝对路径** → 逐字节一致（链接器把输出路径写进 `.dynstr`；换路径同功能、哈希不同）。本工具链的新原生已 **3× 干净重建 `cmp` 一致**（对照 2026-09-11 盘上随包件）：`libSDL3.so`(`5fe4d5d4…`；2026-09-21 已并入 Vulkan、失焦暂停、剪贴板写与打开网址，各阶段**从零 3 轮 15 次**逐字节重验；2026-09-23 **输入收尾（最小必需集）轮**：游戏发起的指针移动/归中一律无条件 no-op（`OHOS_WarpMouse`、桥 `meowGrabReset`、`glfwSetCursorPos` 都不写光标槽/不发 motion），出 grab（1→0）边沿强制一次绝对上报（服务「返回游戏」按钮高亮）；同时移除本轮试错/诊断改动（含其共享状态字段，状态块布局回归 HEAD），仅保留一条低频 `WARP ignored` 证明 no-op 生效；1× 重建即 `5f8b551f…`。**2026-09-23 复核修复轮**：出 grab 上报在无事件窗（`win==NULL`）时不再推进 `cLast`（改为可重试，不再退化为 HEAD hover）；`WARP ignored` 加「与 target 无关的硬 1 秒门」（同 1 秒至多一条）；1× 重建即 `5fe4d5d4…`；**2026-09-23 定稿轮：同 tag/SDK/路径 3× 干净重建 `cmp` 逐字节一致（并与随包件一致）**；权威清单见 [`notes/30-supply-chain/assets-digests.txt`](../../notes/30-supply-chain/assets-digests.txt))、`libshaderc.so`(`0cff3465…`)、`libspirv-cross.so`(`93ad9907…`)、`liblwjgl.so`(`df886466…`)；其中 `spirv-cross` 需 `SOURCE_DATE_EPOCH`（`tools/shaderc/build_shaderc_meow.sh` 已内置，取 pinned 提交时间）。`libgl4es.so`(`f96d54a5…`；r16，`SONAME=libGL.so.1`) 同路径下**可复现**（见 `tools/gl4es/README.md`；2026-09-27 r16 **2× 干净重建 `cmp` 一致且与随包件一致**）。**VMA / F2 单件**：`liblwjgl_vma.so` release(`479a619f…`，默认 `WORK=stuffs/research/vulkan/vma_build`) 与随包件 `cmp` 一致、`liblwjgl_343.so` F2(`2a6fcf99…`，`libs/meowlwjgls/libs/arm64-v8a/`) —— 见 §2「单件脚本」；VMA 诊断版(`64cba35f…`)仅存在于 `stuffs/`、**不随包**。
+- **native 可复现**：同 tag + 同 SDK + **同 `--src`/`--out` 绝对路径** → 逐字节一致（链接器把输出路径写进 `.dynstr`；换路径同功能、哈希不同）。本工具链的新原生已 **3× 干净重建 `cmp` 一致**（对照 2026-09-11 盘上随包件）：`libSDL3.so`(`5fe4d5d4…`；2026-09-21 已并入 Vulkan、失焦暂停、剪贴板写与打开网址，各阶段**从零 3 轮 15 次**逐字节重验；2026-09-23 **输入收尾（最小必需集）轮**：游戏发起的指针移动/归中一律无条件 no-op（`OHOS_WarpMouse`、桥 `meowGrabReset`、`glfwSetCursorPos` 都不写光标槽/不发 motion），出 grab（1→0）边沿强制一次绝对上报（服务「返回游戏」按钮高亮）；同时移除本轮试错/诊断改动（含其共享状态字段，状态块布局回归 HEAD），仅保留一条低频 `WARP ignored` 证明 no-op 生效；1× 重建即 `5f8b551f…`。**2026-09-23 复核修复轮**：出 grab 上报在无事件窗（`win==NULL`）时不再推进 `cLast`（改为可重试，不再退化为 HEAD hover）；`WARP ignored` 加「与 target 无关的硬 1 秒门」（同 1 秒至多一条）；1× 重建即 `5fe4d5d4…`；**2026-09-23 定稿轮：同 tag/SDK/路径 3× 干净重建 `cmp` 逐字节一致（并与随包件一致）**；权威清单见 [`notes/30-supply-chain/assets-digests.txt`](../../notes/30-supply-chain/assets-digests.txt))、`libshaderc.so`(`0cff3465…`)、`libspirv-cross.so`(`93ad9907…`)、`liblwjgl.so`(`df886466…`〔2026-09-11 件〕；**当前随包件 = `b6f9106c…`**〔`nCreate` 契约修正后重编，323,368 B；见 `tools/lwjgl2/README.md` §8〕)；其中 `spirv-cross` 需 `SOURCE_DATE_EPOCH`（`tools/shaderc/build_shaderc_meow.sh` 已内置，取 pinned 提交时间）。`libgl4es.so`(`f96d54a5…`；r16，`SONAME=libGL.so.1`) 同路径下**可复现**（见 `tools/gl4es/README.md`；2026-09-27 r16 **2× 干净重建 `cmp` 一致且与随包件一致**）——⚠️ **此结论仅对 r16 成立**：随包件此后已换成**雾兜底版** `87fc358b…`（1,260,408 B，tag `2026-09-29-cleanup`）⇒ **r16 = 历史基准；当前随包件 = `87fc358b…`，本轮未做复现校验**。**VMA / F2 单件**：`liblwjgl_vma.so` release(`479a619f…`，默认 `WORK=stuffs/research/vulkan/vma_build`) 与随包件 `cmp` 一致、`liblwjgl_343.so` F2(`2a6fcf99…`，`libs/meowlwjgls/libs/arm64-v8a/`) —— 见 §2「单件脚本」；VMA 诊断版(`64cba35f…`)仅存在于 `stuffs/`、**不随包**。
 - **构建期断言（缺件在发包时拦下，运行期不加防护）**：`pack_extras.py --require <member>`（断言 tar 成员齐，如 `lwjgl-3.4.3.jar`）；
   `install_natives.sh --verify`（断言 `natives.manifest` 每项在盘且 sha 匹配）。缺件属"我们发包可掌控"→ 只在构建期拦，不在运行时查（省开销）。
 - **javac**：任何 `.jar` 步骤沙箱内不可跑，须人在有 JDK 的 shell 执行。
@@ -199,8 +201,8 @@ python3 tools/jre8/pack_jre_data.py --home stuffs/research/jdk8/out/home \
 | 路径 | 是什么 | 重建方式 |
 |---|---|---|
 | `stuffs/research/**` | 构建/调研临时产物（`lwjgl_build*` / `lwjgl_natives*` / `libffi` / `openal` / `gl4es` / `jdk25` / `jdk26` …） | 按 §3 顺序重跑对应脚本（各 README 有配方） |
-| `stuffs/lwjgl2/` | LWJGL2 native 构建/复现产物（`build/`、`repro/`、`liblwjgl.so`） | `sh tools/lwjgl2/build_lwjgl2_meow.sh --src ref/lwjgl --sdk-native $SDK/native --out stuffs/lwjgl2 --with-display` |
-| `ref/lwjgl/{bin-meow,src/hdrs-meow,src/generated,src/native/generated}` | LWJGL2 生成物（补丁加入 `.gitignore`，可删可重建） | `sh tools/lwjgl2/generate_sources.sh`（需先 `git apply` 补丁） |
+| `stuffs/research/lwjgl2/out/` | LWJGL2 native 构建/复现产物（`build/`、`liblwjgl.so`） | `sh tools/lwjgl2/build_lwjgl2_meow.sh --src ref/lwjgl --sdk-native $SDK/native --out stuffs/research/lwjgl2/out --with-display` |
+| `ref/lwjgl/{bin-meow,src/hdrs-meow,src/generated,src/native/generated}` | LWJGL2 生成物（补丁加入 `.gitignore`，可删可重建） | `sh tools/lwjgl2/generate_sources.sh --src ref/lwjgl`（需先 `git apply` 补丁） |
 | `ref/openal-soft.build/` | OpenAL worktree（tag 1.24.3，已打补丁）+ build 目录 | `sh tools/openal/rebuild_for_meowcraft.sh 1.24.3`（自动建 worktree + 补丁 + 编译） |
 | `ref/lwjgl3-3.4.3/` | LWJGL 3.4.3 tag 的 git worktree（纯 tag，无独特改动） | `git -C ref/lwjgl3 worktree add --detach "$WS/ref/lwjgl3-3.4.3" 3.4.3` |
 | `ref/SDL-3.4.14/` | SDL fork 的 tag worktree（`release-3.4.14`；**patcher 会就地打补丁** ⇒ `git status` 非空属正常） | `git -C ref/SDL worktree add --detach "$WS/ref/SDL-3.4.14" release-3.4.14`；要回到"干净树"（撤销 patcher 改动）就 `worktree remove --force` 后重加，见 `tools/sdl/README.md` §3 末 |

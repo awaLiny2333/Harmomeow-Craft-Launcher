@@ -54,6 +54,21 @@ typedef struct {
 	void *(*getCurrentContext)(void);
 	/* want=1 -> env->fsRequest=1 (enter), want=0 -> 2 (exit); x/y/w/h = windowed restore rect. */
 	void  (*setFullscreenRequest)(int want, int x, int y, int w, int h);
+	/*
+	 * Registry-based context entry points (bridge: egl_gl.c). NULL when the loaded
+	 * libmeowcraftbridge.so predates them -- then the legacy makeCurrent path is used and
+	 * no shared context can be created.
+	 *   createContext(share)   : share == NULL registers the primary slot; otherwise a real
+	 *                            second EGL context sharing `share`'s objects is created
+	 *                            (LWJGL2's SharedDrawable contract). Handle back, NULL = failed.
+	 *   makeCurrentFor(w, cx)  : bind `cx` on this thread. Returns 1, or 0 meaning the context
+	 *                            is NOT current -- the caller must report that instead of
+	 *                            pretending otherwise (pretending it crashed gl4es).
+	 *   destroyContext(cx)     : destroy a secondary context; the primary is a no-op.
+	 */
+	void *(*createContext)(void *share);
+	int   (*makeCurrentFor)(void *window, void *context);
+	void  (*destroyContext)(void *context);
 } MeowBridge;
 
 static inline MeowBridge *meow_bridge(void) {
@@ -66,9 +81,14 @@ static inline MeowBridge *meow_bridge(void) {
 		b.swapInterval       = (void  (*)(int))       dlsym(RTLD_DEFAULT, "meowSwapInterval");
 		b.getCurrentContext  = (void *(*)(void))      dlsym(RTLD_DEFAULT, "meowGetCurrentContext");
 		b.setFullscreenRequest = (void (*)(int, int, int, int, int)) dlsym(RTLD_DEFAULT, "meowSetFullscreenRequest");
+		b.createContext      = (void *(*)(void *))    dlsym(RTLD_DEFAULT, "meowCreateSharedContext");
+		b.makeCurrentFor     = (int   (*)(void *, void *)) dlsym(RTLD_DEFAULT, "meowMakeCurrentFor");
+		b.destroyContext     = (void  (*)(void *))    dlsym(RTLD_DEFAULT, "meowDestroySharedContext");
 		b.resolved = (b.makeCurrent != NULL && b.swapBuffers != NULL);
 		if (!b.resolved)
 			printfDebug("LWJGL2 port: libmeowcraftbridge entry points not found (EGL/swap unavailable)\n");
+		else if (b.makeCurrentFor == NULL || b.createContext == NULL)
+			printfDebug("LWJGL2 port: bridge has no shared-context entry points (legacy path)\n");
 	}
 	return &b;
 }
@@ -137,6 +157,14 @@ typedef struct {                 /* LinuxPeerInfo native buffer */
 
 typedef struct {                 /* LinuxContextImplementation native buffer */
 	int magic;
+	/*
+	 * Bridge-side context handle: a slot in egl_gl.c's context registry. LWJGL2's
+	 * SharedDrawable asks for a context that SHARES objects with another one; we create a
+	 * real second EGL context for it (what desktop GLX does) instead of aliasing the
+	 * primary, which is what made FML's 1.7.10 console splash die with SIGSEGV.
+	 * Non-NULL whenever the bridge exposes the registry entry points.
+	 */
+	void *bridge_ctx;
 } MeowContext;
 
 /* X11 event type numbers used by LinuxEvent/LinuxMouse/LinuxKeyboard */

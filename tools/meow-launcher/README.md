@@ -24,8 +24,10 @@ Compile-only dep: **gson 2.13.1** (Apache-2.0). Kept as `com.google.gson` in the
 ## Build / ship
 ```sh
 # 1) compile + pack (javac must be run by you; the agent shell has no JVM)
-sh tools/meow-launcher/build_meow_launcher.sh
-# -> stuffs/research/meow_launcher_build/out/launcher.jar (still references com.google.gson)
+sh tools/meow-launcher/build_meow_launcher.sh --work <workspace>/stuffs/research/meow_launcher_build
+# -> <work>/out/launcher.jar (still references com.google.gson).
+#    build_meow_launcher.sh's --work default is ${TMPDIR:-/tmp}/meow_launcher_build; finalize_for_meowcraft.sh
+#    expects the jar at <workspace>/stuffs/research/meow_launcher_build/out/launcher.jar by default.
 
 # 2) swap into the shipped tar + shade gson (pure python; agent can run)
 #    layout-aware: replaces ONLY launcher.jar (re-shading its gson refs to meow.gson),

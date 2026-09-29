@@ -4,7 +4,7 @@
 #
 # Standalone: every path is passed in, nothing is derived from the caller's
 # layout. The source tree is patched in place by patch_sdl_ohos.py, so pass a
-# throwaway checkout/worktree (the project wrapper uses ref/SDL-3.4.14).
+# throwaway checkout/worktree (the project wrapper supplies its fork checkout).
 #
 # Usage:
 #   sh build_sdl_meow.sh --src DIR --sdk-native DIR --out DIR \

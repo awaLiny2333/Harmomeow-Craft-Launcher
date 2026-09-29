@@ -8,18 +8,35 @@
 # javax.annotation.processing / javax.lang.model, so any JDK >= 9 works), and emit
 # JNI headers with `javac -h` instead of javah.
 #
-# The step list mirrors ref/lwjgl/platform_build/build-generator.xml <target name="generate-all">
-# and ref/lwjgl/build.xml <target name="headers"> (see notes there for why each is needed).
+# The step list mirrors the upstream platform_build/build-generator.xml <target name="generate-all">
+# and build.xml <target name="headers"> (see notes there for why each is needed).
 #
 # MUST be run by a human (needs a JDK; the agent shell cannot run a JVM).
 #
-# Usage: sh tools/lwjgl2/generate_sources.sh
+# Standalone: the source tree is passed in, nothing is derived from the caller layout.
+#
+# Usage: sh tools/lwjgl2/generate_sources.sh --src DIR
+#
+# Required:
+#   --src DIR         LWJGL2 source tree (a checkout of LWJGL/lwjgl pinned at 2df01dd7,
+#                     with tools/lwjgl2/patches/0001-generator-filer-bypass.patch applied);
+#                     generated Java/C and JNI headers are written back into the tree.
+#   -h, --help        show this help
 set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PROJ="$(cd "$HERE/../.." && pwd)"
-WS="$(cd "$PROJ/.." && pwd)"
-SRC="$WS/ref/lwjgl"
+
+usage() { sed -n '2,/^set -e$/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'; }
+
+SRC=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --src) [ $# -ge 2 ] || { echo "error: --src needs a value" >&2; exit 2; }; SRC="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+[ -n "$SRC" ] || { echo "error: --src is required (path to a LWJGL2 checkout)" >&2; usage >&2; exit 2; }
 
 [ -d "$SRC/.git" ] || { echo "error: LWJGL2 source not found at $SRC" >&2; exit 2; }
 command -v javac >/dev/null 2>&1 || { echo "error: 'javac' not found on PATH (need a JDK)" >&2; exit 2; }

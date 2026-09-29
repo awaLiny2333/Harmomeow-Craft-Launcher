@@ -73,6 +73,12 @@ static void meow_apply_window_usage(OHNativeWindow *win);
  * `ohos` driver in tools/sdl deliberately does not -- see SDL_ohosvulkan.c for why. */
 static void meow_vk_prepare_surface_window(void *nativeWindow);
 
+/* Context-registry entry points (defined further down; meowTerminate calls the destroy
+ * one, and our LWJGL2 shim resolves all three by name at runtime). */
+int meowMakeCurrentFor(void *window, void *handle);
+void *meowCreateSharedContext(void *share);
+void meowDestroySharedContext(void *handle);
+
 /* ------------------------------------------------------------------------- */
 /* gl4es (desktop-GL -> GLES fixed-function translator) support              */
 /* ------------------------------------------------------------------------- *
@@ -285,6 +291,82 @@ static EGLConfig egl_pick_config(EGLint renderableType) {
     return config;
 }
 
+/* ------------------------------------------------------------------------- */
+/* context registry (LWJGL2 SharedDrawable / background-loading contract)    */
+/* ------------------------------------------------------------------------- *
+ * LWJGL2's SharedDrawable is built with `new ContextGL(peer_info, attribs, context)`,
+ * i.e. it asks the platform for a SECOND GL context that SHARES objects with the
+ * primary one — plain GLX semantics, and the reason FML's 1.7.10 console splash can
+ * render on a thread of its own. This bridge used to hand the very same EGL context
+ * back for the share, so the splash thread's eglMakeCurrent() could only fail with
+ * EGL_BAD_ACCESS (3002 — the context was still current on the render thread); the
+ * thread then ran gl4es with NO current context and the process died with SIGSEGV
+ * (measured 2026-09-29; evidence chain in notes 20-design/launch).
+ *
+ * A slot maps an opaque Java-side handle to one EGL context plus its OWN surface: EGL
+ * binds a surface to at most one context at a time, so a secondary context may not
+ * reuse the primary's window surface. Secondaries get a 1x1 pbuffer — the splash's
+ * output is never presented (meowSwapBuffers is a no-op for them) and a pbuffer cannot
+ * contend with the real window.
+ */
+#define MEOW_MAX_CTX 6
+
+typedef struct {
+    void *handle;       /* Java-side opaque handle (the MeowContext buffer address) */
+    EGLContext context; /* EGL_NO_CONTEXT until the primary has actually been created */
+    EGLSurface surface; /* secondary: own pbuffer; primary: unused (g_egl.surface) */
+    int primary;
+} MeowCtxSlot;
+
+static MeowCtxSlot g_ctxSlots[MEOW_MAX_CTX];
+static __thread MeowCtxSlot *t_currentSlot; /* slot bound on the calling thread */
+
+/* Attributes of the last successfully created context: a shared context must match the
+ * primary's version/profile, so we replay these instead of guessing. */
+static EGLint g_ctxAttrs[8];
+static int g_ctxAttrCount;
+
+static void meow_ctx_remember_attrs(const EGLint *attrs) {
+    int n = 0;
+    while (attrs != NULL && attrs[n] != EGL_NONE &&
+           n < (int)(sizeof(g_ctxAttrs) / sizeof(g_ctxAttrs[0])) - 1) {
+        g_ctxAttrs[n] = attrs[n];
+        ++n;
+    }
+    g_ctxAttrs[n] = EGL_NONE;
+    g_ctxAttrCount = n;
+}
+
+/* eglCreateContext + remember the attributes it took. Every create site goes through
+ * here, so g_ctxAttrs always mirrors the primary context. */
+static EGLContext meow_create_context_with(const EGLint *attrs) {
+    EGLContext c = eglCreateContext(g_egl.display, g_egl.config, EGL_NO_CONTEXT, attrs);
+    if (c != EGL_NO_CONTEXT) {
+        meow_ctx_remember_attrs(attrs);
+    }
+    return c;
+}
+
+static MeowCtxSlot *meow_slot_find(void *handle) {
+    for (int i = 0; i < MEOW_MAX_CTX; ++i) {
+        if (g_ctxSlots[i].handle == handle) {
+            return &g_ctxSlots[i];
+        }
+    }
+    return NULL;
+}
+
+/* First free slot, or NULL when the table is full. The slot's own address is the opaque
+ * handle the rest of the file (and our LWJGL2 shim) uses. */
+static MeowCtxSlot *meow_slot_alloc(void) {
+    for (int i = 0; i < MEOW_MAX_CTX; ++i) {
+        if (g_ctxSlots[i].handle == NULL) {
+            return &g_ctxSlots[i];
+        }
+    }
+    return NULL;
+}
+
 static int egl_ensure_context(void) {
     if (g_egl.contextReady) {
         return 1;
@@ -309,7 +391,7 @@ static int egl_ensure_context(void) {
         }
         const EGLint coreAttrs[] = {EGL_CONTEXT_CLIENT_VERSION, 3,
                                     EGL_CONTEXT_MINOR_VERSION, 2, EGL_NONE};
-        g_egl.context = eglCreateContext(g_egl.display, g_egl.config, EGL_NO_CONTEXT, coreAttrs);
+        g_egl.context = meow_create_context_with(coreAttrs);
         if (g_egl.context == EGL_NO_CONTEXT) {
             MEOWLOGE("gl4es core: eglCreateContext (ES3.2) failed: %{public}x", eglGetError());
             return 0;
@@ -338,7 +420,7 @@ static int egl_ensure_context(void) {
             MEOWLOGW("eglBindAPI(EGL_OPENGL_ES_API) failed: %{public}x", eglGetError());
         }
         const EGLint esAttrs[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
-        g_egl.context = eglCreateContext(g_egl.display, g_egl.config, EGL_NO_CONTEXT, esAttrs);
+        g_egl.context = meow_create_context_with(esAttrs);
         if (g_egl.context == EGL_NO_CONTEXT) {
             MEOWLOGE("gl4es: eglCreateContext (GLES2) failed: %{public}x", eglGetError());
             return 0;
@@ -368,7 +450,7 @@ static int egl_ensure_context(void) {
             const EGLint compatAttrs[] = {EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 2,
                                           EGL_CONTEXT_OPENGL_PROFILE_MASK,
                                           EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT, EGL_NONE};
-            g_egl.context = eglCreateContext(g_egl.display, g_egl.config, EGL_NO_CONTEXT, compatAttrs);
+            g_egl.context = meow_create_context_with(compatAttrs);
             if (g_egl.context != EGL_NO_CONTEXT) {
                 MEOWLOGI("created desktop OpenGL 3.2 COMPATIBILITY-profile context");
                 g_egl.contextReady = 1;
@@ -380,7 +462,7 @@ static int egl_ensure_context(void) {
          * extensions may unlock optional fast paths), fall back to 3.2 core. */
         const EGLint hiAttrs[] = {EGL_CONTEXT_MAJOR_VERSION, 4, EGL_CONTEXT_MINOR_VERSION, 2,
                                   EGL_NONE};
-        g_egl.context = eglCreateContext(g_egl.display, g_egl.config, EGL_NO_CONTEXT, hiAttrs);
+        g_egl.context = meow_create_context_with(hiAttrs);
         if (g_egl.context != EGL_NO_CONTEXT) {
             MEOWLOGI("created desktop OpenGL 4.2 (core) context");
             g_egl.contextReady = 1;
@@ -389,7 +471,7 @@ static int egl_ensure_context(void) {
         MEOWLOGW("GL 4.2 core ctx rejected: %{public}x, trying 3.2", eglGetError());
         const EGLint ctxAttrs[] = {EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 2,
                                    EGL_NONE};
-        g_egl.context = eglCreateContext(g_egl.display, g_egl.config, EGL_NO_CONTEXT, ctxAttrs);
+        g_egl.context = meow_create_context_with(ctxAttrs);
         if (g_egl.context != EGL_NO_CONTEXT) {
             MEOWLOGI("created desktop OpenGL 3.2 (core) context");
             g_egl.contextReady = 1;
@@ -408,7 +490,7 @@ static int egl_ensure_context(void) {
         MEOWLOGW("eglBindAPI(EGL_OPENGL_ES_API) failed: %{public}x", eglGetError());
     }
     const EGLint ctxAttrs[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
-    g_egl.context = eglCreateContext(g_egl.display, g_egl.config, EGL_NO_CONTEXT, ctxAttrs);
+    g_egl.context = meow_create_context_with(ctxAttrs);
     if (g_egl.context == EGL_NO_CONTEXT) {
         MEOWLOGE("eglCreateContext (GLES2) failed: %{public}x", eglGetError());
         return 0;
@@ -456,6 +538,21 @@ static EGLSurface egl_build_surface(void) {
     g_egl.surfaceWindow = NULL;
     MEOWLOGI("EGL 1x1 pbuffer surface created (no window)");
     return surface;
+}
+
+/*
+ * Surface for a SECONDARY (shared) context. Deliberately a pbuffer: EGL binds a surface
+ * to at most one context at a time, so a secondary context must not take the primary's
+ * window surface, and the only shared-context consumer we know (FML's console splash)
+ * never presents its output — meowSwapBuffers() is a no-op for secondaries.
+ */
+static EGLSurface egl_build_secondary_surface(void) {
+    const EGLint pbAttrs[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
+    EGLSurface s = eglCreatePbufferSurface(g_egl.display, g_egl.config, pbAttrs);
+    if (s == EGL_NO_SURFACE) {
+        MEOWLOGE("shared ctx: eglCreatePbufferSurface failed: %{public}x", eglGetError());
+    }
+    return s;
 }
 
 /* glthread（GALLIUM_THREAD=1）下，销毁/重建 EGL surface 前必须把 Mesa threaded-context
@@ -661,6 +758,15 @@ int meowInit(void) {
 
 void meowTerminate(void) {
     MEOWLOGI("meowTerminate");
+    /* Tear the shared contexts down before the display goes away (the primary slot is
+     * skipped by meowDestroySharedContext and cleared here). */
+    for (int i = 0; i < MEOW_MAX_CTX; ++i) {
+        if (g_ctxSlots[i].handle != NULL) {
+            meowDestroySharedContext(&g_ctxSlots[i]);
+            memset(&g_ctxSlots[i], 0, sizeof(g_ctxSlots[i]));
+        }
+    }
+    t_currentSlot = NULL;
     if (g_egl.display != EGL_NO_DISPLAY) {
         egl_drop_surface();
         if (g_egl.context != EGL_NO_CONTEXT) {
@@ -689,7 +795,13 @@ void *meowCreateContext(void *share) {
     return (void *)&g_windowHandle;
 }
 
-void meowMakeCurrent(void *window) {
+/*
+ * Bind the context named by `handle` (NULL = the primary) on the calling thread.
+ * Returns 1 on success and 0 when nothing could be bound. A caller MUST NOT claim the
+ * context is current after a 0: that is precisely the mistake that turned a failed
+ * make-current into a SIGSEGV inside gl4es (see the registry comment above).
+ */
+int meowMakeCurrentFor(void *window, void *handle) {
     /* 渲染线程首次进入时：按 MEOW_QOS 提升线程 QoS；按 MEOW_BT 装 crash 抓栈。 */
     meow_qos_apply_current_thread();
     meow_bt_install_once();
@@ -702,14 +814,180 @@ void meowMakeCurrent(void *window) {
          * 重新绑回该线程 → MC 的 Render thread 再 makeCurrent 时 EGL_BAD_ACCESS(0x3002) →
          * GL.createCapabilities() 拿不到上下文 → 启动即崩（Window.<init>）。
          */
+        t_currentSlot = NULL;
         if (g_egl.display != EGL_NO_DISPLAY) {
             eglMakeCurrent(g_egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         }
+        return 1;
+    }
+
+    MeowCtxSlot *slot = (handle != NULL) ? meow_slot_find(handle) : NULL;
+    if (slot != NULL && slot->primary) {
+        /* Keep the slot's view of the EGL context in sync: it is the share parent for
+         * any secondary context created later. */
+        if (egl_ensure_context()) {
+            slot->context = g_egl.context;
+        }
+    }
+    if (slot == NULL || slot->primary) {
+        if (!egl_bind()) {
+            MEOWLOGW("meowMakeCurrent: no GL context/surface available");
+            return 0;
+        }
+        t_currentSlot = slot; /* NULL when LWJGL did not tell us which context this is */
+        return 1;
+    }
+
+    /* Secondary (shared) context: own pbuffer surface, same display and config. */
+    if (!egl_ensure_context()) {
+        return 0;
+    }
+    if (slot->surface == EGL_NO_SURFACE) {
+        slot->surface = egl_build_secondary_surface();
+        if (slot->surface == EGL_NO_SURFACE) {
+            return 0;
+        }
+    }
+    if (eglMakeCurrent(g_egl.display, slot->surface, slot->surface, slot->context) != EGL_TRUE) {
+        MEOWLOGE("shared ctx makeCurrent failed: %{public}x", eglGetError());
+        return 0;
+    }
+    /* gl4es must be initialised before any GL entry point runs on this thread: a shared
+     * context can legitimately bind before the render thread ever made one current. */
+    gl4es_init_once();
+    t_currentSlot = slot;
+    return 1;
+}
+
+void meowMakeCurrent(void *window) {
+    (void)meowMakeCurrentFor(window, NULL);
+}
+
+/*
+ * Register a context handle and — when `share` names an existing slot — create a real
+ * second EGL context whose objects are shared with it. This is LWJGL2's SharedDrawable
+ * contract (DrawableGL.createSharedContext() -> new ContextGL(peer_info, attribs, ctx)),
+ * i.e. plain GLX behaviour that desktop MC relies on for FML's console splash.
+ *
+ * ★2026-09-29 政策：**默认拒绝共享上下文**（详见 meow_allow_shared_ctx() 的注释）。
+ *
+ * `share == NULL` registers the primary slot and creates nothing eagerly: the primary EGL
+ * context stays lazy (first make-current). Returns the handle to pass back to
+ * meowMakeCurrentFor()/meowDestroySharedContext(), or NULL on failure.
+ */
+static int meow_allow_shared_ctx(void) {
+    /*
+     * 实测（同一台 MateBook Fold；1.7.10 与 1.12.2 两套 Forge 实例、FML splash 打开）：
+     *  - 共享上下文**确实能建起来**（本文件下面就会打 `shared ctx created: …`，且
+     *    `eglMakeCurrent failed`/`make-current failed` 都归零）⇒ splash **真的开始跑 GL**；
+     *  - 但随即在加载期崩（无 Java crash report）：日志尾部为
+     *    `<HM_GPU> # Over the threasHold and potential OOM, drawCnt: 21, vertexSum: 22364413`
+     *    → `DFX_SignalHandler :: signo(5)`(SIGTRAP) / 另一次是 `signo(11)`(SIGSEGV)。
+     *  - 推断：splash 线程与主线程**并发驱动 gl4es 的全局状态**（gl4es 的前提是"同一时刻只有一个
+     *    GL 使用者"）⇒ 状态被搅坏 ⇒ 出现异常巨大的 draw ⇒ 撞驱动阈值被 trap。
+     *  - 反过来：这里**干净地返回 NULL** ⇒ shim 抛 LWJGLException ⇒ FML 捕获后**自己**把
+     *    `config/splash.properties` 写成 `enabled=false` 并关掉 splash ⇒ 游戏正常。
+     *    （这正是此前"1.7.10 能玩"的真正原因，见 notes 00-current/已知限制与待解.md C11 更正 5。）
+     * ⇒ 默认拒绝；将来驱动/并发问题解决后，用 MEOW_ALLOW_SHARED_CTX=1 重新打开。
+     * 本策略满足"**适配只在我们这一侧**"：零游戏目录写入、可逆、有明确日志。
+     */
+    static int allow = -1;
+    if (allow < 0) {
+        const char *e = getenv("MEOW_ALLOW_SHARED_CTX");
+        allow = (e != NULL && e[0] != '\0' && !(e[0] == '0' && e[1] == '\0')) ? 1 : 0;
+    }
+    return allow;
+}
+
+void *meowCreateSharedContext(void *share) {
+    if (share == NULL) {
+        for (int i = 0; i < MEOW_MAX_CTX; ++i) {
+            if (g_ctxSlots[i].primary) {
+                return &g_ctxSlots[i];
+            }
+        }
+        MeowCtxSlot *s = meow_slot_alloc();
+        if (s == NULL) {
+            MEOWLOGE("ctx registry: full (%{public}d), no slot for the primary", MEOW_MAX_CTX);
+            return NULL;
+        }
+        memset(s, 0, sizeof(*s));
+        s->handle = s;
+        s->context = EGL_NO_CONTEXT;
+        s->surface = EGL_NO_SURFACE;
+        s->primary = 1;
+        MEOWLOGI("ctx registry: primary slot %{public}p", (void *)s);
+        return s;
+    }
+
+    if (!meow_allow_shared_ctx()) {
+        /* 默认策略：干净拒绝（返回 NULL）⇒ shim 抛 LWJGLException ⇒ FML 自禁 splash ⇒ 游戏可玩。
+         * 理由与实测证据见 meow_allow_shared_ctx() 的注释。 */
+        MEOWLOGW("shared ctx: refused by policy (set MEOW_ALLOW_SHARED_CTX=1 to re-enable); "
+                 "the FML splash will disable itself and the game continues");
+        return NULL;
+    }
+
+    if (!egl_ensure_context()) {
+        MEOWLOGE("shared ctx: no primary context to share with");
+        return NULL;
+    }
+    MeowCtxSlot *parent = meow_slot_find(share);
+    if (parent == NULL) {
+        MEOWLOGE("shared ctx: unknown share handle %{public}p", share);
+        return NULL;
+    }
+    if (parent->primary) {
+        parent->context = g_egl.context;
+    }
+    if (g_ctxAttrCount == 0 || parent->context == EGL_NO_CONTEXT) {
+        MEOWLOGE("shared ctx: parent has no context to share (attrs=%{public}d)", g_ctxAttrCount);
+        return NULL;
+    }
+
+    EGLContext ctx = eglCreateContext(g_egl.display, g_egl.config, parent->context, g_ctxAttrs);
+    if (ctx == EGL_NO_CONTEXT) {
+        MEOWLOGE("shared ctx: eglCreateContext(share=%{public}p) failed: %{public}x",
+                 (void *)parent->context, eglGetError());
+        return NULL;
+    }
+    MeowCtxSlot *slot = meow_slot_alloc();
+    if (slot == NULL) {
+        MEOWLOGE("ctx registry: full (%{public}d), shared ctx discarded", MEOW_MAX_CTX);
+        eglDestroyContext(g_egl.display, ctx);
+        return NULL;
+    }
+    memset(slot, 0, sizeof(*slot));
+    slot->handle = slot;
+    slot->context = ctx;
+    slot->surface = EGL_NO_SURFACE;
+    slot->primary = 0;
+    MEOWLOGI("shared ctx created: share=%{public}p -> ctx=%{public}p slot=%{public}p",
+             (void *)parent->context, (void *)ctx, (void *)slot);
+    return slot;
+}
+
+/* Destroy a secondary context (own surface + context). The primary slot is process-wide
+ * and survives — LWJGL's ContextGL.destroy() must not tear the bridge's state down. */
+void meowDestroySharedContext(void *handle) {
+    MeowCtxSlot *slot = meow_slot_find(handle);
+    if (slot == NULL || slot->primary) {
         return;
     }
-    if (!egl_bind()) {
-        MEOWLOGW("meowMakeCurrent: no GL context/surface available");
+    if (t_currentSlot == slot) {
+        if (g_egl.display != EGL_NO_DISPLAY) {
+            eglMakeCurrent(g_egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        }
+        t_currentSlot = NULL;
     }
+    if (slot->surface != EGL_NO_SURFACE) {
+        eglDestroySurface(g_egl.display, slot->surface);
+    }
+    if (slot->context != EGL_NO_CONTEXT) {
+        eglDestroyContext(g_egl.display, slot->context);
+    }
+    MEOWLOGI("shared ctx destroyed: slot=%{public}p", handle);
+    memset(slot, 0, sizeof(*slot));
 }
 
 void meowSetWindowHint(int hint, int value) {
@@ -904,6 +1182,17 @@ void meowSwapBuffers(void) {
     /* 渲染线程兜底：即便 MakeCurrent 走了别的路径，也保证 QoS 提升一次 + 抓栈已装。 */
     meow_qos_apply_current_thread();
     meow_bt_install_once();
+    /* A secondary (shared) context never presents: swapping the primary's surface from a
+     * thread whose current context is a secondary one is an EGL error, and the splash's
+     * output is discarded on purpose (see egl_build_secondary_surface). */
+    if (t_currentSlot != NULL && !t_currentSlot->primary) {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            MEOWLOGI("swapBuffers on a shared context ignored (no presentation)");
+        }
+        return;
+    }
     /* If a resize never made it through the pump, apply it now. */
     struct meow_environ_s *env = meow_environ;
     if (env != NULL && env->width > 0 && env->height > 0 &&

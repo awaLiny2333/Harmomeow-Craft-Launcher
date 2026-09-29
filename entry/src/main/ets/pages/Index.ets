@@ -5,11 +5,13 @@ import {
 } from '../common/constants/Constants';
 import { GameVersion } from '../common/data/VersionScanner';
 import {
-  launchInMainProcess, LAUNCH_OK, LAUNCH_ERR_NO_ACCOUNT, LAUNCH_ERR_MS_EXPIRED, LAUNCH_ERR_BAD_PATH
+  launchInMainProcess, LAUNCH_OK, LAUNCH_ERR_NO_ACCOUNT, LAUNCH_ERR_MS_EXPIRED, LAUNCH_ERR_BAD_PATH,
+  LAUNCH_ERR_JRE_NOT_READY
 } from '../common/data/VersionLaunch';
 import { SettingsTools } from '../common/data/SettingsTools';
 import { AccountView } from '../components/AccountView';
 import { msAuthErrorText } from '../components/MsAuthErrorText';
+import { promptJreNotReady } from '../components/LaunchJrePrompt';
 import { AdvancedOptionsView } from '../components/AdvancedOptionsView';
 import { GameDirsView } from '../components/GameDirsView';
 import { GameVersionsView } from '../components/GameVersionsView';
@@ -83,9 +85,9 @@ struct Index {
     JavaEnvView();
   }
 
-  /** 「继续上次」是否可点（与单版本启动同门槛：JRE 就绪 + 有账户 + 未在运行）。 */
+  /** 「继续上次」是否可点（与单版本启动同门槛：有账户 + 未在运行；JRE 是否就绪改在点后检查）。 */
   private canLaunchLast(): boolean {
-    return this.state.jreReady && this.accountState.selectedId.length > 0 && !this.state.gameRunning;
+    return this.accountState.selectedId.length > 0 && !this.state.gameRunning;
   }
 
   /** 「继续上次」按钮的动态部分：<目录昵称> - <版本>（昵称找不到时退化为仅版本号）。 */
@@ -104,6 +106,11 @@ struct Index {
     const out = await launchInMainProcess(ctx, v);
     if (out.code === LAUNCH_ERR_NO_ACCOUNT) {
       this.getUIContext().showAlertDialog({ message: $r('app.string.launch_precond_need_account') });
+      return;
+    }
+    if (out.code === LAUNCH_ERR_JRE_NOT_READY) {
+      // 该实例要用的那套 JRE 还没解压：与版本列表的「启动」走同一个对话框（同一句话、同一个动作）。
+      promptJreNotReady(this.getUIContext(), out.jreRuntimeId, out.jreJavaMajor, out.jreNeedsUpgrade);
       return;
     }
     if (out.code === LAUNCH_ERR_MS_EXPIRED) {

@@ -8,13 +8,70 @@ import { stageClasspathDir } from './ClasspathStager';
 import { Account, AccountsTools, ACCOUNT_TYPE_MICROSOFT } from './AccountsTools';
 import { readAppGlobalSettings } from './AppSettings';
 import { readInstanceSettings, ensureInstanceLogsDir } from './InstanceSettings';
-import { MEOW_HOME_DIR, MC_RUN_DIR_PREFIX, NATIVES_DIR, jreHomeDir,
-  hspLibsDir, versionDir } from '../constants/Paths';
+import { MEOW_HOME_DIR, MC_RUN_DIR_PREFIX, NATIVES_DIR, versionDir } from '../constants/Paths';
 import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H, RENDERER_ENV, RENDERER_ENV_GL4ES } from '../constants/LaunchDefaults';
 import { rendererForVersion, guardNeedsSync, supportsVulkanBackend } from './RendererPolicy';
+import { resolveVersionByPath } from './VersionResolver';
+import { resolveJavaRuntime, JavaChoice } from './JavaPolicy';
+import { JavaRuntime } from './JavaRuntime';
+import { runtimeStatus } from './JavaEnvScanner';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'GameLauncher';
+
+/**
+ * 解析"这一次启动用哪套 JRE"—— **启动路径的唯一解析点**。
+ *
+ * 为什么单独抽出来：`GameWindow` 必须在**第一次桥调用之前**（= 注入 surface 之前）就知道该用哪个
+ * HSP 模块（桥按模块隔离，选错模块后没法改），而 `launchGame` 内部也要同一套结论 ⇒ 两处调同一个函数，
+ * 避免"两次解析结果不一致"。纯只读（读实例设置 + 解析版本 json），可重复调用。
+ */
+export function resolveLaunchRuntime(gameRoot: string, versionId: string,
+  jsonPath: string): JavaChoice {
+  const instance = readInstanceSettings(gameRoot, versionId);
+  const resolved = resolveVersionByPath(jsonPath);
+  const mcVersion = resolved !== null ? resolved.mcVersion : readVersionId(jsonPath);
+  const loader = resolved !== null ? resolved.loader : '';
+  return resolveJavaRuntime(mcVersion, loader, instance.javaEnv);
+}
+
+/**
+ * 「启动前检查」的结果：**该实例该用哪套 JRE**（与启动链同一处解析，见 `resolveLaunchRuntime`）
+ * ＋ **那一套在沙箱里是否就绪**（就绪判据与「Java 环境」区同一处，见 `runtimeStatus`）。
+ */
+export class LaunchJreStatus {
+  /** 该实例实际会用的那套 JRE。 */
+  runtime: JavaRuntime;
+  /** 该套是否已解压且数据令牌一致。 */
+  installed: boolean;
+  /** 有数据但令牌不符（旧数据 → 需升级），区别于完全未解压。 */
+  needsUpgrade: boolean;
+  /** 为什么选这套（JavaPolicy 的依据；进日志/可展示）。 */
+  reason: string;
+
+  constructor(runtime: JavaRuntime, installed: boolean, needsUpgrade: boolean, reason: string) {
+    this.runtime = runtime;
+    this.installed = installed;
+    this.needsUpgrade = needsUpgrade;
+    this.reason = reason;
+  }
+}
+
+/**
+ * **启动前的那一次 JRE 检查** —— 全项目唯一的「能不能启动」JRE 判据。
+ *
+ * 与旧做法（"任一套解压了就全局放行 + 到处提示"）相反：
+ *  - 只认**该实例实际要用的那一套**（`resolveLaunchRuntime` × `JavaPolicy`，即启动链同一处解析）；
+ *  - 就绪判据用该套自己的 `readyPath()` + 数据令牌（`runtimeStatus`，即「Java 环境」区同一处判据）；
+ *  - 纯只读、可重复调用、**不做任何 UI**（谁决定提示由调用方看着办：主进程启动门据此弹对话框，
+ *    `launchGame` 据此兜底拒绝起 JVM）。
+ */
+export function checkLaunchJre(filesDir: string, gameRoot: string, versionId: string,
+  jsonPath: string): LaunchJreStatus {
+  const choice = resolveLaunchRuntime(gameRoot, versionId, jsonPath);
+  const status = runtimeStatus(filesDir, choice.runtime);
+  return new LaunchJreStatus(choice.runtime, status.installed, status.needsUpgrade, choice.reason);
+}
 
 /**
  * 完整启动流程（与游戏窗 UI 解耦）：stage classpath → 校验账户 → 组装 argv → 启动 JVM。
@@ -109,6 +166,23 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   // 注意：versionId 现在是实例名（目录名，玩家可任取），不能拿它判版本。
   const mcVersion = readVersionId(jsonPath);
   const renderer = rendererForVersion(mcVersion, instance.rendererBackend);
+  // ★ 本次启动用哪套 JRE：**数据驱动**（JavaPolicy 的「段→约束」表 × JavaRuntime 的「可用套」表），
+  // 用户可在实例设置里覆盖（`instance.javaEnv`；auto = 交给策略）。选中的那一套自带
+  // home（数据）+ libsDir（el1）+ zipfsPatchDir + bin/java ⇒ **不可能**出现"数据用 A、el1 用 B"。
+  // 同一解析也用于 `GameWindow` 选桥（`resolveLaunchRuntime`）⇒ 选桥与启动参数**同源**。
+  // 日志自证（排查"这台实例为什么用了 8 而不是 26"时先看这一行）：
+  const jre = checkLaunchJre(ctx.filesDir, gameRoot, versionId, jsonPath);
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'JRE for %{public}s: %{public}s (%{public}s)',
+    versionId, jre.runtime.id, jre.reason);
+  // 【兜底数据门】主进程启动门（`launchInMainProcess`）已按**同一判据**放行过；但数据可能在
+  // 放行后被删/改，`launchGame` 也可能被别的入口直接调用 ⇒ 这里再判一次，缺数据绝不硬起
+  // （`startJvm` 只自检 el1 的 `libjli.so`，管不到 java.home 的数据）。
+  if (!jre.installed) {
+    hilog.error(LOG_DOMAIN, LOG_TAG,
+      'launch abort: JRE %{public}s not ready for %{public}s (needsUpgrade=%{public}s)',
+      jre.runtime.id, versionId, jre.needsUpgrade ? 'yes' : 'no');
+    return;
+  }
   // 【F75 env-cleanup】选了 Vulkan 档（且该 MC 版本支持）时，只需带上游戏参数
   // `--graphicsBackend vulkan`；"选哪个 Vulkan 库"由 MinecraftLauncher 的
   // `-Dorg.lwjgl.vulkan.libname` 承载（选 Vulkan = shim，否则 = no-vulkan 占位库）。因此这里
@@ -120,7 +194,7 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   // 否则 JVM 初始化即失败。见 MinecraftLauncher.LaunchOptions.zipfsPatchDir 与 tools/jre26/。
   let zipfsPatchDir = '';
   try {
-    const patchDir = `${jreHomeDir(ctx.filesDir)}/lib/patch/jdk.zipfs`;
+    const patchDir = jre.runtime.zipfsPatchDir(ctx.filesDir);
     if (fileIo.accessSync(patchDir)) {
       zipfsPatchDir = patchDir;
     }
@@ -135,8 +209,8 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     classpath: `${cpDir}/*`,
     classpathDir: cpDir,
     runDir: runDir,
-    nativeLibsDir: hspLibsDir(ctx.bundleCodeDir), // 自足 JRE 模块 el1（隔离）
-    craftLibsDir: hspLibsDir(ctx.bundleCodeDir), // 桥已并入同模块
+    nativeLibsDir: jre.runtime.libsDir(ctx.bundleCodeDir), // 选中那套 JRE 的 el1（隔离命名空间）
+    craftLibsDir: jre.runtime.libsDir(ctx.bundleCodeDir), // 桥已并入同一个 HSP
     meowcraftLaunch: true,
     // NeoForge 由 ArkTS 直接组 game 参数（不经 launcher.jar）⇒ 账户三件套必须传真值。
     authUuid: launchAccount.uuid,
@@ -160,7 +234,7 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     hilog.info(LOG_DOMAIN, LOG_TAG, 'launch abort: empty argv for %{public}s', versionId);
     return;
   }
-  const java = `${jreHomeDir(ctx.filesDir)}/bin/java`;
+  const java = jre.runtime.javaBin(ctx.filesDir);
   const fullCmd = [java, ...argv].join(' ');
   // 先打码再截断；两处长度基准都必须是**打码后**的字符串（否则 token 越长、尾部日志越短，
   // 真 JWT 那种数百字符的 token 会让 CMD_TAIL 变成空串——独立复核发现）。
@@ -243,7 +317,8 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     renderer.env === RENDERER_ENV ? (guardSyncNone ? 'none(auto)' : 'per-call') : '-', renderer.env,
     capMask.length > 0 ? `on(${capMask.join(',')})` : 'off',
     instance.computeShaderMasked ? 'on(default)' : 'off(user)');
-  await startJvm(ctx, [java, ...argv], renderer.lib, renderer.env, renderer.glProfile, renderEnv);
+  await startJvm(ctx, [java, ...argv], jre.runtime, renderer.lib, renderer.env, renderer.glProfile,
+    renderEnv);
 }
 
 /** 用户「额外渲染环境变量」里是否要求 `MEOW_GUARD_SYNC=none`（格式 `K=V`，换行或 `;` 分隔；容忍 `=` 两侧空格）。 */

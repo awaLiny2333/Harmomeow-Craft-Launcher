@@ -16,18 +16,16 @@
 # Usage:
 #   sh tools/lwjgl2/verify_reproducible.sh [--with-generator] \
 #       [--src DIR] [--sdk-native DIR] [--work DIR] [--nout]
-#     --src         LWJGL2 tree      (default: <ws>/ref/lwjgl)
+#     --src         LWJGL2 tree      (required; e.g. a checkout of LWJGL/lwjgl@2df01dd7)
 #     --sdk-native  OHOS SDK native  (required for check A)
-#     --work        scratch dir      (default: <ws>/stuffs/lwjgl2/repro)
+#     --work        scratch dir      (default: ${TMPDIR:-/tmp}/lwjgl2-repro)
 #     --nout        keep the built .so files (default: removed after cmp)
 # Exits non-zero on the first failed check.
 set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PROJ="$(cd "$HERE/../.." && pwd)"
-WS="$(cd "$PROJ/.." && pwd)"
 
-WITH_GEN=0; SRC="$WS/ref/lwjgl"; SDK_NATIVE=""; WORK="$WS/stuffs/lwjgl2/repro"; KEEP=0
+WITH_GEN=0; SRC=""; SDK_NATIVE=""; WORK="${TMPDIR:-/tmp}/lwjgl2-repro"; KEEP=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --with-generator) WITH_GEN=1; shift ;;
@@ -39,6 +37,8 @@ while [ "$#" -gt 0 ]; do
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+[ -n "$SRC" ] || { echo "error: --src is required" >&2; exit 2; }
 
 echo "=== A. native: 3 clean rebuilds + cmp  (src=$SRC) ==="
 [ -n "$SDK_NATIVE" ] || { echo "error: --sdk-native is required for check A" >&2; exit 2; }
@@ -59,9 +59,10 @@ echo "  sha256 n3=$sha3"
 [ "$sha1" = "$sha2" ] && [ "$sha1" = "$sha3" ] || { echo "FAIL: hashes differ"; exit 1; }
 cmp "$WORK/n1/liblwjgl.so" "$WORK/n2/liblwjgl.so" >/dev/null || { echo "FAIL: cmp n1 n2"; exit 1; }
 cmp "$WORK/n1/liblwjgl.so" "$WORK/n3/liblwjgl.so" >/dev/null || { echo "FAIL: cmp n1 n3"; exit 1; }
-# Determinism extras: nothing may embed paths or build timestamps.
-if strings -a "$WORK/n1/liblwjgl.so" | grep -qE "/storage/|/Users/|/data/service|SOURCE_DATE"; then
-  echo "FAIL: the .so embeds an absolute path"; exit 1; fi
+# Determinism extras: the .so must not embed the source/build absolute paths or a build timestamp
+# (checked against the caller-supplied paths, so this stays environment-independent).
+if strings -a "$WORK/n1/liblwjgl.so" | grep -qF -e "$SRC" -e "$WORK" -e "SOURCE_DATE"; then
+  echo "FAIL: the .so embeds an absolute path or build timestamp"; exit 1; fi
 echo "  PASS: 3x byte-identical (cmp), no embedded paths, sha256=$sha1"
 if [ "$KEEP" -eq 0 ]; then rm -rf "$WORK/n2" "$WORK/n3"; fi
 
@@ -74,7 +75,7 @@ if [ "$WITH_GEN" -eq 1 ]; then
     mkdir -p "$SNAP/$d"
     cp -a "$SRC/$d/." "$SNAP/$d/"
   done
-  sh "$HERE/generate_sources.sh" > "$WORK/gen.log" 2>&1 || { echo "FAIL: generate_sources.sh"; tail -5 "$WORK/gen.log"; exit 1; }
+  sh "$HERE/generate_sources.sh" --src "$SRC" > "$WORK/gen.log" 2>&1 || { echo "FAIL: generate_sources.sh"; tail -5 "$WORK/gen.log"; exit 1; }
   for d in src/generated src/native/generated src/hdrs-meow; do
     if diff -r "$SNAP/$d" "$SRC/$d" > "$WORK/gen-diff.txt" 2>&1; then
       echo "  PASS: $d identical ($(find "$SRC/$d" -type f | wc -l) files)"

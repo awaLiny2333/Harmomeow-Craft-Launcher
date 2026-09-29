@@ -23,7 +23,7 @@
 # against a silent collapse anyway.
 #
 # libffi: LWJGL core links a target libffi.a (org_lwjgl_system_Callback.c +
-# the generated org_lwjgl_system_libffi_* bindings). ref/lwjgl3 vendors libffi
+# the generated org_lwjgl_system_libffi_* bindings). LWJGL vendors libffi
 # *headers only*, so a real libffi is needed. This script can build one from a
 # full libffi source tree (--libffi-src) for aarch64-linux-ohos, or use a
 # prebuilt one (--libffi-a; e.g. the OHOS HNP libffi 3.4.4). The build is a
@@ -63,7 +63,6 @@ set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"          # Meowcraft/ (app project)
-OUTER="$(cd "$ROOT/.." && pwd)"            # workspace root (holds ref/ + stuffs/)
 
 usage() { sed -n '2,64p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -120,9 +119,7 @@ fi
 
 # ---- JNI headers ------------------------------------------------------------
 if [ -z "$JNIINC" ]; then
-  for d in \
-    "$ROOT/libs/meowcraftlib/src/main/cpp/meowcraftbridge" \
-    "$OUTER/stuffs/research/jna/jna_poc/inc"; do
+  for d in "$ROOT/libs/meowcraftlib/src/main/cpp/meowcraftbridge"; do
     if [ -f "$d/jni.h" ]; then JNIINC="$d"; break; fi
   done
 fi
@@ -130,24 +127,16 @@ fi
   echo "error: jni.h not found; pass --jni-inc DIR (needs jni.h + jni_md.h)" >&2; exit 2; }
 
 # ---- libffi resolution ------------------------------------------------------
-# Precedence: explicit prebuilt > explicit source > auto source > auto HNP.
+# Precedence: explicit prebuilt > explicit source. External inputs come ONLY from the caller
+# (--libffi-a / --libffi-src); there is no machine- or workspace-specific auto-discovery here
+# (base builders stay environment-independent — the wrapper passes these in).
 if [ -n "$LIBFFI_A" ]; then
   [ -f "$LIBFFI_A" ] || { echo "error: --libffi-a not found: $LIBFFI_A" >&2; exit 2; }
   BUILD_LIBFFI=0
-elif [ -z "$LIBFFI_SRC" ]; then
-  for d in "$OUTER/stuffs/research/jna/jna_src/native/libffi"; do
-    if [ -f "$d/configure.ac" ] && [ -d "$d/src/aarch64" ]; then LIBFFI_SRC="$d"; break; fi
-  done
 fi
 
 if [ -z "$LIBFFI_A" ] && [ -z "$LIBFFI_SRC" ]; then
-  HNP="/data/service/hnp/libffi.org/libffi_3.4.4"
-  if [ -f "$HNP/lib/libffi.a" ]; then
-    LIBFFI_A="$HNP/lib/libffi.a"; BUILD_LIBFFI=0
-    echo "note: no --libffi-src; using prebuilt OHOS libffi: $LIBFFI_A"
-  else
-    echo "error: no libffi available; pass --libffi-src DIR or --libffi-a FILE" >&2; exit 2
-  fi
+  echo "error: no libffi available; pass --libffi-src DIR or --libffi-a FILE" >&2; exit 2
 fi
 
 # ---- layout -----------------------------------------------------------------

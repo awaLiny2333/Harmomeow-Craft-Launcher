@@ -2,8 +2,16 @@
 # Build the clean-room meow.launcher jar from source.
 #
 # Reproducibility: with javac 17.0.13 this script plus finalize_for_meowcraft.sh rebuilds the
-# shipped launcher.jar byte for byte (72426aca..., 21191 B) -- measured, so the JDK version is
-# part of the recipe (javac is invoked with --release 17).
+# shipped launcher.jar byte for byte -- measured, so the JDK version is part of the recipe.
+#
+# ⚠️ javac 用 **--release 8**（class 52），不是 17：**同一份 launcher.jar 要在两套 JRE 上跑** ——
+#   现代套（OpenJDK 26）与 legacy 套（OpenJDK 8，服务 Forge ≤1.12.2 / 1.13–1.16）。
+#   Java 8 只认 ≤52；`MeowClassLoader` 是 `-Djava.system.class.loader` 指定的类，JVM 初始化早期
+#   就要加载它，所以 class 61 会让 legacy 套**在 VM 初始化阶段**直接
+#   `UnsupportedClassVersionError: meow/launcher/MeowClassLoader ... class file version 61.0`
+#   （2026-09-29 真机）。⇒ 地线取 8 = "一份产物覆盖两套 JRE"（与 3.4.3 单代收敛同一思路）。
+#   改这一行会改 launcher.jar 的字节 ⇒ 须**重打 extras tar 并升 EXTRAS_VERSION**（见 notes 铁律），
+#   随之更新 tools/meow-launcher/README.md 与 notes 30-supply-chain 的 digest。
 # Contents: `meow.launcher.*` (own implementation) + clean-room `com.mojang.text2speech`
 # narrator stub + vendored Apache-2.0 `android/util/*` (needed by our lwjgl.jar GLFW).
 # NO third-party/GPL code, no `net.kdt`, no native loadLibrary.
@@ -21,7 +29,7 @@
 # Optional:
 #   --src DIR        source root (default: <this dir>/src)
 #   --out DIR        output dir for launcher.jar (default <work>/out)
-#   --work DIR       scratch dir (default <outer>/stuffs/research/meow_launcher_build)
+#   --work DIR       scratch dir (default ${TMPDIR:-/tmp}/meow_launcher_build)
 #   --cache DIR      Maven cache (default <work>/m2)
 #   --gson FILE      explicit gson-2.13.1.jar (skips download)
 #   --offline        never download; require --gson or a cached gson
@@ -32,7 +40,6 @@ set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"        # Meowcraft/ (app project)
-OUTER="$(cd "$ROOT/.." && pwd)"          # workspace root (holds ref/ + stuffs/)
 
 usage() { sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//; /^set -e/d'; }
 
@@ -56,7 +63,7 @@ done
 [ -n "$SRC" ] || SRC="$HERE/src"
 [ -d "$SRC" ] || { echo "error: not a dir: $SRC" >&2; exit 2; }
 [ -f "$MANIFEST" ] || { echo "error: manifest not found: $MANIFEST" >&2; exit 2; }
-[ -n "$WORK" ]  || WORK="$OUTER/stuffs/research/meow_launcher_build"
+[ -n "$WORK" ]  || WORK="${TMPDIR:-/tmp}/meow_launcher_build"
 [ -n "$OUT" ]   || OUT="$WORK/out"
 [ -n "$CACHE" ] || CACHE="$WORK/m2"
 mkdir -p "$WORK" "$OUT" "$CACHE"
@@ -99,7 +106,7 @@ shell with a working JDK (17+). Everything up to here is prepared under --work.
 EOF
   exit 3
 fi
-javac -encoding UTF-8 --release 17 -nowarn -g:none -cp "$GSON" \
+javac -encoding UTF-8 --release 8 -nowarn -g:none -cp "$GSON" \
       -d "$WORK/classes" @"$WORK/sources.txt"
 
 # ---- deterministic pack -----------------------------------------------------

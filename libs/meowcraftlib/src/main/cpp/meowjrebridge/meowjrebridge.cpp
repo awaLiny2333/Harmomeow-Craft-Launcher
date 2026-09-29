@@ -17,13 +17,16 @@
 #include "hilog/log.h"
 
 #include <dlfcn.h>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <fstream>
 #include <pthread.h>
 #include <signal.h>
 #include <string>
+#include <sys/stat.h>
 #include <thread>
 #include <vector>
 #include <unistd.h>
@@ -516,12 +519,70 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
         }
 
         std::string jliPath = jreLibsDir + "/libjli.so";
+        // [自检] 2026-09-29 实机：ArkTS 侧 access() 说该文件在（我的部署自检没触发），
+        // 而这里 dlopen 却报 ENOENT。两者矛盾时必须拿到 **native 同一时刻**的事实：
+        //   stat（文件在不在、多大、什么权限）+ 目录条目数 + open() 能否打开。
+        // 判读：open() 成功但 dlopen ENOENT ⇒ 不是"文件不存在"，而是加载器层面拒绝
+        //（命名空间 / verity / 策略）；stat 失败 ⇒ 是"这个进程根本看不见该路径"。
+        {
+            struct stat st;
+            int rc = stat(jliPath.c_str(), &st);
+            OH_LOG_Print(LOG_APP, rc == 0 ? LOG_INFO : LOG_ERROR, LOG_DOMAIN, LOG_TAG,
+                         "[diag] stat(%{public}s) rc=%{public}d size=%{public}lld mode=%{public}o",
+                         jliPath.c_str(), rc, rc == 0 ? (long long) st.st_size : -1LL,
+                         rc == 0 ? (unsigned) (st.st_mode & 07777) : 0u);
+            DIR* d = opendir(jreLibsDir.c_str());
+            if (d != nullptr) {
+                int n = 0;
+                bool hasJvm = false;
+                struct dirent* e;
+                while ((e = readdir(d)) != nullptr) {
+                    if (e->d_name[0] == '.') {
+                        continue;
+                    }
+                    n++;
+                    if (std::string(e->d_name) == "libjvm.so") {
+                        hasJvm = true;
+                    }
+                }
+                closedir(d);
+                OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
+                             "[diag] jreLibsDir %{public}s entries=%{public}d hasLibjvm=%{public}s",
+                             jreLibsDir.c_str(), n, hasJvm ? "yes" : "no");
+            } else {
+                OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG,
+                             "[diag] jreLibsDir 打不开：%{public}s", jreLibsDir.c_str());
+            }
+            errno = 0;
+            int fd = open(jliPath.c_str(), O_RDONLY);
+            OH_LOG_Print(LOG_APP, fd >= 0 ? LOG_INFO : LOG_ERROR, LOG_DOMAIN, LOG_TAG,
+                         "[diag] open(libjli) fd=%{public}d errno=%{public}d(%{public}s)",
+                         fd, errno, strerror(errno));
+            if (fd >= 0) {
+                close(fd);
+            }
+        }
         OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG, "dlopen %{public}s",
                      jliPath.c_str());
         void* libjli = dlopen(jliPath.c_str(), RTLD_NOW | RTLD_GLOBAL);
         if (libjli == nullptr) {
             OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG,
                          "dlopen libjli failed: %{public}s", dlerror());
+            // [对照探针·确认后可删] 同一进程、同一 API，改 dlopen **本桥自己 el1** 里的同名件：
+            // 若它成功而上面失败 ⇒ 证实"跨 HSP 模块（各自 libIsolation）的 el1 不可互 dlopen"，
+            // 而不是文件/权限问题（2026-09-29 事故的判定依据：桥来自 meowjre、却去 dlopen
+            // meowjrelegacy 的 libjli，报 `No error information` 且 stat/open 全成功）。
+            const std::string selfJli = libsDir + "/libjli.so";
+            if (selfJli != jliPath) {
+                void* selfLib = dlopen(selfJli.c_str(), RTLD_NOW | RTLD_GLOBAL);
+                OH_LOG_Print(LOG_APP, selfLib != nullptr ? LOG_INFO : LOG_ERROR, LOG_DOMAIN, LOG_TAG,
+                             "[diag] 对照 dlopen(自身 el1 的 libjli)=%{public}s %{public}s",
+                             selfLib != nullptr ? "OK" : "FAIL",
+                             selfLib != nullptr ? "" : dlerror());
+                if (selfLib != nullptr) {
+                    dlclose(selfLib);
+                }
+            }
             return;
         }
         typedef jint (*JliLaunchFunc)(int, char**, int, const char**, int, const char**,

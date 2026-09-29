@@ -2,7 +2,8 @@ import { fileIo } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES,
-  RENDERER_BACKEND_VULKAN, RENDERER_BACKEND_GL4ES3 } from '../constants/LaunchDefaults';
+  RENDERER_BACKEND_VULKAN, RENDERER_BACKEND_GL4ES3, JAVA_ENV_AUTO } from '../constants/LaunchDefaults';
+import { runtimeById } from './JavaRuntime';
 import { versionDir } from '../constants/Paths';
 
 const LOG_DOMAIN = 0x0001;
@@ -47,6 +48,8 @@ const KEY_RENDERER_BACKEND: string = 'hmmcraftRendererBackend';
 const KEY_GL_THREAD: string = 'hmmcraftGlThreadEnabled';
 /** GL_ARB_compute_shader 屏蔽键名（**仅显式 false 才写**：默认 = 屏蔽该能力，与 glthread 同构）。 */
 const KEY_COMPUTE_SHADER: string = 'hmmcraftComputeShaderMasked';
+/** Java 环境覆盖键名（值 = `auto` 或某个 `JavaRuntime.id`）。 */
+const KEY_JAVA_ENV: string = 'hmmcraftJavaEnv';
 
 /** 逐版本渲染后端覆盖条目（编辑面板镜像用；与实例文件同源）。 */
 export interface RendererOverride {
@@ -62,6 +65,7 @@ interface InstanceSettingsJson {
   hmmcraftRendererBackend?: string;
   hmmcraftGlThreadEnabled?: boolean;
   hmmcraftComputeShaderMasked?: boolean;
+  hmmcraftJavaEnv?: string;
 }
 
 /**
@@ -80,13 +84,16 @@ export class InstanceSettings {
   glThreadEnabled: boolean;
   /** 是否**屏蔽** GL_ARB_compute_shader（**默认开**；关掉 = 允许使用该能力，见 notes §6 操作规范）。 */
   computeShaderMasked: boolean;
+  /** Java 环境：`auto`（推荐，交给 JavaPolicy 按 MC 版本 × loader 选）或某个 `JavaRuntime.id`。 */
+  javaEnv: string;
 
   constructor(isolation: boolean, rendererBackend: string, glThreadEnabled: boolean,
-    computeShaderMasked: boolean) {
+    computeShaderMasked: boolean, javaEnv: string) {
     this.isolation = isolation;
     this.rendererBackend = rendererBackend;
     this.glThreadEnabled = glThreadEnabled;
     this.computeShaderMasked = computeShaderMasked;
+    this.javaEnv = javaEnv;
   }
 
   /**
@@ -99,7 +106,7 @@ export class InstanceSettings {
    * compute 默认**屏蔽**（表里即默认开）：本机 GPU 驱动编译 compute 着色器不稳会崩，只有用户显式关掉才不屏蔽。
    */
   static defaults(): InstanceSettings {
-    return new InstanceSettings(true, RENDERER_AUTO, true, true);
+    return new InstanceSettings(true, RENDERER_AUTO, true, true, JAVA_ENV_AUTO);
   }
 }
 
@@ -144,7 +151,9 @@ export function readInstanceSettings(gameRoot: string, id: string): InstanceSett
     const glThread = raw.hmmcraftGlThreadEnabled === false ? false : true;
     // compute：默认**屏蔽**（与 glthread 的"默认开、显式关"同构 —— 只有显式 false 才关屏蔽）。
     const computeShader = raw.hmmcraftComputeShaderMasked === false ? false : true;
-    return new InstanceSettings(isolated, backend, glThread, computeShader);
+    // javaEnv：只认 `auto` 或**已知**的 JRE id（认不出 → auto；未知值不写回，见 normalizeJavaEnv）。
+    const javaEnv = normalizeJavaEnv(raw.hmmcraftJavaEnv);
+    return new InstanceSettings(isolated, backend, glThread, computeShader, javaEnv);
   } catch {
     hilog.warn(LOG_DOMAIN, LOG_TAG, 'parse failed for %{public}s (use defaults)', id);
     return InstanceSettings.defaults();
@@ -158,6 +167,18 @@ function normalizeRendererBackend(backend: string): string {
     return backend;
   }
   return RENDERER_AUTO;
+}
+
+/**
+ * Java 环境值夹到合法集合：`auto` 或**已知**的 JRE id（合法集合由
+ * [`BUNDLED_RUNTIMES`](./JavaRuntime.ets) 决定，故新增一套 JRE **不需要改这里**）；
+ * 其余（含缺失 / 旧设置里的已退役 id）→ auto。
+ */
+function normalizeJavaEnv(value: string | undefined): string {
+  if (value !== undefined && value !== JAVA_ENV_AUTO && runtimeById(value) !== undefined) {
+    return value;
+  }
+  return JAVA_ENV_AUTO;
 }
 
 /** 从底稿对象读 overrideProperties（缺键 / 非数组 → 空数组；保留其中全部已知与未知项）。 */
@@ -261,6 +282,7 @@ export function writeInstanceSettings(gameRoot: string, id: string, data: Instan
   base[KEY_RENDERER_BACKEND] = undefined;
   base[KEY_GL_THREAD] = undefined;
   base[KEY_COMPUTE_SHADER] = undefined;
+  base[KEY_JAVA_ENV] = undefined;
   const props = readOverrideProperties(base);
   if (data.isolation) {
     // 开隔离：确保 overrideProperties **含** runningDirectory（保留其余项）。
@@ -279,6 +301,9 @@ export function writeInstanceSettings(gameRoot: string, id: string, data: Instan
   base[KEY_GL_THREAD] = data.glThreadEnabled ? undefined : false;
   // compute：默认**屏蔽**（与 glthread 同构）⇒ 只在"用户显式关掉屏蔽"时才写键（缺键 = 按默认屏蔽 ✓）。
   base[KEY_COMPUTE_SHADER] = data.computeShaderMasked ? undefined : false;
+  // javaEnv：**稀疏同构**——auto（默认）不写键；只有用户显式指定某套 JRE 才落盘。
+  const javaEnv = normalizeJavaEnv(data.javaEnv);
+  base[KEY_JAVA_ENV] = javaEnv !== JAVA_ENV_AUTO ? javaEnv : undefined;
   base['$schema'] = undefined;
   base['format'] = INSTANCE_SETTINGS_FORMAT;
   // 写**多行缩进**（2 空格）：实例设置文件会跟着实例目录走、可能被用户直接看/改，可读性优先。

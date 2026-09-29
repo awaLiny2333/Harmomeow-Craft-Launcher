@@ -94,7 +94,8 @@ cat <<EOF
 完成 -> $OUT
 随包步骤（工程内）：
   1) 用 $OUT/*.so 铺进 libs/meowjrelegacy/libs/arm64-v8a/（模块名**版本中性**，见 多JRE共存-方案.md §3）
-  2) python3 $HERE/pack_jre_data.py --home $OUT/home --out <rawfile>/meow_jre8.tar.gz
+  2) python3 $HERE/pack_jre_data.py --home $OUT/home --out <rawfile>/meow_jre_legacy.tar.gz
+     （**rawfile 名 = JRE id + .tar.gz**，见 tools/jre8/README.md §2.5：id 必须版本中性）
   3) rm -rf libs/meowjrelegacy/build entry/build && devecocli build --modules entry meowjrelegacy
   4) 先装 HSP 再装 HAP（改 JRE 后需卸载/清数据以重解压）
 EOF

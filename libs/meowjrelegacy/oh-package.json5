@@ -1,0 +1,12 @@
+{
+  "name": "meowjrelegacy",
+  "version": "1.0.0",
+  "description": "Meowcraft legacy JRE carrier (isolated HSP: OpenJDK 8 JRE natives + meowcraftlib bridge merged). Serves the legacy segment (Forge <=1.12.2 LaunchWrapper, 1.13-1.16 ModLauncher) which cannot run on the modern JRE (JDK 14 removed java.util.jar.Pack200; JDK 24 disabled SecurityManager).",
+  "main": "Index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "meowcraftlib": "file:../meowcraftlib",
+    "meowlwjgls": "file:../meowlwjgls"
+  }
+}

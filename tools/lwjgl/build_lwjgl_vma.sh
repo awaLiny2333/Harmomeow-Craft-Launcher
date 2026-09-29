@@ -1,21 +1,22 @@
 #!/bin/sh
 # liblwjgl_vma.so (OHOS aarch64) — parameterized recipe, two modes.
 #
-#   sh build_lwjgl_vma.sh [--release|--diagnostic] [--install] [--work DIR]
+#   sh build_lwjgl_vma.sh --src DIR --sdk-native DIR [--release|--diagnostic] [--install] [--work DIR]
+#     (required: --src, --sdk-native; --work defaults to ${TMPDIR:-/tmp}/vma_build[_patched])
 #
 #   MODE=release    (DEFAULT) — the PRISTINE VMA module, no source patch. This is what is SHIPPED
 #                              (main repo libs/meowlwjgls/libs/arm64-v8a/liblwjgl_vma.so,
 #                              manifest tag `common`, sha256 479a619f99d0f74023a4361c3863976b21ca3dad4c0cac304b0b76cbe7335002).
 #                              VMA only needs the app-provided Vulkan function pointers, so a clean
 #                              upstream build is correct and is the runtime default.
-#   MODE=diagnostic           — the SAME module with the investigative patches kept in
-#                              stuffs/research/vulkan/build_vma_patched.sh: (a) narrow the KHR
+#   MODE=diagnostic           — the SAME module with the investigative patches this recipe
+#                              applies to a COPY under $WORK: (a) narrow the KHR
 #                              function-table assert to m_UseExtMemoryBudget, (b) dump apiVersion +
 #                              every NULL table entry ([vma] NULL entry: …), (c) a memset(NULL,…)
 #                              watcher ([vma] memset NULL dst …). NEVER ship this build; the shipped
 #                              lib is release (the shipped file contains NO `[vma]` diagnostic string).
 #
-# WHY VMA IS BUILT AT ALL (measured, see stuffs/research/vulkan/build_vma_probe.sh header):
+# WHY VMA IS BUILT AT ALL (measured; evidence in the workspace VMA research notes):
 #   MC routes every Vulkan allocation through VMA (vmaCreateAllocator/Buffer/...); LibVma has no
 #   override key, so a missing liblwjgl_vma.so is a hard "Failed to create VMA allocator". LWJGL
 #   disables BOTH of VMA's own import paths, so the whole VmaVulkanFunctions table is filled from
@@ -23,37 +24,64 @@
 #
 # REPRODUCIBILITY: like the other natives, the linker records the absolute output path in the
 #   binary, so a release build is byte-identical to the shipped file ONLY when built at the SAME
-#   path. The canonical WORK below (stuffs/research/vulkan/vma_build) is exactly where the shipped
-#   artifact was built; run with the defaults and it must cmp-equal the shipped file. Any other
-#   --work produces the same function with a different hash.
+#   path. The canonical work dir (where the shipped artifact was built) is documented in
+#   tools/README.md §2「单件脚本」 — pass it as --work to make the cmp below equal the shipped file;
+#   any other --work produces the same function with a different hash.
 #
 # SELF-VERIFY (no install needed):
-#   sh build_lwjgl_vma.sh && cmp stuffs/research/vulkan/vma_build/out/liblwjgl_vma.so \
-#       ../../libs/meowlwjgls/libs/arm64-v8a/liblwjgl_vma.so && echo IDENTICAL
+#   sh build_lwjgl_vma.sh --src <lwjgl3> --sdk-native <sdk> --work <work> \
+#     && cmp <work>/out/liblwjgl_vma.so ../../libs/meowlwjgls/libs/arm64-v8a/liblwjgl_vma.so && echo IDENTICAL
 #   # diagnostic build must NOT be identical and must contain diagnostic strings:
-#   sh build_lwjgl_vma.sh --diagnostic && strings stuffs/research/vulkan/vma_build_patched/out/liblwjgl_vma.so | grep '\[vma\]'
+#   sh build_lwjgl_vma.sh --src <lwjgl3> --sdk-native <sdk> --diagnostic \
+#     && strings <work>/out/liblwjgl_vma.so | grep '\[vma\]'
 #
-# SOURCE PIN: release mode does NOT compile the ref/ working tree. It extracts the pinned git tag
+# SOURCE PIN: release mode does NOT compile the --src working tree. It extracts the pinned git tag
 #   TAG=3.4.3 (LWJGL's release tag = commit 30fac9b95f99cda97312232be25ba55297bf9951) into
-#   $WORK/tag-src via the read-only `git archive` and compiles from there, so ref/lwjgl3 HEAD drift
+#   $WORK/tag-src via the read-only `git archive` and compiles from there, so the --src HEAD drift
 #   cannot change the artifact. That tag still reproduces the shipped bytes: the inputs compiled
 #   into this .so are identical at 3.4.3 and HEAD (modules/lwjgl/vma unchanged; core has no header
 #   changes 3.4.3..HEAD — only .c/.java files that are not part of this link). Diagnostic mode reads
-#   ref/ directly and patches a COPY under $WORK, so ref/ is never modified either way.
+#   --src directly and patches a COPY under $WORK, so the source tree is never modified either way.
 set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PROJ="$(cd "$HERE/../.." && pwd)"            # Harmomeow-Craft-Launcher
-WS="$(cd "$PROJ/.." && pwd)"                 # workspace (ref/, stuffs/)
-REF="$WS/ref/lwjgl3"
+
+usage() { sed -n '2,/^set -e$/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'; }
+
+# External inputs come only from the caller (base build file; no machine/workspace defaults).
+# For a release build byte-identical to the shipped liblwjgl_vma.so, pass
+# --work <the canonical build dir, see tools/README.md §2>: the linker records the absolute output
+# path, so ONLY that canonical path reproduces the shipped bytes (see the cmp check below).
+LWJGL3=""; SDK=""; WORK=""; JNIINC=""
 TAG=3.4.3
-CANON_WORK="$WS/stuffs/research/vulkan/vma_build"
-DIAG_WORK="$WS/stuffs/research/vulkan/vma_build_patched"
-WORK=""
+MODE=release
+DO_INSTALL=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --src)        LWJGL3="$2"; shift 2 ;;
+    --sdk-native) SDK="$2";    shift 2 ;;
+    --work)       WORK="$2";   shift 2 ;;
+    --jni-inc)    JNIINC="$2"; shift 2 ;;
+    --tag)        TAG="$2";    shift 2 ;;
+    --release)    MODE=release; shift ;;
+    --diagnostic) MODE=diagnostic; shift ;;
+    --install)    DO_INSTALL=1; shift ;;
+    -h|--help)    usage; exit 0 ;;
+    *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$LWJGL3" ] || { echo "error: --src is required (lwjgl3 git clone)" >&2; usage >&2; exit 2; }
+[ -n "$SDK" ]    || { echo "error: --sdk-native is required" >&2; usage >&2; exit 2; }
+if [ -z "$WORK" ]; then
+  if [ "$MODE" = diagnostic ]; then WORK="${TMPDIR:-/tmp}/vma_build_patched"; else WORK="${TMPDIR:-/tmp}/vma_build"; fi
+fi
+
+REF="$LWJGL3"
 SHIPPED="$PROJ/libs/meowlwjgls/libs/arm64-v8a"
 MANIFEST="$PROJ/libs/meowlwjgls/libs/natives.manifest"
 
-SDK="${OHOS_SDK_NATIVE:-$HOME/devecow/deveco_tools/sdk/default/openharmony/native}"
 CC="$SDK/llvm/bin/aarch64-unknown-linux-ohos-clang"
 NM="$SDK/llvm/bin/llvm-nm"
 READELF="$SDK/llvm/bin/llvm-readelf"
@@ -61,29 +89,14 @@ STRIP="$SDK/llvm/bin/llvm-strip"
 LIBCXX_STATIC="$SDK/llvm/lib/aarch64-linux-ohos/c++/libc++_static.a"
 
 JNIINC="${JNIINC:-$PROJ/libs/meowcraftlib/src/main/cpp/meowcraftbridge}"
-
-MODE=release
-DO_INSTALL=0
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --release)    MODE=release; shift ;;
-    --diagnostic) MODE=diagnostic; shift ;;
-    --install)    DO_INSTALL=1; shift ;;
-    --work)       WORK="$2"; shift 2 ;;
-    -h|--help)    sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "unknown option: $1" >&2; exit 2 ;;
-  esac
-done
-
-[ -n "$WORK" ] || { if [ "$MODE" = diagnostic ]; then WORK="$DIAG_WORK"; else WORK="$CANON_WORK"; fi; }
 OUT="$WORK/out"
 OBJ="$WORK/obj"
 PATCHED="$WORK/src"
 
 # ---- source pin ------------------------------------------------------------
-# release: compile from the PINNED tag extracted under $WORK (ref/ is only read via the
-#          read-only `git archive`), so a moving ref/ HEAD cannot change the artifact.
-# diagnostic: read the ref/ working tree directly; the patch goes to a COPY under $WORK.
+# release: compile from the PINNED tag extracted under $WORK (the --src tree is only read via the
+#          read-only `git archive`), so a moving --src HEAD cannot change the artifact.
+# diagnostic: read the --src working tree directly; the patch goes to a COPY under $WORK.
 if [ "$MODE" = release ]; then
   git -C "$REF" rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null || {
     echo "error: tag $TAG missing in $REF" >&2; exit 2; }
@@ -122,7 +135,7 @@ rm -rf "$OBJ" "$OUT"
 mkdir -p "$OBJ" "$OUT"
 
 if [ "$MODE" = diagnostic ]; then
-  # ---- 1. patch a COPY of the vendored header (ref/ stays pristine) --------
+  # ---- 1. patch a COPY of the vendored header (the --src tree stays pristine) --------
   rm -rf "$PATCHED"; mkdir -p "$PATCHED"
   # trailing /.: copy the CONTENTS of vma/src into $PATCHED (not $PATCHED/src)
   cp -r "$VMA/src/." "$PATCHED/"
@@ -219,12 +232,12 @@ PY
   INC_VMA="$PATCHED/main/c"
   GEN_VMA="$PATCHED/generated/c"
 else
-  # ---- 1. pristine: compile straight from ref/ (never modified) ------------
+  # ---- 1. pristine: compile straight from --src (never modified) ------------
   INC_VMA="$VMA/src/main/c"
   GEN_VMA="$VMA/src/generated/c"
 fi
 
-# ---- 2. compile + link (mirrors stuffs/research/vulkan/build_vma_probe.sh) --
+# ---- 2. compile + link (mirrors the OHOS VMA build recipe) -----------------
 CF="$CC -O3 -fPIC -std=gnu++17 -pthread -DNDEBUG -DLWJGL_LINUX -DLWJGL_arm64 \
     -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 \
     -I$JNIINC -I$CORE/src/main/c -I$CORE/src/main/c/linux -I$INC_VMA -I$SDK/sysroot/usr/include"
@@ -268,7 +281,7 @@ if [ "$MODE" = release ]; then
   if cmp -s "$OUT/liblwjgl_vma.so" "$SHIPPED/liblwjgl_vma.so"; then
     echo "   cmp vs shipped     : IDENTICAL (release == shipped)"
   else
-    echo "   cmp vs shipped     : DIFFERS (expected if --work is not $CANON_WORK)"
+    echo "   cmp vs shipped     : DIFFERS (expected unless --work is the canonical build dir, see header)"
   fi
 else
   echo "   diagnostic strings : $(strings "$OUT/liblwjgl_vma.so" 2>/dev/null | grep -c '\[vma\]' || true) (see 'strings | grep \\[vma\\]')"

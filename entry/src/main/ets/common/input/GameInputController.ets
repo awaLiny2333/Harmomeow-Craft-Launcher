@@ -2,7 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { pointer, KeyCode } from '@kit.InputKit';
 import { window, NodeContent } from '@kit.ArkUI';
-import { JreLibModule } from '../state/JvmLauncher';
+import { JreLibModule, currentBridge } from '../state/JvmLauncher';
 import { SettingsTools } from '../data/SettingsTools';
 import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H } from '../constants/LaunchDefaults';
 import { SCROLL_VP_PER_NOTCH } from '../constants/Constants';
@@ -294,7 +294,8 @@ export class GameInputController {
       return this.bridge;
     }
     try {
-      const b = await import('meowjre') as JreLibModule;
+      // 走 currentBridge()：必须打到"起 JVM 的那个 HSP 模块"（每模块各一份桥的共享状态）。
+      const b = await currentBridge();
       this.bridge = b;
       return b;
     } catch (e) {
@@ -1026,8 +1027,8 @@ export class GameInputController {
   static setTouchExcludeRects(csv: string): void {
     const run = async (): Promise<void> => {
       try {
-        const b = await import('meowjre') as JreLibModule;
-        b.touchSetExcludeRects?.(csv);
+        const b = await currentBridge();
+        b?.touchSetExcludeRects?.(csv);
       } catch (e) {
         hilog.info(LOG_DOMAIN, LOG_TAG, 'setTouchExcludeRects fail: %{public}s', JSON.stringify(e));
       }

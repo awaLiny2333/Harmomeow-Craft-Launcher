@@ -116,6 +116,12 @@ JRE，服务 **Forge ≤1.12.2（LaunchWrapper）+ 1.13–1.16（ModLauncher/Mix
   `lib/security/**`、`lib/ext/**`、**`lib/aarch64/jvm.cfg` 必须留**（`GetJREPath` 出来的 `jrepath` 要读它）。
 - `OHOS_DL_DIR` / `OHOS_JAVA_HOME` 语义与 jre26 **完全一致**（桥侧已参数化，无需改 native ABI）。
 
+- **id / HSP 模块 / rawfile 名都**版本中性**（禁塞 JRE 版本号，见 [`现状基线.md`](../../../notes/00-current/现状基线.md) §1）：
+  id = `meow_jre_legacy`（本套）/ `meow_jre`（现代套）；rawfile = `<id>.tar.gz`；HSP 模块 = `meowjrelegacy` / `meowjre`。
+  **本套的数据令牌 = `1.8.0_504-b01-r1`**（改数据必须同步升它；两边同值镜像：
+  native `entry/src/main/cpp/meowassets/jre_launcher.h::kJreSpecs` ↔ ArkTS `common/constants/Paths.ets::BUNDLED_JRES`）。
+  **就绪标记 = `lib/rt.jar`**（JDK 8 没有 `lib/modules`！）。
+
 ## 3. 工序与现状
 
 | 步骤 | 脚本 | 状态 |
@@ -127,7 +133,7 @@ JRE，服务 **Forge ≤1.12.2（LaunchWrapper）+ 1.13–1.16（ModLauncher/Mix
 | 5 符号自检 | [`verify_symbols.py`](verify_symbols.py) | ✅ 重定位口径（纯 Python，宿主可跑） |
 | 6 入口 | [`rebuild_for_meowcraft.sh`](rebuild_for_meowcraft.sh) | ✅ dry-run 全绿（§3.2） |
 | 7 **容器自编 `libjvm.so`** | [`linux_bootstrap.sh`](linux_bootstrap.sh) / [`linux_build_jvm.sh`](linux_build_jvm.sh) / [`linux_env_snapshot.sh`](linux_env_snapshot.sh) / [`linux_verify_jvm_repro.sh`](linux_verify_jvm_repro.sh) + [`patches/os_linux-ohos.patch`](patches/os_linux-ohos.patch) | ✅ **已跑通**（2026-09-28）：`libjvm.so` 16,374,456 B、`DEBUG_LEVEL=release`、非 product 标志全 0、`NEEDED=ld-linux-aarch64.so.1,libc.so.6,libm.so.6`（无 stdc++/gcc_s） |
-| 8 **正式产物** | `stuffs/research/jdk8/out/` + `meow_jre8.tar.gz` | ✅ 25 件 `.so` **全部 PASS**（重定位口径）；`home` 80 MB/58 文件 → tar **30.8 MiB / 72 条目**；digests 见 §3.4 |
+| 8 **正式产物** | `stuffs/research/jdk8/out/` + 数据 tar（**随包名 = `<id>.tar.gz` = `meow_jre_legacy.tar.gz`**） | ✅ 25 件 `.so` **全部 PASS**（重定位口径）；`home` 80 MB/58 文件 → tar **30.8 MiB / 72 条目**；digests 见 §3.4 |
 
 ### 3.1 `libjli.so`（JDK 8）已跑通 ✅
 
@@ -187,7 +193,7 @@ sh <SHARE>/.../tools/jre8/linux_env_snapshot.sh
 | `libfreetype.so`（自编，取自随包） | `e41fe6b927f3d6605548473a6468000855ab9ad9239ef8d6ad988a3b2e0f1167` |
 | `libjava.so`（官方件魔改后） | `eab84771eed26b3946fab2c17e1e6db599a8882bc8a93c5baee25955a863b46e` |
 | `libunpack.so`（官方件魔改后，**Pack200 必需**） | `c457e5797eaf97e51ad4a869499af404e1b60909638dca0669bde9d1a577d506` |
-| `meow_jre8.tar.gz`（数据，72 条目） | `342a6a0a353ab66b34fee7600640d4b09e70675051539fce3af42bf2cf345215` |
+| `meow_jre_legacy.tar.gz`（数据，72 条目；**随包名 = `<id>.tar.gz`**） | `342a6a0a353ab66b34fee7600640d4b09e70675051539fce3af42bf2cf345215` |
 
 （其余 .so 的 digest 可由 `sha256sum stuffs/research/jdk8/out/*.so` 复算；改 `glibc_compat.c`/`patch_dynstr.py` 后
 `libc6.so` 与所有**被改过 dynstr 的官方件**都会变哈希，属预期。）
@@ -211,8 +217,8 @@ sh <SHARE>/.../tools/jre8/linux_env_snapshot.sh
 
 1. **（应用侧，下一步）** 多 JRE 骨架：`多JRE共存-方案.md` §4 的 P0/P1（`PurgeStaleJreData` 白名单、令牌按 id、
    `hspLibsDir(id)`、传参链）+ 新 `type:shared` 模块 **`meowjrelegacy`** + `JavaPolicy` 选择逻辑（Forge ≤1.16.999 → 本套）。
-   ⇒ 落到工程里 = 把本目录 `out/*.so` 铺进 `libs/meowjrelegacy/libs/arm64-v8a/`、把 `meow_jre8.tar.gz` 放进
-   `entry/src/main/resources/rawfile/`（**模块名与 rawfile 名都版本中性**）。
+   ⇒ 落到工程里 = 把本目录 `out/*.so` 铺进 `libs/meowjrelegacy/libs/arm64-v8a/`、把数据 tar 按 `<id>.tar.gz` 命名
+   （= `meow_jre_legacy.tar.gz`）放进 `entry/src/main/resources/rawfile/`（**模块名与 rawfile 名都版本中性**）。
 2. **（待验，真机）** ① 官方 8 件在 OHOS 上能否 `dlopen`/跑通；② `/proc/self/maps` 在 app 沙箱可读性
    （HotSpot 8 的线程栈/`is_initial_thread` 路径会读它；对照已知：`/proc/cpuinfo` 被禁，oshi 才要覆盖件）。
 3. 复现性：JDK 8 是否认 `SOURCE_DATE_EPOCH` 未验（`MEOW_REUSE` 无关，跑 `linux_verify_jvm_repro.sh` 给结论，回写本文件）。

@@ -23,31 +23,43 @@ git -C <ws>/ref/lwjgl checkout 2df01dd7        # git describe: lwjgl2.9.3-19-g2d
 
 ## 1. 干净复现走查（四步，命令均已验证）
 
-```sh
-WS=<ws>/Meowcraft                      # app 工程（含 tools/）
+> base 脚本（`generate_sources.sh` / `build_lwjgl2_meow.sh`）**环境无关**：源码树、SDK、输出目录都由参数
+> 传入，无本机默认值。下面的 `<lwjgl2-src>` / `<sdk-native>` / `<out-dir>` / `<repo>` 是占位符；
+> 本开发机的具体取值见本段末尾 **「本机配方」**。
 
-# ① 打本地补丁（一次性）
-cd "$WS/../ref/lwjgl" && git apply "$WS/tools/lwjgl2/patches/0001-generator-filer-bypass.patch"
+```sh
+# ① 打本地补丁（一次性；作用于 LWJGL2 源码树，如 <lwjgl2-src>）
+cd <lwjgl2-src> && git apply <repo>/tools/lwjgl2/patches/0001-generator-filer-bypass.patch
 
 # ② 生成源码（人跑，只需 JDK；不需要 ant/JDK8）。cwd 无关。
-cd "$WS" && sh tools/lwjgl2/generate_sources.sh
+sh tools/lwjgl2/generate_sources.sh --src <lwjgl2-src>
 #   产出：generated/{opengl:157,openal:3,opengles:47,opencl:15}/*.c、（重编）472 Java、25 JNI 头（src/hdrs-meow/）
 
 # ③ 编 native（agent 可跑）。--with-display 是"可用的 native"的必要条件（Stage 1 只有 GL/AL，无窗口/输入）
 sh tools/lwjgl2/build_lwjgl2_meow.sh \
-  --src ../ref/lwjgl \
-  --sdk-native /data/service/hnp/ohos-sdk.org/ohos-sdk_26.0.0.18/ohos/native \
-  --out ../stuffs/lwjgl2 --with-display
+  --src <lwjgl2-src> \
+  --sdk-native <sdk-native> \
+  --out <out-dir> --with-display
 
 # ④ 随包（manifest tag common）+ 清模块 build + 构建 + 部署
-sh tools/lwjgl/install_natives.sh --native liblwjgl.so=../stuffs/lwjgl2/liblwjgl.so
-rm -rf "$WS/entry/build" "$WS/libs/meowjre/build"
+sh tools/lwjgl/install_natives.sh --native liblwjgl.so=<out-dir>/liblwjgl.so
+rm -rf <repo>/entry/build <repo>/libs/meowjre/build
 devecocli build --modules entry meowjre
 devecocli run --skip-build --module entry meowjre --device 127.0.0.1:40229
 ```
 
-**易错点**：②③ 依赖 `$WS/ref/lwjgl` 里由 ② 生成的 `src/hdrs-meow/`（③ 会明确报错提示先跑 ②）；脚本**拒绝**含空格的路径；
-`--build` 指向 `$SRC` 或其子目录/`/` 时会被拒绝（保护 `rm -rf`）。`ref/lwjgl` 的生成物由补丁加入 `.gitignore`
+**本机配方（Meowcraft 开发机；wrapper 层 —— 工程外路径只写在这里，不写进 base 脚本）**：
+
+```sh
+WS=<workspace>; SDK_NATIVE=<OHOS SDK>/native
+sh tools/lwjgl2/generate_sources.sh --src "$WS/ref/lwjgl"
+sh tools/lwjgl2/build_lwjgl2_meow.sh --src "$WS/ref/lwjgl" \
+  --sdk-native "$SDK_NATIVE" --out "$WS/stuffs/research/lwjgl2/out" --with-display
+sh tools/lwjgl/install_natives.sh --native liblwjgl.so="$WS/stuffs/research/lwjgl2/out/liblwjgl.so"
+```
+
+**易错点**：②③ 依赖源码树（本机 = `$WS/ref/lwjgl`）里由 ② 生成的 `src/hdrs-meow/`（③ 会明确报错提示先跑 ②）；脚本**拒绝**含空格的路径；
+`--build` 指向 `$SRC` 或其子目录/`/` 时会被拒绝（保护 `rm -rf`）。源码树的生成物由补丁加入 `.gitignore`
 （`/bin-meow`、`/src/hdrs-meow`；`/src/generated`、`/src/native/generated` 是上游本来就忽略的）。
 
 ## 2. 脚本与文件
@@ -161,6 +173,20 @@ Sys native 在 `DefaultSysImplementation`（`LinuxSysImplementation extends J2SE
     hs_err；**绝不要加 `-XX:-UseSignalChaining`**（OHOS 预装 SIGSEGV handler → JVM 启动即死）。`-Xlog:library=debug`
     可核对符号绑定。
 
+17. **Forge legacy 的 FML splash 要"共享对象的第二个 GL 上下文"**（2026-09-29；根因已定位、修复已实现、**待实机验证**）：
+    `SharedDrawable` → `DrawableGL.createSharedContext()` → `new ContextGL(peer_info, attribs, context)`，
+    即 LWJGL2 要求**第二个上下文**且与第一个**共享对象**（桌面 GLX 天生支持，FML splash 靠它在自己线程上渲染）。
+    改前 `nCreate` 把 `shared_context_handle` 丢掉、`nMakeCurrent` 把 `context_handle` 丢掉，而桥只有唯一 EGL 上下文
+    ⇒ splash 线程的 `eglMakeCurrent` 必然 `EGL_BAD_ACCESS(3002)`；更糟的是**失败被吞**（桥 `meowMakeCurrent` 返回 `void`）
+    且 shim 随后无条件 `t_context_current = 1` ⇒ 该线程在**无 current 上下文**下跑 gl4es ⇒
+    `LIBGL: FPE Vertex shader compile failed: <乱码>`（**乱码本身就是判据**：无上下文时 `glGetShaderInfoLog` 的缓冲区无效）
+    ⇒ 原生线程 SIGSEGV（**不是 JVM 线程，所以没有 hs_err**）。修法（已实现）：桥新增上下文槽位表 +
+    `meowCreateSharedContext(share)` / `meowMakeCurrentFor(window, handle)` / `meowDestroySharedContext(handle)`
+    三个入口（每上下文自己的 surface；次级用 1×1 pbuffer、**且次级上的 `meowSwapBuffers` 直接忽略**）；
+    shim 侧 `MeowContext.bridge_ctx` 携带桥句柄、**make-current 失败抛 `LWJGLException` 而不是假装成功**、
+    每线程记录"当前是哪个上下文"（`t_current_ctx`）。证据链与实机判据见
+    `notes/20-design/launch/Forge-splash-崩溃根因与共享上下文修复.md`。
+
 ## 7. 已知风险 / 未完成
 
 - **AWT**：`LinuxSysImplementation` 静态块 `Toolkit.getDefaultToolkit()` 在无 X11 下风险（实测 1.7.10/1.8.9/1.12.2
@@ -175,9 +201,10 @@ Sys native 在 `DefaultSysImplementation`（`LinuxSysImplementation extends J2SE
 可复现编译的标准 = **≥2（建议 3）次干净重建 + `cmp` 逐字节比对**（不能只比哈希）。历史教训见
 `notes/40-adaptation/openal-ohos.md:112-113`。
 
-**一键校验**：
+**一键校验**（base 脚本环境无关：源码树与 SDK 都由参数传入）：
 ```sh
-sh tools/lwjgl2/verify_reproducible.sh --sdk-native <sdk> [--with-generator]
+sh tools/lwjgl2/verify_reproducible.sh --src <lwjgl2-src> --sdk-native <sdk-native> [--with-generator]
+#   本机：--src "$WS/ref/lwjgl" --sdk-native "$SDK_NATIVE"
 ```
 - **A（native，无需 JVM）**：3 次干净重建 → sha256 + `cmp` + "不嵌绝对路径"断言。
 - **B（`--with-generator`，需 JDK、由人跑）**：快照 `src/generated`/`src/native/generated`/`src/hdrs-meow`
@@ -191,3 +218,12 @@ sh tools/lwjgl2/verify_reproducible.sh --sdk-native <sdk> [--with-generator]
 - **生成物（B 段，实测 2026-09-11，用户跑）**：重跑 `generate_sources.sh` 后
   `src/generated` **472 文件**、`src/native/generated` **222 文件**、`src/hdrs-meow` **25 文件** 全部
   `diff -r` **逐字节一致** ⇒ **全链（生成 → 编译 → 随包）可复现**。
+
+**共享上下文改动后的单次构建记录（2026-09-29，agent 跑；非复现校验）**：
+- 源码 = 加入"共享上下文"改动（§6 第 17 条）后的 `src-ohos`；命令同 §1 ③（SDK 取 §1「本机配方」）；
+- 结果：`compile: 178 translation units` → `exports: total=2287 opengl=2262 openal=20`、`NEEDED: libc.so`；
+  产物 sha256 `93931548ac424bc57e1a28615d8ba613c3d3c714ca4e555955c87e26b28d6a8d`，323368 B（**此为"`nCreate` 形参契约修正前"的单次构建**）；
+- **★ `nCreate` 形参契约修正后重编（同日，2026-09-29）**：按上游真实契约 `nCreate(peer_handle, attribs, shared_context_handle)` 修正 shim 形参后重编 ⇒ 产物 sha256 `b6f9106c481a70b1db25ba26f502b80eec658d61f2393c96d97bb75ec1add6b9`，同样 **323,368 B** ⇒ **上一版（契约修正前）**。
+- **★ 契约修正后再对齐整族 JNI 形参口径后重编（同日，2026-09-29）**：`nReleaseCurrentContext` 第 1 实参是 peer handle（`peer_info_handle`）而非 context handle，另 `nMakeCurrent`/`nSetSwapInterval`/`nDestroy`/`nSwapBuffers`/`getDisplay` 形参名按上游 `LinuxContextImplementation.java` 对齐后重编 ⇒ 产物 sha256 **`73ac4aa87eae85c92955552258ac69f2b54df2a21a7f794ff390a9cbffede577`**，**323,336 B**；**该件 = 当前随包/装机件**（`libs/meowlwjgls/libs/arm64-v8a/liblwjgl.so`；见 `notes/30-supply-chain/assets-digests.txt` 的 v41 条）。契约修正前后差异与实机判据见 `notes/00-current/已知限制与待解.md` C11。
+- **本次只跑 1 次、未做 3 次干净重建的 `cmp` 校验** ⇒ 按上面的铁律**不得**称"可复现"。
+  需要复现结论时跑 `verify_reproducible.sh`（会覆盖本记录里的旧哈希口径：改动后哈希**必然**与 2026-09-11 那条不同）。

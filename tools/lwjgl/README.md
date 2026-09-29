@@ -196,21 +196,30 @@ ever added, carry the still-needed ones into its overlay.
 
 ## 2. Build the generation
 
+> Every base script is environment-independent (paths are parameters). The block below is the
+> **Meowcraft dev-machine recipe** (workspace-relative paths); another developer substitutes their
+> own `$WS` / SDK. `build_lwjgl_jar.sh --work` and the single-artifact `--work` dirs default to
+> `${TMPDIR:-/tmp}/…`; we pin them into the workspace so the digests below resolve.
+
 ```sh
-SDK=${OHOS_SDK_NATIVE:-$HOME/devecow/deveco_tools/sdk/default/openharmony}
+WS=<workspace>; SDK=<OHOS SDK root>      # e.g. SDK=$OHOS_SDK_NATIVE
 
 # --- 3.4.3 (the ONLY modern generation: serves MC 1.13–1.21.x AND >= 1.22) ---
-sh tools/lwjgl/build_libffi.sh --src stuffs/research/libffi/libffi-3.8.0 \
-    --sdk-native $SDK/native --out stuffs/research/libffi/out-ohos
+sh tools/lwjgl/build_libffi.sh --src "$WS/stuffs/research/libffi/libffi-3.8.0" \
+    --sdk-native "$SDK/native" --out "$WS/stuffs/research/libffi/out-ohos"
 sh tools/lwjgl/build_lwjgl_jar.sh --version 3.4.3 \
+    --work "$WS/stuffs/research/lwjgl_build-3.4.3" \
     --overlay tools/lwjgl/deltas/overlay --overlay tools/lwjgl/deltas/overlay-3.4.3
-    # -> stuffs/research/lwjgl_build-3.4.3/out/lwjgl.jar   (javac; you run it)
+    # -> <work>/out/lwjgl.jar   (javac; you run it)
 sh tools/lwjgl/rebuild_for_meowcraft.sh 3.4.3        # build + install -> liblwjgl_343{,_opengl,_stb}.so (+ manifest)
 
-# single-artifact re-builds / diagnostics (see tools/README.md §2 "单件脚本"):
-sh tools/lwjgl/build_lwjgl_vma.sh                    # liblwjgl_vma.so release (== shipped, byte-identical)
-sh tools/lwjgl/build_lwjgl_vma.sh --diagnostic       # [vma] diagnostic build -- NEVER ship
-sh tools/lwjgl/build_lwjgl_core_aligned_alloc_fix.sh # F2 core alignment clamp -> liblwjgl_343.so
+# single-artifact re-builds / diagnostics (see tools/README.md §2 "单件脚本"; all paths are params):
+sh tools/lwjgl/build_lwjgl_vma.sh --src "$WS/ref/lwjgl3" --sdk-native "$SDK/native" \
+    --work "$WS/stuffs/research/vulkan/vma_build"       # release (== shipped, byte-identical at this --work)
+sh tools/lwjgl/build_lwjgl_vma.sh --src "$WS/ref/lwjgl3" --sdk-native "$SDK/native" \
+    --work "$WS/stuffs/research/vulkan/vma_build_patched" --diagnostic   # [vma] diag -- NEVER ship
+sh tools/lwjgl/build_lwjgl_core_aligned_alloc_fix.sh --src "$WS/ref/lwjgl3" --sdk-native "$SDK/native" \
+    --work "$WS/stuffs/research/lwjgl_f2_align" --libffi-a "$WS/stuffs/research/libffi/out-ohos/libffi.a"
 ```
 
 ### Naming & the flat directory (why `libs/arm64-v8a/` must stay flat)
@@ -239,7 +248,7 @@ sh tools/lwjgl/build_lwjgl_core_aligned_alloc_fix.sh # F2 core alignment clamp -
   `install_natives.sh --native libshaderc.so=<file>` / `--native libspirv-cross.so=<file>` (tag `common`).
 - **`liblwjgl_vma.so` is also generation-agnostic** (no generation tag): every MC Vulkan allocation goes
   through VMA (`org.lwjgl.util.vma`); LibVma has no override key, so a missing native is a hard
-  "Failed to create VMA allocator". Built by `tools/lwjgl/build_lwjgl_vma.sh` (release default = the shipped
+  "Failed to create VMA allocator". Built by `tools/lwjgl/build_lwjgl_vma.sh` (release mode = the shipped
   pristine build; the `--diagnostic` build must never be co-packaged) and installed via
   `install_natives.sh --native liblwjgl_vma.so=<file>` (tag `common`).
 - **Jar modules added automatically for LWJGL ≥ 3.4.x** (`build_lwjgl_jar.sh`): **`lwjgl-sdl`** (MC ≥ 26.3)
