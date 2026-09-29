@@ -13,7 +13,7 @@
 export const JRES_ROOT: string = 'meow-jres';
 
 /**
- * 内置 JRE id（= 安装目录名 = rawfile 名前缀）；**版本无关**，勿带版本号。
+ * JRE id（= 安装目录名 = rawfile 名前缀）；**版本无关**，勿带版本号。
  * `JRE_ID_MEOW` = **现代套**（默认）；`JRE_ID_MEOW_LEGACY` = **legacy 套**（OpenJDK 8，
  * 服务 Forge ≤1.12.2 LaunchWrapper / 1.13–1.16 ModLauncher——那些在现代 JDK 上跑不了：
  * JDK 14 删了 `java.util.jar.Pack200`、JDK 24 禁了 SecurityManager）。
@@ -89,9 +89,6 @@ export const HSP_MEOWJRE_LEGACY: string = 'meowjrelegacy';
 /** HSP 内 native libs 子路径（打包契约）。 */
 export const HSP_LIBS_SUBPATH: string = 'libs/arm64';
 
-/** 内置 JRE 数据 rawfile 名（契约：须与 resources/rawfile 下文件同名）；**版本无关**。 */
-export const RAWFILE_MEOW_JRE: string = 'meow_jre.tar.gz';
-
 /** 启动支持 jar 载体 rawfile 名。 */
 export const RAWFILE_MEOWCRAFT_EXTRAS: string = 'meowcraft_extras.tar.gz';
 
@@ -107,8 +104,8 @@ export const MEOWCRAFT_EXTRAS_DONE: string = 'meowcraft_extras.done';
 /** NeoForge 安装期 headless JVM 的阶段/退出码结果文件（由桥在 headless 模式追加写入）。 */
 export const NEO_JVM_RESULT: string = 'meow-neo-jvm-result.txt';
 
-/** <filesDir>/meow-jres/<id>（java.home 数据目录）。 */
-export function jreHomeDir(filesDir: string, id: string = JRE_ID_MEOW): string {
+/** <filesDir>/meow-jres/<id>（java.home 数据目录）；id **必传**（不设默认，防「忘传 id 静默用现代套」）。 */
+export function jreHomeDir(filesDir: string, id: string): string {
   return `${filesDir}/${JRES_ROOT}/${id}`;
 }
 

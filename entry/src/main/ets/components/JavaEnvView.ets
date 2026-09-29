@@ -6,7 +6,7 @@ import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY } from '../common/c
 /**
  * Java 环境区块（与 GameVersionsView 平级，由 Index 挂载）。
  *
- * 职责：展示"可用 Java 运行时"的状态——有哪些内置 JRE、是否已解压就绪、
+ * 职责：展示"可用 Java 运行时"的状态——有哪些 JRE、是否已解压就绪、
  * 版本号；对未就绪的 JRE 提供"解压"按钮（走 installRuntime = 既有的 native installJre）。
  * 探测结果放**共享态** `LauncherState.jreEnvs`（版本区**不再**据此禁用"启动"——那是启动前的检查，
  * 见 GameLauncher.checkLaunchJre 与 LaunchJrePrompt）。

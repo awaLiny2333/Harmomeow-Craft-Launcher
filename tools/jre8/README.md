@@ -119,7 +119,7 @@ JRE，服务 **Forge ≤1.12.2（LaunchWrapper）+ 1.13–1.16（ModLauncher/Mix
 - **id / HSP 模块 / rawfile 名都**版本中性**（禁塞 JRE 版本号，见 [`现状基线.md`](../../../notes/00-current/现状基线.md) §1）：
   id = `meow_jre_legacy`（本套）/ `meow_jre`（现代套）；rawfile = `<id>.tar.gz`；HSP 模块 = `meowjrelegacy` / `meowjre`。
   **本套的数据令牌 = `1.8.0_504-b01-r1`**（改数据必须同步升它；两边同值镜像：
-  native `entry/src/main/cpp/meowassets/jre_launcher.h::kJreSpecs` ↔ ArkTS `common/constants/Paths.ets::BUNDLED_JRES`）。
+  native `entry/src/main/cpp/meowassets/jre_launcher.h::kJreSpecs` ↔ ArkTS `common/data/JavaRuntime.ets::BUNDLED_RUNTIMES`）。
   **就绪标记 = `lib/rt.jar`**（JDK 8 没有 `lib/modules`！）。
 
 ## 3. 工序与现状
@@ -215,7 +215,7 @@ sh <SHARE>/.../tools/jre8/linux_env_snapshot.sh
 
 ## 5. 待办
 
-1. **（应用侧，下一步）** 多 JRE 骨架：`多JRE共存-方案.md` §4 的 P0/P1（`PurgeStaleJreData` 白名单、令牌按 id、
+1. **（应用侧，下一步）** 多 JRE 骨架：`多JRE共存-方案.md` §4 的 P0/P1（`PurgeRetiredJreData` 白名单、令牌按 id、
    `hspLibsDir(id)`、传参链）+ 新 `type:shared` 模块 **`meowjrelegacy`** + `JavaPolicy` 选择逻辑（Forge ≤1.16.999 → 本套）。
    ⇒ 落到工程里 = 把本目录 `out/*.so` 铺进 `libs/meowjrelegacy/libs/arm64-v8a/`、把数据 tar 按 `<id>.tar.gz` 命名
    （= `meow_jre_legacy.tar.gz`）放进 `entry/src/main/resources/rawfile/`（**模块名与 rawfile 名都版本中性**）。

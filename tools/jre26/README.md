@@ -192,7 +192,7 @@ OHOS 分体 patch（3 处）：
 2. **`bin/`**：只留 `java keytool jfr jwebserver rmiregistry`（JDK26 无 `jrunscript` → 实留 **5** 个）。
 - **数据门（防混合）**：`Install` 解压后写 `<installDir>/meow_jre_data`（令牌 `26.0.2.1+1-7-r2`）；ArkTS `Paths.JRE_DATA_TOKEN`/`JavaEnvScanner` 同步校验；令牌不符 → 未就绪 + `Install` 清目录重解压。**⚠️ 改随包 JRE 数据的任何内容（模块集/文件）都必须同步升令牌**（native `kJreDataToken` + ArkTS `JRE_DATA_TOKEN`）。**只换 el1 `.so`（数据不变）→ 令牌不动。**
   - **r1 → r2（2026-09-27）**：本次新增 `lib/patch/jdk.zipfs/**`（jdk.zipfs best-effort-chmod 补丁类，见 §6）属"改数据内容" ⇒ 令牌同步升 `-r2`；老 r1 用户端显示「须升级」并重解压。
-- **旧 JRE 数据自动清理**：`Install` 会扫 `filesDir/meow-jres/`，删除**非当前 id** 的兄弟目录（换版本/改名后遗留的孤儿），幂等、失败仅告警不阻断（`PurgeStaleJreData`）。
+- **旧 JRE 数据自动清理**：`Install` 会扫 `filesDir/meow-jres/`，删除**已废弃 id** 的数据目录（`kRetiredJreIds` 白名单，换版本/改名后遗留的孤儿），幂等、失败仅告警不阻断（`PurgeRetiredJreData`）。
   - **UI**：app 区分 **须升级**（有数据但令牌不符 → 显示「升级」+ 令牌 旧→新）vs **未解压**（显示「解压」）；须升级时**禁用所有版本的「启动」**。
 - 模块集 = 原 HOML（已知 MC 1.6.x–26.3 可用）；实机验证见 §校验。
 
@@ -267,7 +267,7 @@ OHOS 分体 patch（3 处）：
 | 6 | 随包命名改为**版本无关**：HSP 模块 `meowjre`、JRE id `meow_jre`、rawfile `meow_jre.tar.gz`（旧 `meowjre25`/`meowjre26` 已废）；JRE 版本只由**数据门令牌**体现（现 `26.0.2.1+1-7-r2`，见 §5/§6） | 工程 + `rebuild_for_meowcraft.sh` |
 | 7 | **无需改**：`glibc_compat.c`、`patch_dynstr.py`、`assemble_jre.sh`、`build_shim.sh`、`verify_symbols.py`、两个 patch | — |
 
-> **为什么命名要版本无关**：HSP 模块名若绑 JRE 版本（`meowjre25`/`meowjre26`），每升一次 JRE 就会在设备上留下一个**删不掉的旧 HSP**（app 无权重删，只有 `hdc uninstall` 清）。改为固定名后，升级 = 「HSP 原地替换 + 数据门走『须升级 → 升级』」，不产生残留；`filesDir/meow-jres/` 侧另有 `PurgeStaleJreData` 兜底清孤儿目录。
+> **为什么命名要版本无关**：HSP 模块名若绑 JRE 版本（`meowjre25`/`meowjre26`），每升一次 JRE 就会在设备上留下一个**删不掉的旧 HSP**（app 无权重删，只有 `hdc uninstall` 清）。改为固定名后，升级 = 「HSP 原地替换 + 数据门走『须升级 → 升级』」，不产生残留；`filesDir/meow-jres/` 侧另有 `PurgeRetiredJreData` 兜底清孤儿目录。
 
 ## 未完成 / 下一步
 

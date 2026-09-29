@@ -17,7 +17,7 @@ export const JRES_DIR: string = JRES_ROOT;
  * Java 运行时（JRE）环境条目。
  *
  * java.home 约定 = <filesDir>/meow-jres/<id>，id 即安装目录名（**版本无关**，如 "meow_jre"）。
- * 内置来源：entry rawfile 的 `<id>.tar.gz`（纯数据）解压到 filesDir/meow-jres/<id>。
+ * 来源：entry rawfile 的 `<id>.tar.gz`（纯数据）解压到 filesDir/meow-jres/<id>。
  * JRE 版本由 release 的 JAVA_VERSION 展示；数据令牌不符 → needsUpgrade。
  *
  * ⚠️ **就绪判据逐 id 不同**（数据布局事实）：现代套 `lib/modules`、legacy 套 `lib/rt.jar`

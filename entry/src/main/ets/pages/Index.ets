@@ -28,7 +28,7 @@ import { getLauncherState, LauncherState } from '../common/state/LauncherState';
  * 2. GameVersionsView（版本列表 + 启动）
  * 3. AccountView    （账户区：窄屏在主列内；宽屏左移为独立侧栏）
  * 4. AdvancedOptionsView（高级选项：调试/进阶开关，**应用级全局唯一**）
- * 5. JavaEnvView    （Java 环境状态：内置 JRE 与解压就绪情况）
+ * 5. JavaEnvView    （Java 环境状态：JRE 与解压就绪情况）
  * 目录区与版本区通过共享 LauncherState（AppStorageV2）协同。
  *
  * 响应式：窗口宽度 ≥ LAYOUT_WIDE_MIN_W 时，账户区左移为固定宽侧栏，主区保持原样单独滚动，

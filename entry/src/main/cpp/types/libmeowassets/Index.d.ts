@@ -13,7 +13,7 @@
  * <filesDir>/meow-jres/<jreId> (meow-jres = JRE data root, sibling of meow-home).
  * @param resourceManager context.resourceManager.
  * @param filesDir context.filesDir.
- * @param jreId JRE id / install dir name / rawfile prefix (e.g. "meow_jre25").
+ * @param jreId JRE id / install dir name / rawfile prefix (e.g. "meow_jre").
  * @returns true when installed / already present.
  */
 export const installJre: (resourceManager: object, filesDir: string, jreId: string) => boolean;

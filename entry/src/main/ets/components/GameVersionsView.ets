@@ -1065,7 +1065,7 @@ export struct GameVersionsView {
       .width('100%')
       .alignItems(VerticalAlign.Center);
 
-      // Java 环境（逐版本）：自动（推荐：交给 JavaPolicy 按 MC 版本 × 加载器选）/ 指定某套内置 JRE。
+      // Java 环境（逐版本）：自动（推荐：交给 JavaPolicy 按 MC 版本 × 加载器选）/ 指定某套 JRE。
       // 副行显示**实际会用的那套 + 理由**（与启动日志同源、同一个 resolveJavaRuntime）⇒ 不必猜"自动"选了什么。
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {

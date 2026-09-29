@@ -126,7 +126,7 @@
     },
     {
       "name": "launch_jre_message",
-      "value": "本实例需要 Java %d 的内置运行时，但它在本机尚未就绪（未解压，或数据须升级），无法启动。是否现在准备？准备完成后请再点一次「启动」。"
+      "value": "本实例需要 Java %d 运行时，但它在本机尚未就绪（未解压，或数据须升级），无法启动。是否现在准备？准备完成后请再点一次「启动」。"
     },
     {
       "name": "launch_jre_prepared",
@@ -138,7 +138,7 @@
     },
     {
       "name": "launch_jre_install_message",
-      "value": "安装本实例需要先用内置 Java %d 运行时跑安装器（工具 JVM），但它在本机尚未就绪（未解压，或数据须升级），无法安装。是否现在准备？准备完成后请再点一次「确认安装」。"
+      "value": "安装本实例需要先用 Java %d 运行时跑安装器（工具 JVM），但它在本机尚未就绪（未解压，或数据须升级），无法安装。是否现在准备？准备完成后请再点一次「确认安装」。"
     },
     {
       "name": "launch_jre_install_prepared",
@@ -274,11 +274,11 @@
     },
     {
       "name": "java_env_modern",
-      "value": "OpenJDK 26（内置）"
+      "value": "现代 / 原版"
     },
     {
       "name": "java_env_legacy",
-      "value": "OpenJDK 8（内置 · legacy 段）"
+      "value": "旧版 / 模组"
     },
     {
       "name": "version_edit_glthread_label",
