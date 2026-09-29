@@ -13,7 +13,7 @@ import {
   RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES,
   RENDERER_BACKEND_VULKAN, RENDERER_BACKEND_GL4ES3, JAVA_ENV_AUTO
 } from '../common/constants/LaunchDefaults';
-import { rendererForVersion } from '../common/data/RendererPolicy';
+import { rendererForVersion, vulkanBackendRequested } from '../common/data/RendererPolicy';
 import { JavaRuntime, BUNDLED_RUNTIMES } from '../common/data/JavaRuntime';
 import { resolveJavaRuntime } from '../common/data/JavaPolicy';
 import { runtimeStatus } from '../common/data/JavaEnvScanner';
@@ -403,6 +403,21 @@ export struct GameVersionsView {
       return $r('app.string.renderer_vulkan');
     }
     return $r('app.string.renderer_auto');
+  }
+
+  /**
+   * 该实例**实际会**用的渲染后端简称 —— 与 `GameLauncher` **同一套决策代码 + 同源入参**
+   * （`rendererForVersion` 定 GL 侧；`vulkanBackendRequested` 定 Vulkan 是否真会被要求），
+   * 故不必猜"自动"选了什么，也不会出现"选了 Vulkan 却显示 OpenGLv4"。
+   */
+  private editingRendererEffective(): Resource {
+    const backend = this.editingSettings.rendererBackend;
+    if (vulkanBackendRequested(this.editing.mcVersion, backend)) {
+      return $r('app.string.renderer_vulkan_short');
+    }
+    return rendererForVersion(this.editing.mcVersion, backend).env === RENDERER_ENV_GL4ES
+      ? $r('app.string.renderer_gl4es_short')
+      : $r('app.string.renderer_openglv4_short');
   }
 
   // ---- 逐实例「Java 环境」下拉（与「渲染后端」同构；**选项由数据表生成** ⇒ 加第三套 JRE 不用改 UI） ----
@@ -1053,8 +1068,13 @@ export struct GameVersionsView {
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
           Text($r('app.string.version_edit_renderer_label'));
-          Text($r('app.string.version_edit_renderer_hint'))
-            .opacity(OPACITY_SECONDARY);
+          // 副行 = **生效后端** · 原提示（与启动日志同源、同一个 rendererForVersion）
+          Text() {
+            Span(this.editingRendererEffective());
+            Span($r('app.string.common_sep_dot'));
+            Span($r('app.string.version_edit_renderer_hint'));
+          }
+          .opacity(OPACITY_SECONDARY);
         }
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start);

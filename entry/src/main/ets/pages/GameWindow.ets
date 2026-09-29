@@ -183,8 +183,14 @@ struct GameWindow {
     this.requestCloseSent = true;
     hilog.info(LOG_DOMAIN, LOG_TAG, 'surface gone -> request game window close');
     try {
-      // 未选定桥（比如还没走到 injectAndLaunch）时静默跳过：这里只是"请游戏优雅关窗"。
-      (await currentBridge())?.requestGameWindowClose?.();
+      // 这里**不能**入队补发（runWithBridge）：那会在桥选定后立刻请求关窗，把刚起来的游戏关掉。
+      // 未选定桥（还没走到 injectAndLaunch）= 根本没有游戏在跑，故只做"就绪才发"并显式留痕。
+      const jrelib = await currentBridge();
+      if (jrelib === undefined) {
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'requestGameWindowClose skipped: bridge not selected');
+        return;
+      }
+      jrelib.requestGameWindowClose?.();
     } catch (e) {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'request close fail: %{public}s', JSON.stringify(e));
     }

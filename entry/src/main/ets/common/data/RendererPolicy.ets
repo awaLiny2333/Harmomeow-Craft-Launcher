@@ -76,6 +76,21 @@ export function supportsVulkanBackend(mcVersion: string): boolean {
   return major > 26 || (major === 26 && minor >= 2);
 }
 
+/**
+ * 启动时**是否真会要求 MC 去试 Vulkan** —— 唯一门控，`GameLauncher` 与 UI 副行共用。
+ *
+ * 两道条件都必须满足（历史行为，2026-09-29 抽取，未改变语义）：
+ * 1. 后端设置为 `vulkan`（`RendererChoice.graphicsBackend` 只有这一支非空）；
+ * 2. MC 版本 ≥26.2（`supportsVulkanBackend`）—— 更老的版本不认 `--graphicsBackend`，
+ *    传了会让 MC 的参数解析失败。
+ *
+ * ⚠️ 即便返回 true，Vulkan 初始化失败时 MC 仍会回退 GL，GL 侧走 `RendererChoice.env`
+ * （openglv4 / gl4es）—— 那是回退路径，不是"主选后端"。
+ */
+export function vulkanBackendRequested(mcVersion: string, backend: string): boolean {
+  return backend === RENDERER_BACKEND_VULKAN && supportsVulkanBackend(mcVersion);
+}
+
 /** MC 版本（json 内部 id）是否 legacy（<1.17，用固定管线 GL，需 compatibility profile）。 */
 function isLegacyVersion(mcVersion: string): boolean {
   const m: RegExpMatchArray | null = mcVersion.match(/^(\d+)\.(\d+)/);

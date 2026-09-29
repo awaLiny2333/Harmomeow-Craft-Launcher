@@ -61,6 +61,10 @@
       "value": "自动"
     },
     {
+      "name": "common_sep_dot",
+      "value": " · "
+    },
+    {
       "name": "common_list_fetch",
       "value": "获取版本列表"
     },
@@ -229,12 +233,24 @@
       "value": "OpenGLv4（桌面级）"
     },
     {
+      "name": "renderer_openglv4_short",
+      "value": "OpenGLv4"
+    },
+    {
       "name": "renderer_gl4es",
       "value": "GL4ES（兼容性）"
     },
     {
+      "name": "renderer_gl4es_short",
+      "value": "GL4ES"
+    },
+    {
       "name": "renderer_vulkan",
       "value": "Vulkan（26.2+，实验）"
+    },
+    {
+      "name": "renderer_vulkan_short",
+      "value": "Vulkan"
     },
     {
       "name": "version_edit_title",

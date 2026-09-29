@@ -2,7 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { pointer, KeyCode } from '@kit.InputKit';
 import { window, NodeContent } from '@kit.ArkUI';
-import { JreLibModule, currentBridge } from '../state/JvmLauncher';
+import { JreLibModule, whenBridgeSelected, runWithBridge } from '../state/JvmLauncher';
 import { SettingsTools } from '../data/SettingsTools';
 import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H } from '../constants/LaunchDefaults';
 import { SCROLL_VP_PER_NOTCH } from '../constants/Constants';
@@ -66,7 +66,23 @@ export class GameInputController {
 
   // ---- 窗口级鼠标 filter（非 grab 绝对坐标直通）----
   private filterActive: boolean = false;
-  private filterWinId: number = 0;
+  /**
+   * 当前游戏窗口的 system window id：窗口级**鼠标 / 触屏 filter 与 lockCursor 共用同一份缓存**，
+   * 一律经 ensureWindowId() 懒解析 —— **绝不从鼠标事件派生**。纯触屏设备上没有任何鼠标事件，
+   * 旧实现只在 pushMouseMap（MouseAction.Move）里赋 filterWinId ⇒ 触屏 filter 永远注册不上
+   * （2026-09 真机：鼠标不动 = 触屏全废）。0 = 未解析。
+   */
+  private winId: number = 0;
+  /** 正在解析中的 window id（并发去重，避免抖动期重复 getLastWindow IPC）。 */
+  private winIdPending: Promise<number> | undefined = undefined;
+  /**
+   * 触屏 filter 已注册到的窗口 id（幂等门）：0 = 未注册。
+   * 注册身份 = **(bridge, window) 对**：bridge 是**进程内单例**（见 JvmLauncher），故只需记 window id；
+   * 窗口 id 变化（= 换了窗口/表面）或 dispose 时由 invalidateWindowId() 清 0 ⇒ 允许重新注册，
+   * 从而"同一 (bridge, window) 只注册一次、窗口变化后重注册"。窗口级 filter 挂在**窗口**上，
+   * 不随 surface resize 变化 ⇒ resize 无需重注册。
+   */
+  private touchFilterWinId: number = 0;
   /** 触屏当鼠标（高级选项，应用级设置；窗口存活期内固定，改后下次开窗生效）。 */
   private touchAsMouse: boolean = false;
   /** 触屏转视角倍率（高级选项百分比 / 100；独立于鼠标手感）。 */
@@ -101,7 +117,6 @@ export class GameInputController {
   private grabBusy: boolean = false;
   private vx: number = 0;
   private vy: number = 0;
-  private winId: number = 0;
 
   // ---- 诊断埋点（本诊断版常开；限频/去重，正常游玩不刷屏）----
   private traceLastMs: number = 0;
@@ -166,6 +181,8 @@ export class GameInputController {
     }
     const b = this.bridge;
     if (b === undefined) {
+      // GameWindow 在 setBridge 之后调用 ⇒ 正常路径 b 必有；缺桥时不再静默返回（留痕）。
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'bindOverlay: bridge not selected, native grab disabled');
       return false;
     }
     try {
@@ -181,52 +198,93 @@ export class GameInputController {
   }
 
   /**
+   * 懒解析并缓存"当前游戏窗口"的 system window id（幂等；失败返回 0 且内部留痕一次）。
+   * 鼠标 filter、触屏 filter、lockCursor 三处**共用同一份** ⇒ 触屏路径不再依赖鼠标事件派生
+   * （那是"鼠标不动 = 触屏全废"的根因）。窗口/表面变化时由 invalidateWindowId() 失效重取。
+   */
+  private ensureWindowId(): Promise<number> {
+    if (this.winId > 0) {
+      return Promise.resolve(this.winId);
+    }
+    const pending: Promise<number> | undefined = this.winIdPending;
+    if (pending !== undefined) {
+      return pending;
+    }
+    const req: Promise<number> = window.getLastWindow(this.ctx).then((w: window.Window) => {
+      if (this.disposed) {
+        return 0;
+      }
+      const id: number = w.getWindowProperties().id;
+      if (id > 0) {
+        this.winId = id;
+      }
+      return this.winId;
+    }).catch((e: Error) => {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'ensureWindowId fail: %{public}s', JSON.stringify(e.message));
+      return 0;
+    }).then((id: number) => {
+      this.winIdPending = undefined;
+      return id;
+    });
+    this.winIdPending = req;
+    return req;
+  }
+
+  /** 窗口/表面变化：丢弃缓存的 window id（含触屏注册幂等门），下次 ensureWindowId 重新解析。 */
+  private invalidateWindowId(): void {
+    this.winId = 0;
+    this.winIdPending = undefined;
+    this.touchFilterWinId = 0;
+  }
+
+  /**
    * 注册触屏 filter。
-   * 必须挂在**与鼠标无关**的时机（页面挂载）：手机上压根没有鼠标事件，
+   * 必须挂在**与鼠标无关**的时机（桥就绪 / 页面挂载）：手机上压根没有鼠标事件，
    * 若挂在 pushMouseMap（只在 MouseAction.Move 里调）则**永远注册不上** ✗。
    * 原点/缩放由触屏路径独立标定（handleTouchMap）；触屏原点尚未标定时 native 无法表达
    * "未标定"，故按 0 处理，而不是把 -1e9 哨兵当合法值传下去（否则首手势坐标被打成极端值）。
+   * **幂等**：以 winId 为界，同一窗口只注册一次（native 同窗口重复调用只做参数刷新、不重注册）。
+   * 调用方必须经**桥就绪契约**（start() 的 whenBridgeSelected）：绝不"读当前桥值再判空"静默跳过。
    */
   private ensureTouchFilter(): void {
     if (this.disposed) {
       return;
     }
-    const b = this.bridge;
-    if (b === undefined || b.touchFilterStart === undefined) {
-      return;
-    }
-    const s: number = this.renderScale > 0 ? this.renderScale : 1;
-    const apply = (wid: number): void => {
+    this.ensureWindowId().then((wid: number) => {
       if (this.disposed) {
         return;
       }
-      const ox: number = this.touchOriginValid ? this.touchOriginX : 0;
-      const oy: number = this.touchOriginValid ? this.touchOriginY : 0;
-      try {
-        const rc = b.touchFilterStart?.(wid, ox, oy, s, this.touchAsMouse,
-          this.touchSens) ?? -1;
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStart win=%{public}d -> %{public}d', wid, rc);
-      } catch (e) {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStart err: %{public}s', JSON.stringify(e));
+      if (wid <= 0) {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'touch filter start skipped: window id unresolved');
+        return;
       }
-    };
-    if (this.filterWinId > 0) {
-      apply(this.filterWinId);
-    } else {
-      window.getLastWindow(this.ctx).then((w: window.Window) => {
-        if (this.disposed) {
-          return;
-        }
-        try {
-          this.filterWinId = w.getWindowProperties().id;
-          apply(this.filterWinId);
-        } catch (e) {
-          hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStart win err: %{public}s', JSON.stringify(e));
-        }
-      }).catch((e: Error) => {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStart win err: %{public}s',
-          JSON.stringify(e.message));
-      });
+      if (this.touchFilterWinId === wid) {
+        return;
+      }
+      this.applyTouchFilter(wid);
+    });
+  }
+
+  /** 真正下发一次触屏 filter 注册（原点未标定按 0）。成功才记幂等门，失败保持可重试。 */
+  private applyTouchFilter(wid: number): void {
+    const b = this.bridge;
+    if (b === undefined || b.touchFilterStart === undefined) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'touch filter start skipped: bridge unavailable');
+      return;
+    }
+    const s: number = this.renderScale > 0 ? this.renderScale : 1;
+    const ox: number = this.touchOriginValid ? this.touchOriginX : 0;
+    const oy: number = this.touchOriginValid ? this.touchOriginY : 0;
+    try {
+      const rc = b.touchFilterStart?.(wid, ox, oy, s, this.touchAsMouse, this.touchSens) ?? -1;
+      hilog.info(LOG_DOMAIN, LOG_TAG,
+        'touch filter start: win=%{public}d ox=%{public}f oy=%{public}f rc=%{public}d',
+        wid, ox, oy, rc);
+      if (rc === 0) {
+        this.touchFilterWinId = wid;
+      }
+    } catch (e) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'touch filter start err: %{public}s', JSON.stringify(e));
     }
   }
 
@@ -236,12 +294,18 @@ export class GameInputController {
     this.scrollScale = new SettingsTools(this.ctx).scrollSpeedPercent() / 100;
     this.touchAsMouse = new SettingsTools(this.ctx).touchAsMouse();
     this.touchSens = new SettingsTools(this.ctx).touchSensitivityPercent() / 100;
-    // 桥是 async 懒加载（ensureBridge），此刻 this.bridge 多半仍是 undefined；
-    // 直接调 ensureTouchFilter 会被守卫静默 return（2026-09-21 实测踩过）。
+    // 触屏 filter 必须挂在与鼠标无关的时机。桥是 async 懒加载（ensureBridge → whenBridgeSelected）：
+    // 此处**等"桥已选定"**再注册，而不是读 currentBridge() 的当前值判空 —— 后者未选定即 undefined，
+    // 会让启动注册被静默跳过（2026-09-29 c6a10f8 起：鼠标不动时触屏全废）。失败必留痕。
     this.ensureBridge().then((b: JreLibModule | undefined) => {
-      if (b !== undefined && !this.disposed) {
-        this.ensureTouchFilter();
+      if (this.disposed) {
+        return;
       }
+      if (b === undefined) {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'touch filter start skipped: bridge not selected');
+        return;
+      }
+      this.ensureTouchFilter();
     }).catch((e: Error) => {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'touch register bridge err: %{public}s',
         JSON.stringify(e.message));
@@ -289,17 +353,22 @@ export class GameInputController {
 
   // ---- 桥懒加载 ----
 
+  /**
+   * 取到"本进程选定桥"（与 GameWindow 经 setBridge 注入的是同一个对象）。
+   * 走 [`whenBridgeSelected()`]（桥就绪契约）：**等"已选定"事件**，而不是读 `currentBridge()`
+   * 的当前值 —— 后者未选定即 `undefined`，会让所有"就绪后做一次"的调用被静默跳过
+   * （2026-09-29 c6a10f8 起触屏注册被跳过的根因）；桥调用仍打到"起 JVM 的那个 HSP 模块"。
+   */
   private async ensureBridge(): Promise<JreLibModule | undefined> {
     if (this.bridge !== undefined) {
       return this.bridge;
     }
     try {
-      // 走 currentBridge()：必须打到"起 JVM 的那个 HSP 模块"（每模块各一份桥的共享状态）。
-      const b = await currentBridge();
+      const b = await whenBridgeSelected();
       this.bridge = b;
       return b;
     } catch (e) {
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'bridge lazy import fail: %{public}s', JSON.stringify(e));
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'bridge readiness wait fail: %{public}s', JSON.stringify(e));
       return undefined;
     }
   }
@@ -666,8 +735,12 @@ export class GameInputController {
     this.grabBusy = true;
     try {
       if (target) {
-        const win = await window.getLastWindow(this.ctx);
-        this.winId = win.getWindowProperties().id;
+        // window id 走共享的 ensureWindowId()（不再单独 getLastWindow；与 filter 同源）。
+        const wid: number = await this.ensureWindowId();
+        if (wid <= 0) {
+          hilog.info(LOG_DOMAIN, LOG_TAG, 'lockCursor: window id unresolved, skip');
+          return;
+        }
         const b = await this.ensureBridge();
         if (b === undefined || b.lockCursor === undefined) {
           hilog.info(LOG_DOMAIN, LOG_TAG, 'lockCursor: bridge/lockCursor unavailable');
@@ -681,9 +754,9 @@ export class GameInputController {
           this.sendCursorPos(this.vx, this.vy);
         }
         this.traceMotion('arkts-grabreset', this.vx, this.vy);
-        const rc: number = b.lockCursor(this.winId, false);
+        const rc: number = b.lockCursor(wid, false);
         hilog.info(LOG_DOMAIN, LOG_TAG, 'lockCursor windowId=%{public}d rc=%{public}d',
-          this.winId, rc);
+          wid, rc);
         if (rc !== 0) {
           hilog.info(LOG_DOMAIN, LOG_TAG, 'lockCursor failed, skip hiding pointer');
           return;
@@ -985,6 +1058,7 @@ export class GameInputController {
    * 乘 frameW/xcVpW 得物理 px；native filter 给的 display 坐标正是物理 px，两边一致）。
    * 必须存在：原点原本只从**鼠标**事件反算，纯触屏设备上会一直是哨兵 -1e9 ⇒ 光标乱飞。
    * 结果写入触屏专用 touchOriginX/Y（与鼠标 mapOx/mapOy 分离），避免干扰鼠标路径的去重。
+   * window id 走共享的 ensureWindowId()（不再依赖 filterWinId —— 那曾是鼠标派生值）。
    */
   handleTouchMap(event: TouchEvent): void {
     if (this.disposed) {
@@ -995,7 +1069,7 @@ export class GameInputController {
       return;
     }
     const t: TouchObject | undefined = event.touches.length > 0 ? event.touches[0] : undefined;
-    if (t === undefined || this.filterWinId <= 0) {
+    if (t === undefined) {
       return;
     }
     const s: number = this.renderScale > 0 ? this.renderScale : 1;
@@ -1012,28 +1086,29 @@ export class GameInputController {
     this.touchOriginX = ox;
     this.touchOriginY = oy;
     this.touchOriginValid = true;
-    try {
-      b.touchFilterStart(this.filterWinId, ox, oy, s, this.touchAsMouse, this.touchSens);
-    } catch (e) {
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStart err: %{public}s', JSON.stringify(e));
-    }
+    this.ensureWindowId().then((wid: number) => {
+      if (this.disposed || wid <= 0) {
+        return;
+      }
+      try {
+        b.touchFilterStart?.(wid, ox, oy, s, this.touchAsMouse, this.touchSens);
+      } catch (e) {
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStart err: %{public}s', JSON.stringify(e));
+      }
+    });
   }
 
   /**
    * 上报虚拟按键排除区（display px CSV "x,y,w,h;..."；空串清空）给 native touch filter。
-   * 静态：TouchControlsView 只有回调、拿不到控制器实例，故自行懒加载桥后转调。
+   * 静态：TouchControlsView 只有回调、拿不到控制器实例，故自行经桥就绪契约转调。
    * 命中区内的手指只按虚拟按键，不驱动 MC 光标/点击。
+   * 排除区常在**桥选定之前**就上报（覆盖层在页面挂载期即完成布局）⇒ 走 [`runWithBridge()`]：
+   * 未就绪则入队、选定后按序补发（旧的"读当前值 + b?." 会在此静默 no-op ⇒ 排除区根本没到 native）。
    */
   static setTouchExcludeRects(csv: string): void {
-    const run = async (): Promise<void> => {
-      try {
-        const b = await currentBridge();
-        b?.touchSetExcludeRects?.(csv);
-      } catch (e) {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'setTouchExcludeRects fail: %{public}s', JSON.stringify(e));
-      }
-    };
-    run();
+    runWithBridge((b) => {
+      b.touchSetExcludeRects?.(csv);
+    });
   }
 
   /** 用 ArkUI 事件换算组件左上角的 display 像素偏移并下发（filter 直通用）。 */
@@ -1055,8 +1130,9 @@ export class GameInputController {
     }
     this.mapOx = ox;
     this.mapOy = oy;
-    const apply = (wid: number): void => {
-      if (this.disposed) {
+    // window id 与触屏路径共用 ensureWindowId()（鼠标路径不再独占该解析）。
+    this.ensureWindowId().then((wid: number) => {
+      if (this.disposed || wid <= 0) {
         return;
       }
       try {
@@ -1070,25 +1146,7 @@ export class GameInputController {
       } catch (e) {
         hilog.info(LOG_DOMAIN, LOG_TAG, 'pushMouseMap filter err: %{public}s', JSON.stringify(e));
       }
-    };
-    if (this.filterWinId > 0) {
-      apply(this.filterWinId);
-    } else {
-      window.getLastWindow(this.ctx).then((w: window.Window) => {
-        if (this.disposed) {
-          return;
-        }
-        try {
-          this.filterWinId = w.getWindowProperties().id;
-          apply(this.filterWinId);
-        } catch (e) {
-          hilog.info(LOG_DOMAIN, LOG_TAG, 'pushMouseMap win err: %{public}s', JSON.stringify(e));
-        }
-      }).catch((e: Error) => {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'pushMouseMap win err: %{public}s',
-          JSON.stringify(e.message));
-      });
-    }
+    });
   }
 
   /**
@@ -1163,16 +1221,16 @@ export class GameInputController {
 
   /** 注销窗口级触屏 filter 并复位触屏状态（窗口重开时可重新注册）。 */
   private stopWindowFilters(): void {
-    const wid: number = this.filterWinId;
-    this.filterWinId = 0;
+    const wid: number = this.winId;
+    const b = this.bridge;
+    /* 窗口/表面边界：先复位触屏状态，再失效共享 window id（下次 ensureWindowId 重新解析、
+     * 触屏幂等门清零 ⇒ 允许重注册）。 */
     this.touchOriginX = 0;
     this.touchOriginY = 0;
     this.touchOriginValid = false;
-    if (wid <= 0) {
-      return;
-    }
-    const b = this.bridge;
-    if (b === undefined) {
+    this.filterActive = false;
+    this.invalidateWindowId();
+    if (wid <= 0 || b === undefined) {
       return;
     }
     /* 两个窗口级 filter 一起收尾：只停一个会留下不对称，窗口重开时的行为不可预期。 */
@@ -1187,7 +1245,6 @@ export class GameInputController {
     } catch (e) {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'stopWindowFilters err: %{public}s', JSON.stringify(e));
     }
-    this.filterActive = false;
   }
 
   /**

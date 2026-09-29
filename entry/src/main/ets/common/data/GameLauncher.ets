@@ -10,7 +10,7 @@ import { readAppGlobalSettings } from './AppSettings';
 import { readInstanceSettings, ensureInstanceLogsDir } from './InstanceSettings';
 import { MEOW_HOME_DIR, MC_RUN_DIR_PREFIX, NATIVES_DIR, versionDir } from '../constants/Paths';
 import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H, RENDERER_ENV, RENDERER_ENV_GL4ES } from '../constants/LaunchDefaults';
-import { rendererForVersion, guardNeedsSync, supportsVulkanBackend } from './RendererPolicy';
+import { rendererForVersion, guardNeedsSync, vulkanBackendRequested } from './RendererPolicy';
 import { resolveVersionByPath } from './VersionResolver';
 import { resolveJavaRuntime, JavaChoice } from './JavaPolicy';
 import { JavaRuntime } from './JavaRuntime';
@@ -188,8 +188,7 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   // `-Dorg.lwjgl.vulkan.libname` 承载（选 Vulkan = shim，否则 = no-vulkan 占位库）。因此这里
   // **不再注入 MEOW_VK_SHIM**：shim 一经加载即默认挂钩；需要纯透传时由用户「额外渲染环境变量」
   // 显式写 `MEOW_VK_SHIM=0`。
-  const vulkanBackendSelected =
-    renderer.graphicsBackend.length > 0 && supportsVulkanBackend(mcVersion);
+  const vulkanBackendSelected = vulkanBackendRequested(mcVersion, instance.rendererBackend);
   // jdk.zipfs 补丁目录（随包 JRE 数据里的 lib/patch/jdk.zipfs）：**存在才**加 `--patch-module`，
   // 否则 JVM 初始化即失败。见 MinecraftLauncher.LaunchOptions.zipfsPatchDir 与 tools/jre26/。
   let zipfsPatchDir = '';

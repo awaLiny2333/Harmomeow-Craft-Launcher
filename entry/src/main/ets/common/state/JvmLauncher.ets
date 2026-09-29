@@ -77,9 +77,68 @@ let activeBridge: JreLibModule | undefined = undefined;
 let activeHspModule: string = '';
 
 /**
+ * **桥就绪契约**（2026-09-29 新增）—— 一个显式的"桥已选定"事件源 + 一个早期调用队列，
+ * 取代此前到处"读 `currentBridge()` 当前值再判空"的写法：后者的 `undefined` 表示"还没选"，
+ * **不是**"失败"，于是所有在启动早期（surface 就绪 / `selectBridge` 之前）发起的桥调用都被
+ * **静默跳过**。**2026-09-29 真机事故**：`GameInputController` 的启动触屏 filter 注册正是这样被跳过
+ * ⇒ **鼠标不动时触屏全废**（纯触屏设备上根本没有鼠标事件去补注册；见 `notes` 桥就绪契约一节）。
+ *
+ * 两个消费入口：[`whenBridgeSelected()`]（等选定后做一次）与 [`runWithBridge()`]（未选定则入队、
+ * 选定后 FIFO flush）。二者都是同一契约的投影，且都保证**绝不静默丢弃**。
+ */
+let resolveBridgeSelected: ((b: JreLibModule) => void) | undefined = undefined;
+let rejectBridgeSelected: ((e: Error) => void) | undefined = undefined;
+const bridgeSelectedPromise: Promise<JreLibModule> = new Promise<JreLibModule>(
+  (resolve, reject) => {
+    resolveBridgeSelected = resolve;
+    rejectBridgeSelected = reject;
+  });
+// 防御：选择失败而当下无人 await 时，避免 unhandled rejection 噪声；各消费者自己的 .catch 不受影响。
+bridgeSelectedPromise.catch(() => {
+});
+
+/** 桥就绪后按需执行的动作队列（FIFO；选定瞬间 flush，绝不静默丢弃）。 */
+type BridgeAction = (b: JreLibModule) => void;
+const pendingBridgeActions: BridgeAction[] = [];
+
+function signalBridgeReady(b: JreLibModule): void {
+  const r = resolveBridgeSelected;
+  resolveBridgeSelected = undefined;
+  if (r !== undefined) {
+    r(b);
+  }
+}
+
+function signalBridgeReadyFailure(reason: string): void {
+  const r = rejectBridgeSelected;
+  rejectBridgeSelected = undefined;
+  if (r !== undefined) {
+    r(new Error(reason));
+  }
+}
+
+function flushPendingBridgeActions(): void {
+  const b = activeBridge;
+  if (b === undefined || pendingBridgeActions.length === 0) {
+    return;
+  }
+  const batch: BridgeAction[] = pendingBridgeActions.splice(0, pendingBridgeActions.length);
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'bridge selected: flushing %{public}d queued action(s)',
+    batch.length);
+  for (const action of batch) {
+    try {
+      action(b);
+    } catch (e) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'queued bridge action failed: %{public}s', JSON.stringify(e));
+    }
+  }
+}
+
+/**
  * 按 HSP 模块名取桥入口。
  * 动态 import 的 specifier 必须是**静态字面量** ⇒ 只能这样写成一张小表；
- * **新增一套 JRE 时只在此加一个分支**（其余代码一律走 [`selectBridge()`] / [`currentBridge()`]）。
+ * **新增一套 JRE 时只在此加一个分支**（生产侧走 [`selectBridge()`]，消费侧走
+ * [`whenBridgeSelected()`] / [`runWithBridge()`]，低层读取才用 [`currentBridge()`]）。
  */
 async function loadBridge(hspModule: string): Promise<JreLibModule> {
   if (hspModule === HSP_MEOWJRE_LEGACY) {
@@ -110,18 +169,57 @@ export async function selectBridge(runtime: JavaRuntime): Promise<boolean> {
     }
     return true;
   }
-  activeBridge = await loadBridge(runtime.hspModule);
+  try {
+    activeBridge = await loadBridge(runtime.hspModule);
+  } catch (e) {
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'bridge load failed: hsp=%{public}s err=%{public}s',
+      runtime.hspModule, JSON.stringify(e));
+    // 就绪失败必须显式告知等待者（否则 whenBridgeSelected() 会永远挂起）。
+    signalBridgeReadyFailure('bridge load failed: ' + runtime.hspModule);
+    return false;
+  }
   activeHspModule = runtime.hspModule;
   hilog.info(LOG_DOMAIN, LOG_TAG, 'bridge selected: hsp=%{public}s', activeHspModule);
+  // 兑现"桥已选定"契约（当刻等待者）+ flush 早期入队的桥调用；都必须在 activeBridge 落定之后。
+  signalBridgeReady(activeBridge);
+  flushPendingBridgeActions();
   return true;
 }
 
 /**
  * 取**本进程当前实例**的桥；**未选定 ⇒ `undefined`**（绝不自动加载默认模块——见 `selectBridge` 的注释）。
- * 所有桥调用都必须经它（窗口/输入/全屏/grab），且调用方按"可能没有桥"处理（`?.`）。
+ *
+ * ⚠️ 这是**低层访问器**：`undefined` 表示"还没选"，**不是**"失败"。用途仅限**生产侧**
+ * （`selectBridge` 之后紧接着读一次的调用，如 `GameWindow.injectAndLaunch`）。**其它消费方**
+ * （要在就绪后执行一次注册/上报的代码）必须走 [`whenBridgeSelected()`] / [`runWithBridge()`] ——
+ * 直接读当前值会在启动早期（surface 就绪 / `selectBridge` 之前）静默跳过调用，
+ * 这正是 2026-09-29 触屏 filter 启动注册被跳过、鼠标不动即触屏全废的根因。
  */
 export async function currentBridge(): Promise<JreLibModule | undefined> {
   return activeBridge;
+}
+
+/**
+ * **等桥选定**：返回"本进程选定桥"的 promise（已选定则立即兑现；选择失败则 reject）。
+ * 消费方（要在就绪后执行一次注册/上报）一律用它，**不要**读 [`currentBridge()`] 的当前值判空。
+ */
+export function whenBridgeSelected(): Promise<JreLibModule> {
+  return bridgeSelectedPromise;
+}
+
+/**
+ * **桥就绪后执行一次**：桥已选定 ⇒ 立即执行；否则入队、在 `selectBridge` 成功后按 FIFO flush
+ * （有状态语义的调用天然"最后写入者胜"）。用于"开窗早期可能早于桥选定"的最佳努力调用，
+ * **绝不静默丢弃**（入队即留痕）。与 [`whenBridgeSelected()`] 是同一契约的两面。
+ */
+export function runWithBridge(action: BridgeAction): void {
+  if (activeBridge !== undefined) {
+    action(activeBridge);
+    return;
+  }
+  pendingBridgeActions.push(action);
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'bridge not selected yet: action queued (pending=%{public}d)',
+    pendingBridgeActions.length);
 }
 
 /** 本进程当前桥所在的 HSP 模块名（日志/自证用；未选定 = 空串）。 */
@@ -134,11 +232,15 @@ export function currentHspModule(): string {
  * 为什么需要：MC 只在收到 SDL 的 FOCUS_LOST/FOCUS_GAINED 时才更新自己的 focused（→
  * `Minecraft.pauseIfInactive` 依 options 的 pauseOnLostFocus 决定自动暂停）；平台侧能给出
  * 这个状态的只有 windowStageEvent 的 ACTIVE/INACTIVE。native 侧落进共享块，由 SDL `ohos`
- * 驱动翻译成 SDL 焦点事件。best-effort：桥未选定 / HSP 未就绪 / 旧版 HSP 无该入口时静默忽略。
+ * 驱动翻译成 SDL 焦点事件。
+ * 焦点事件可能在桥选定之前就来（窗口创建即产 ACTIVE）⇒ 走就绪队列（[`runWithBridge()`]）：
+ * 选定后补发，而不是读当前值后静默丢弃（旧版 HSP 无该入口时仍静默忽略 —— 那是**能力缺失**，
+ * `?.` 表达，与启动时序无关）。
  */
 export async function notifyWindowActive(active: boolean): Promise<void> {
-  const craft = await currentBridge();
-  craft?.setWindowActive?.(active);
+  runWithBridge((craft) => {
+    craft.setWindowActive?.(active);
+  });
 }
 
 /**
