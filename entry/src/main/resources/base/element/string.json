@@ -117,6 +117,30 @@
       "value": "已导出，但部分内容无法读取，已跳过：%s"
     },
     {
+      "name": "settings_clear_cache",
+      "value": "清除缓存"
+    },
+    {
+      "name": "settings_clear_cache_hint",
+      "value": "清除本机启动缓存（版本 classpath 暂存、运行目录与 natives 解压、运行日志、Forge / NeoForge 安装器解压）；不影响游戏数据、存档与 Java 运行时，下次启动会自动重建"
+    },
+    {
+      "name": "settings_clear_cache_confirm_message",
+      "value": "将清除应用缓存（版本 classpath 暂存、运行目录与 natives 解压、运行日志、Forge / NeoForge 安装器解压）。游戏数据、存档与 Java 运行时不受影响；缓存会在下次启动或安装时自动重建。"
+    },
+    {
+      "name": "settings_clear_cache_done",
+      "value": "已清除缓存，释放 %s。"
+    },
+    {
+      "name": "settings_clear_cache_partial",
+      "value": "已清除缓存，释放 %s；部分项目未能删除（可能被占用）：%s"
+    },
+    {
+      "name": "settings_clear_cache_running",
+      "value": "游戏运行中：请先关闭游戏窗口再清除缓存"
+    },
+    {
       "name": "launch_last",
       "value": "继续玩：%s"
     },

@@ -2,6 +2,8 @@ import { common } from '@kit.AbilityKit';
 import { SettingsTools } from '../common/data/SettingsTools';
 import { exportSettings } from '../common/data/AppSettings';
 import { pickDirectory, authorizeDirectory } from '../common/access/FileAccess';
+import { clearSandboxCaches, CacheClearOutcome } from '../common/data/CacheCleaner';
+import { getLauncherState, LauncherState } from '../common/state/LauncherState';
 import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY,
   SCROLL_SPEED_DEFAULT_PERCENT, TOUCH_SENSITIVITY_DEFAULT_PERCENT, TOUCH_AS_MOUSE_DEFAULT,
   TOUCH_CONTROLS_DEFAULT, TOUCH_CONTROLS_INSET_DEFAULT, TOUCH_CONTROLS_SCALE_DEFAULT_PERCENT,
@@ -53,6 +55,8 @@ export struct AdvancedOptionsView {
   @Local jvmArgsText: string = '';
   /** native 探测到的本机核数（仅展示参考）。 */
   @Local detectedCpus: number = 0;
+  /** 共享启动器状态（只为读 gameRunning：游戏运行中禁止清缓存；与启动按钮同一状态源）。 */
+  @Local state: LauncherState = getLauncherState();
 
   private settings: SettingsTools | undefined = undefined;
 
@@ -202,6 +206,70 @@ export struct AdvancedOptionsView {
     this.getUIContext().showAlertDialog({
       message: $r('app.string.settings_export_success', result.outDir),
     });
+  }
+
+  /**
+   * 清除缓存入口：先弹二次确认（与版本删除同款形态：cancel=brand / 动作=danger），确认后才真正清理。
+   */
+  private confirmClearCache(): void {
+    this.getUIContext().showAlertDialog({
+      title: $r('app.string.settings_clear_cache'),
+      message: $r('app.string.settings_clear_cache_confirm_message'),
+      primaryButton: {
+        value: $r('app.string.common_cancel'),
+        action: () => {
+        },
+        fontColor: $r('sys.color.white'),
+        backgroundColor: $r('app.color.brand')
+      },
+      secondaryButton: {
+        value: $r('app.string.settings_clear_cache'),
+        action: () => {
+          this.doClearCache();
+        },
+        fontColor: $r('sys.color.white'),
+        backgroundColor: $r('app.color.danger')
+      },
+    });
+  }
+
+  /**
+   * 执行清理：游戏运行中**拒绝**（按钮已按 gameRunning 禁用，但轮询有 ~2s 延迟，这里实时复检）；
+   * 否则清 `ctx.cacheDir` 下**本项目自己的**条目（见 CacheCleaner），按**实测释放字节**回报，
+   * 并把被占用未删净的项目如实列出（部分失败不崩、不假成功）。
+   */
+  private doClearCache(): void {
+    if (this.state.gameRunning) {
+      this.getUIContext().showAlertDialog({ message: $r('app.string.settings_clear_cache_running') });
+      return;
+    }
+    const outcome: CacheClearOutcome = clearSandboxCaches(this.context().cacheDir);
+    const freed = this.fmtSize(outcome.freedBytes);
+    if (outcome.skippedItems.length > 0) {
+      this.getUIContext().showAlertDialog({
+        message: $r('app.string.settings_clear_cache_partial', freed, outcome.skippedItems.join('、')),
+      });
+      return;
+    }
+    this.getUIContext().showAlertDialog({
+      message: $r('app.string.settings_clear_cache_done', freed),
+    });
+  }
+
+  /** 字节数格式化（结果展示用；动态数据，非 UI 文案）。 */
+  private fmtSize(bytes: number): string {
+    if (bytes <= 0) {
+      return '0 B';
+    }
+    const kb = 1024;
+    const mb = kb * 1024;
+    if (bytes < kb) {
+      return `${bytes} B`;
+    }
+    if (bytes < mb) {
+      return `${(bytes / kb).toFixed(1)} KB`;
+    }
+    return `${(bytes / mb).toFixed(1)} MB`;
   }
 
   build() {
@@ -566,9 +634,19 @@ export struct AdvancedOptionsView {
       .width('100%')
       .alignItems(VerticalAlign.Center);
 
-      // 最下面的次要入口：导出应用设置（目录 + 账户 + 高级选项；账户含凭据）到用户选择的目录。
+      // 次要入口：导出应用设置（目录 + 账户 + 高级选项；账户含凭据）到用户选择的目录。
       Button($r('app.string.settings_export'))
         .onClick(() => this.confirmExport());
+
+      // 危险入口（置于本区最下方）：清除沙箱缓存 —— 只清 cacheDir 下本项目自己的条目，
+      // 绝不触碰游戏数据 / 存档或 filesDir 下的 JRE 解压（见 CacheCleaner）。
+      Divider().padding({ top: LAYOUT_SPACE_SMALL });
+      Text($r('app.string.settings_clear_cache_hint'))
+        .opacity(OPACITY_SECONDARY);
+      Button($r('app.string.settings_clear_cache'))
+        .backgroundColor($r('app.color.danger'))
+        .enabled(!this.state.gameRunning)
+        .onClick(() => this.confirmClearCache());
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start);

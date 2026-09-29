@@ -9,8 +9,8 @@ import { DEFAULT_LIBRARY_URL, DOWNLOAD_CONCURRENCY, ENV_OS_ARCH, ENV_OS_BITS, EN
   fabricLaunchMetaCandidates, fabricLoaderListCandidates, fileCandidates, forgeBmclListUrl,
   forgeInstallerCandidates, manifestCandidates,
   neoforgeInstallerCandidates } from '../constants/DownloadContract';
-import { ASSET_HASH_PREFIX_LENGTH, assetObjectPath, assetsIndexesDir, librariesDir, NEO_JVM_RESULT,
-  versionDir, versionJarPath, versionJsonPath } from '../constants/Paths';
+import { ASSET_HASH_PREFIX_LENGTH, assetObjectPath, assetsIndexesDir, FORGE_INSTALLER_DIR, librariesDir,
+  NEO_INSTALLER_DIR, NEO_JVM_RESULT, versionDir, versionJarPath, versionJsonPath } from '../constants/Paths';
 import { NEO_INSTALL_ABILITY, NEO_INSTALL_PROCESS_SUFFIX } from '../constants/LaunchContract';
 import { buildNeoForgeProcessorPlans, libraryNames, NeoForgeExpandContext, NeoForgeInstallProfileJson,
   NeoForgeLaunchJson, NeoForgeMergeModuleEntry, NeoForgeProcessorJob, NeoForgeProcessorPlan,
@@ -942,7 +942,7 @@ function concatArgs(a?: ArgumentsJson, b?: ArgumentsJson): ArgumentsJson | undef
 
 /** NeoForge 工作目录（installer jar / 解包 / job 文件；位于 cacheDir，可随时重下）。 */
 function neoWorkDir(cacheDir: string, loaderVersion: string): string {
-  return `${cacheDir}/neo-installer/${loaderVersion}`;
+  return `${cacheDir}/${NEO_INSTALLER_DIR}/${loaderVersion}`;
 }
 
 /** 确保目录存在（递归；已存在则忽略）。 */
@@ -1719,7 +1719,7 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
   const gameVersion = (vanilla.id ?? '').length > 0 ? (vanilla.id ?? '') : gameRemote.id;
 
   // 2) installer jar → 解包 → 判型。工作目录按 loader 版本跨实例复用，先清后解（同 NeoForge 的做法）。
-  const workDir = `${cacheDir}/forge-installer/${loaderVersion}`;
+  const workDir = `${cacheDir}/${FORGE_INSTALLER_DIR}/${loaderVersion}`;
   ensureDir(workDir);
   const jarPath = `${workDir}/installer.jar`;
   if (!exists(jarPath)) {

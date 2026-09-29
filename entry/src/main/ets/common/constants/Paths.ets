@@ -54,8 +54,15 @@ export const BAD_FILE_SUFFIX: string = '.bad';
 /** 版本 jar 平铺目录（cacheDir 下）。 */
 export const MC_CP_DIR: string = 'mc-cp';
 
-/** 运行目录前缀（cacheDir 下，后接 versionId）。 */
+/** 运行目录前缀（cacheDir 下，后接 versionId）。运行日志目录亦共用此前缀（`mc-run-<id>-logs`），
+ *  故「按前缀收集沙箱缓存」时可一并覆盖两者（见 CacheCleaner）。 */
 export const MC_RUN_DIR_PREFIX: string = 'mc-run-';
+
+/** NeoForge 安装工作目录名（cacheDir 下，后接 loaderVersion）：installer jar / 解包 / job / mainclass 缓存。 */
+export const NEO_INSTALLER_DIR: string = 'neo-installer';
+
+/** Forge 安装工作目录名（cacheDir 下，后接 loaderVersion）：installer jar / 解包。 */
+export const FORGE_INSTALLER_DIR: string = 'forge-installer';
 
 /** natives 子目录名（JNA 解压 / java.library.path 兜底）。 */
 export const NATIVES_DIR: string = 'natives';
