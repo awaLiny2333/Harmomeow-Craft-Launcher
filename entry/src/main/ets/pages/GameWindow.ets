@@ -163,6 +163,12 @@ struct GameWindow {
       clearInterval(this.urlTimer);
       this.urlTimer = -1;
     }
+    // 启动兜底定时器也在销毁路径清掉：否则页面已 teardown 仍会触发一次 launchGame
+    // （桥/输入都已 dispose，等于对着拆除后的实例起 JVM）。
+    if (this.launchFallbackTimer >= 0) {
+      clearTimeout(this.launchFallbackTimer);
+      this.launchFallbackTimer = -1;
+    }
     this.input?.dispose();
   }
 
@@ -183,8 +189,11 @@ struct GameWindow {
     this.requestCloseSent = true;
     hilog.info(LOG_DOMAIN, LOG_TAG, 'surface gone -> request game window close');
     try {
-      // 这里**不能**入队补发（runWithBridge）：那会在桥选定后立刻请求关窗，把刚起来的游戏关掉。
-      // 未选定桥（还没走到 injectAndLaunch）= 根本没有游戏在跑，故只做"就绪才发"并显式留痕。
+      // 这里**不能**入队补发（runWithBridge）：surface 消失可能发生在"启动尚未发生 / 已被
+      // launchFallbackTimer 推迟 / 之后还会重建"的窗口期，入队会导致桥选定后立刻关掉**随后才
+      // 起来的**游戏。⇒ 采用"此刻已选定桥才发"的保守语义：桥未选定 ⇔ 本 surface 生命周期内
+      // 还没有可关的窗口（真不变量），**并非**"一定没有游戏会跑"；留痕而不入队
+      // （漏发关窗无害，多发关窗会误杀游戏）。
       const jrelib = await currentBridge();
       if (jrelib === undefined) {
         hilog.info(LOG_DOMAIN, LOG_TAG, 'requestGameWindowClose skipped: bridge not selected');

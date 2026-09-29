@@ -265,27 +265,54 @@ export class GameInputController {
     });
   }
 
-  /** 真正下发一次触屏 filter 注册（原点未标定按 0）。成功才记幂等门，失败保持可重试。 */
-  private applyTouchFilter(wid: number): void {
+  /**
+   * 触屏 filter 下发**内核**：**唯一**做 native 调用 + **成功才写幂等门**的地方。
+   * 启动注册（[applyTouchFilter]）与迟到的原点刷新（handleTouchMap）**共用它** ⇒ 门不再被绕过、
+   * 不会与启动注册叠成"双注册"（LOW 5）。
+   * **此处不打 info 日志** —— 它会被高频链路（handleTouchMap 每次原点变化）走到；启动路径的留痕
+   * 由 [applyTouchFilter] 负责，异常则在此留一条 error（error 级不触发高频日志检查）。
+   * 返回 native rc（桥/入口不可用或抛异常 = -1）。
+   */
+  private startTouchFilter(wid: number): number {
     const b = this.bridge;
     if (b === undefined || b.touchFilterStart === undefined) {
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'touch filter start skipped: bridge unavailable');
-      return;
+      return -1;
     }
     const s: number = this.renderScale > 0 ? this.renderScale : 1;
     const ox: number = this.touchOriginValid ? this.touchOriginX : 0;
     const oy: number = this.touchOriginValid ? this.touchOriginY : 0;
     try {
       const rc = b.touchFilterStart?.(wid, ox, oy, s, this.touchAsMouse, this.touchSens) ?? -1;
-      hilog.info(LOG_DOMAIN, LOG_TAG,
-        'touch filter start: win=%{public}d ox=%{public}f oy=%{public}f rc=%{public}d',
-        wid, ox, oy, rc);
       if (rc === 0) {
         this.touchFilterWinId = wid;
       }
+      return rc;
     } catch (e) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'touch filter start err: %{public}s', JSON.stringify(e));
+      return -1;
     }
+  }
+
+  /**
+   * **启动路径**的触屏 filter 注册（经桥就绪契约进入）。先按"桥未选定 / 该 HSP 未导出入口"分别留痕，
+   * 再走内核 [startTouchFilter]。措辞/级别与同案对齐：前者对齐 `bindOverlay` 的 "bridge not
+   * selected"（info）；后者是**能力缺失**（旧版 HSP 无该导出），与 `notifyWindowActive` 的 `?.`
+   * 同一判据 —— 绝不是"桥不可用"（旧文案在此必然失真）。
+   */
+  private applyTouchFilter(wid: number): void {
+    const b = this.bridge;
+    if (b === undefined) {
+      // 桥尚未选定（本路径正常不会发生：ensureTouchFilter 经桥就绪契约进入）⇒ 留痕、保持可重试。
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'touch filter start skipped: bridge not selected');
+      return;
+    }
+    if (b.touchFilterStart === undefined) {
+      hilog.info(LOG_DOMAIN, LOG_TAG,
+        'touch filter start skipped: touchFilterStart not exported by current bridge (old HSP?)');
+      return;
+    }
+    const rc = this.startTouchFilter(wid);
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'touch filter start: win=%{public}d rc=%{public}d', wid, rc);
   }
 
   /** 启动 grab 轮询 + 采样率 overlay（页面挂载时调用）。 */
@@ -1090,11 +1117,9 @@ export class GameInputController {
       if (this.disposed || wid <= 0) {
         return;
       }
-      try {
-        b.touchFilterStart?.(wid, ox, oy, s, this.touchAsMouse, this.touchSens);
-      } catch (e) {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'touchFilterStart err: %{public}s', JSON.stringify(e));
-      }
+      // 与启动注册共用同一内核（同一下发 + 同一幂等门）：迟到的原点刷新不再绕过门
+      // ⇒ 也就不会与启动注册叠成"双注册"。内核用刚写入的 touchOriginX/Y，值等价。
+      this.startTouchFilter(wid);
     });
   }
 

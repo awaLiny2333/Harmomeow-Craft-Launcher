@@ -77,44 +77,92 @@ let activeBridge: JreLibModule | undefined = undefined;
 let activeHspModule: string = '';
 
 /**
- * **桥就绪契约**（2026-09-29 新增）—— 一个显式的"桥已选定"事件源 + 一个早期调用队列，
- * 取代此前到处"读 `currentBridge()` 当前值再判空"的写法：后者的 `undefined` 表示"还没选"，
- * **不是**"失败"，于是所有在启动早期（surface 就绪 / `selectBridge` 之前）发起的桥调用都被
- * **静默跳过**。**2026-09-29 真机事故**：`GameInputController` 的启动触屏 filter 注册正是这样被跳过
- * ⇒ **鼠标不动时触屏全废**（纯触屏设备上根本没有鼠标事件去补注册；见 `notes` 桥就绪契约一节）。
+ * **桥就绪契约**（2026-09-29 新增；同日定为**可重臂**语义）—— 一个显式的"桥已选定"事件源
+ * + 一个早期调用队列，取代此前到处"读 `currentBridge()` 当前值再判空"的写法：后者的 `undefined`
+ * 表示"还没选"，**不是**"失败"，于是所有在启动早期（surface 就绪 / `selectBridge` 之前）发起的
+ * 桥调用都被**静默跳过**。**2026-09-29 真机事故**：`GameInputController` 的启动触屏 filter 注册
+ * 正是这样被跳过 ⇒ **鼠标不动时触屏全废**（纯触屏设备上根本没有鼠标事件去补注册）。
  *
  * 两个消费入口：[`whenBridgeSelected()`]（等选定后做一次）与 [`runWithBridge()`]（未选定则入队、
  * 选定后 FIFO flush）。二者都是同一契约的投影，且都保证**绝不静默丢弃**。
+ *
+ * **最终语义（为什么必须"可重臂"）**：`selectBridge()` 是**可重试**的（选择失败不绑定
+ * `activeBridge`，`startJvm` 失败会重置 `jvmStarted`），故"就绪"是**当前这一次**的状态、
+ * 不是进程终态：
+ *   - **失败 = 只拒掉当刻的等待者**（绝不挂起），并**立刻换一个新的待兑现 promise** —— 否则一次
+ *     失败会**永久毒化**契约，之后成功的重选再也叫不醒等待者（启动触屏注册就会在重试路径上再次
+ *     静默丢失，正是本次要根治的 bug）。
+ *   - **成功 = 兑现当刻等待者**（清空引用 ⇒ 重复信号天然幂等）；若当刻无人等待，之后任何一次
+ *     `whenBridgeSelected()` 直接由已落定的 `activeBridge` 立即兑现。
+ *   - 入队动作**有上界**（[`MAX_PENDING_BRIDGE_ACTIONS`]）；选择失败 / 启动中止时**带条数丢弃**
+ *     （绝不静默），仅成功时 FIFO flush —— 陈旧意图不跨会话重放。
  */
 let resolveBridgeSelected: ((b: JreLibModule) => void) | undefined = undefined;
 let rejectBridgeSelected: ((e: Error) => void) | undefined = undefined;
-const bridgeSelectedPromise: Promise<JreLibModule> = new Promise<JreLibModule>(
-  (resolve, reject) => {
+
+/** 新建一个"桥已选定"待兑现 promise，并挂防御 catch（失败而当下无人 await 时不产 unhandled rejection 噪声）。 */
+function makeBridgeSelectedPromise(): Promise<JreLibModule> {
+  const p: Promise<JreLibModule> = new Promise<JreLibModule>((resolve, reject) => {
     resolveBridgeSelected = resolve;
     rejectBridgeSelected = reject;
   });
-// 防御：选择失败而当下无人 await 时，避免 unhandled rejection 噪声；各消费者自己的 .catch 不受影响。
-bridgeSelectedPromise.catch(() => {
-});
+  p.catch(() => {
+  });
+  return p;
+}
 
-/** 桥就绪后按需执行的动作队列（FIFO；选定瞬间 flush，绝不静默丢弃）。 */
+/** 当前待兑现的就绪 promise（**可重臂**：失败时整体换新 —— 见 [`signalBridgeReadyFailure()`]）。 */
+let bridgeSelectedPromise: Promise<JreLibModule> = makeBridgeSelectedPromise();
+
+/** 桥就绪后按需执行的动作队列（FIFO；选定瞬间 flush）。有界，见 [`MAX_PENDING_BRIDGE_ACTIONS`]。 */
 type BridgeAction = (b: JreLibModule) => void;
 const pendingBridgeActions: BridgeAction[] = [];
+
+/**
+ * 队列容量上界。入队的都是"就绪后做一次"的小注册/上报（窗口焦点、虚拟按键排除区），
+ * 正常一屏个位数；给一个明显宽裕但**有限**的上界，杜绝"选择迟迟不发生 ⇒ 无限堆积"。
+ * 溢出时丢**最旧**的一条（有状态语义天然"最后写入者胜"，最新意图更接近当前状态）并留痕。
+ */
+const MAX_PENDING_BRIDGE_ACTIONS = 64;
 
 function signalBridgeReady(b: JreLibModule): void {
   const r = resolveBridgeSelected;
   resolveBridgeSelected = undefined;
+  rejectBridgeSelected = undefined;
   if (r !== undefined) {
     r(b);
   }
 }
 
+/**
+ * 就绪失败：**只拒掉当刻的等待者**，并**立刻重新武装**（换一个新的待兑现 promise）。
+ * 为什么重臂：`selectBridge()` 可重试（失败不绑定 `activeBridge`，`startJvm` 会重置 `jvmStarted`）
+ * ⇒ 一次失败不是终态；若不重臂，之后成功的重选**既叫不醒（已 reject 的）旧等待者、更会让新
+ * 等待者拿到一个永不兑现的旧 promise**（就绪契约被一次性毒化）。重复调用天然幂等（引用已清空）；
+ * 无等待者时也照常重臂。
+ */
 function signalBridgeReadyFailure(reason: string): void {
-  const r = rejectBridgeSelected;
+  const j = rejectBridgeSelected;
+  resolveBridgeSelected = undefined;
   rejectBridgeSelected = undefined;
-  if (r !== undefined) {
-    r(new Error(reason));
+  if (j !== undefined) {
+    j(new Error(reason));
   }
+  bridgeSelectedPromise = makeBridgeSelectedPromise();
+}
+
+/**
+ * 选择失败 / 启动中止时**丢弃**全部待发动作：它们属于**已经失败的那一次启动**，留在队列里会在
+ * 下一次成功选择时被补发（跨会话重放陈旧意图）。绝不静默 —— 必带条数与原因（空队列时不动作）。
+ */
+function dropPendingBridgeActions(reason: string): void {
+  const n = pendingBridgeActions.length;
+  if (n === 0) {
+    return;
+  }
+  pendingBridgeActions.splice(0, n);
+  hilog.warn(LOG_DOMAIN, LOG_TAG, 'dropping %{public}d pending bridge action(s): %{public}s',
+    n, reason);
 }
 
 function flushPendingBridgeActions(): void {
@@ -174,8 +222,10 @@ export async function selectBridge(runtime: JavaRuntime): Promise<boolean> {
   } catch (e) {
     hilog.error(LOG_DOMAIN, LOG_TAG, 'bridge load failed: hsp=%{public}s err=%{public}s',
       runtime.hspModule, JSON.stringify(e));
-    // 就绪失败必须显式告知等待者（否则 whenBridgeSelected() 会永远挂起）。
+    // 就绪失败必须显式告知等待者（否则 whenBridgeSelected() 会永远挂起）；可重臂，见 signalBridgeReadyFailure。
     signalBridgeReadyFailure('bridge load failed: ' + runtime.hspModule);
+    // 这次启动的早期入队动作属于**已经失败的一次选择** ⇒ 带条数丢弃（绝不静默、不跨会话重放）。
+    dropPendingBridgeActions('bridge selection failed: ' + runtime.hspModule);
     return false;
   }
   activeHspModule = runtime.hspModule;
@@ -200,22 +250,39 @@ export async function currentBridge(): Promise<JreLibModule | undefined> {
 }
 
 /**
- * **等桥选定**：返回"本进程选定桥"的 promise（已选定则立即兑现；选择失败则 reject）。
+ * **等桥选定**：返回"本进程选定桥"的 promise —— 已选定则**立即兑现**（不依赖当刻有无等待者）；
+ * 否则等一个**仍在等待**的选择；选择失败则 reject（且契约会重臂 ⇒ 之后成功的重选仍能兑现后续调用）。
  * 消费方（要在就绪后执行一次注册/上报）一律用它，**不要**读 [`currentBridge()`] 的当前值判空。
  */
 export function whenBridgeSelected(): Promise<JreLibModule> {
+  if (activeBridge !== undefined) {
+    return Promise.resolve(activeBridge);
+  }
   return bridgeSelectedPromise;
 }
 
 /**
- * **桥就绪后执行一次**：桥已选定 ⇒ 立即执行；否则入队、在 `selectBridge` 成功后按 FIFO flush
- * （有状态语义的调用天然"最后写入者胜"）。用于"开窗早期可能早于桥选定"的最佳努力调用，
- * **绝不静默丢弃**（入队即留痕）。与 [`whenBridgeSelected()`] 是同一契约的两面。
+ * **桥就绪后执行一次**：桥已选定 ⇒ 立即执行（带保护，与 flush 路径对称）；否则入队、在 `selectBridge`
+ * 成功后按 FIFO flush（有状态语义的调用天然"最后写入者胜"）。用于"开窗早期可能早于桥选定"的
+ * 最佳努力调用，**绝不静默丢弃**（入队即留痕）。与 [`whenBridgeSelected()`] 是同一契约的两面。
  */
 export function runWithBridge(action: BridgeAction): void {
   if (activeBridge !== undefined) {
-    action(activeBridge);
+    // 与 flushPendingBridgeActions 的 flush 路径对称：单个动作抛异常不得打断调用方
+    // （调用点多为 ArkUI 事件回调 / 静态入口）。
+    try {
+      action(activeBridge);
+    } catch (e) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'bridge action failed: %{public}s', JSON.stringify(e));
+    }
     return;
+  }
+  if (pendingBridgeActions.length >= MAX_PENDING_BRIDGE_ACTIONS) {
+    // 有界：满则丢最旧（最新意图更接近当前状态），留痕不静默。
+    pendingBridgeActions.shift();
+    hilog.warn(LOG_DOMAIN, LOG_TAG,
+      'pending bridge actions at cap %{public}d: dropped oldest (pending=%{public}d)',
+      MAX_PENDING_BRIDGE_ACTIONS, pendingBridgeActions.length);
   }
   pendingBridgeActions.push(action);
   hilog.info(LOG_DOMAIN, LOG_TAG, 'bridge not selected yet: action queued (pending=%{public}d)',
@@ -276,6 +343,8 @@ export async function startJvm(uiContext: common.UIAbilityContext, argv: string[
       'JRE "%{public}s" el1 not ready: missing %{public}s/libjli.so => HSP module "%{public}s" not installed/rebuilt (install HSP before HAP)',
       runtime.id, libsDir, runtime.hspModule);
     jvmStarted = false;   // 什么都没起（进程内 JVM 仍未启动）⇒ 允许修完部署后重试
+    // 启动中止 ⇒ 丢弃这次启动早期入队的动作（绝不静默、不跨会话重放）。
+    dropPendingBridgeActions('launch aborted: el1 not deployed: ' + runtime.id);
     return false;
   }
   // [对比用] ArkTS 侧看到的该 el1 目录内容 —— 与 native 的 `[diag]` 对照，
@@ -295,12 +364,15 @@ export async function startJvm(uiContext: common.UIAbilityContext, argv: string[
   }
   try {
     if (!await selectBridge(runtime)) {
+      // 选择失败已由 selectBridge 内部（可重臂 + 带条数丢弃队列）处理；此处兜底再丢一次（空队列无动作）。
+      dropPendingBridgeActions('launch aborted: bridge select failed: ' + runtime.hspModule);
       jvmStarted = false;
       return false;
     }
     const craft = await currentBridge();
     if (craft === undefined) {
       jvmStarted = false;
+      dropPendingBridgeActions('launch aborted: bridge missing after select: ' + runtime.hspModule);
       return false;
     }
     const jreHome = runtime.home(uiContext.filesDir);
