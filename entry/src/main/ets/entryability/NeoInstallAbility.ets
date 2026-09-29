@@ -4,6 +4,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { LOG_DOMAIN } from '../common/constants/Constants';
 import { startJvm } from '../common/state/JvmLauncher';
 import { defaultRuntime } from '../common/data/JavaRuntime';
+import { runtimeStatus } from '../common/data/JavaEnvScanner';
 import { NeoForgeProcessorJob } from '../common/data/NeoForgeInstaller';
 import { activateDirectory } from '../common/access/FileAccess';
 
@@ -66,6 +67,15 @@ export default class NeoInstallAbility extends UIAbility {
     // ⚠️ 未决（见 notes `多JRE共存-方案.md` §5 待办）：legacy Forge 1.13–1.16 的 processor 工具
     //    是否也需要 Java 8？本 job（`NeoForgeProcessorJob`）里**没有** mcVersion/loader ⇒ 现在无法
     //    走 JavaPolicy；要判定得先给 job 带上目标实例的 (mcVersion, loader)。
-    startJvm(this.context, job.argv, defaultRuntime(), '', '', '', '');
+    const toolRuntime = defaultRuntime();
+    // 【兜底数据门】主进程安装入口（`GameVersionsView.confirmInstall`）已按**同一判据**
+    // （`runtimeStatus` × `defaultRuntime`）放行过；但数据可能在放行后被删/升级，本进程又**无 UI**
+    // 弹不出对话框 ⇒ 这里同步早退，绝不硬起工具 JVM（`startJvm` 只自检 el1 的 `libjli.so`，
+    // 管不到 java.home 的数据）。**判据与主进程同源，此处不另写解析逻辑。**
+    if (!runtimeStatus(this.context.filesDir, toolRuntime).installed) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'abort: JRE %{public}s not ready for tool JVM', toolRuntime.id);
+      return;
+    }
+    startJvm(this.context, job.argv, toolRuntime, '', '', '', '');
   }
 }

@@ -137,6 +137,14 @@
       "value": "准备失败：请确认存储空间充足后重试，或在下方「Java 环境」区手动解压。"
     },
     {
+      "name": "launch_jre_install_message",
+      "value": "安装本实例需要先用内置 Java %d 运行时跑安装器（工具 JVM），但它在本机尚未就绪（未解压，或数据须升级），无法安装。是否现在准备？准备完成后请再点一次「确认安装」。"
+    },
+    {
+      "name": "launch_jre_install_prepared",
+      "value": "Java 运行时已准备就绪，请再点一次「确认安装」。"
+    },
+    {
       "name": "launch_precond_need_account",
       "value": "尚无账户，无法启动：请先在下方账户区添加并选择一个账户"
     },

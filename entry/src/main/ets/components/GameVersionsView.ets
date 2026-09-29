@@ -12,8 +12,9 @@ import {
 import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES,
   RENDERER_BACKEND_VULKAN, RENDERER_BACKEND_GL4ES3, JAVA_ENV_AUTO } from '../common/constants/LaunchDefaults';
 import { rendererForVersion } from '../common/data/RendererPolicy';
-import { JavaRuntime, BUNDLED_RUNTIMES } from '../common/data/JavaRuntime';
+import { JavaRuntime, BUNDLED_RUNTIMES, defaultRuntime } from '../common/data/JavaRuntime';
 import { resolveJavaRuntime } from '../common/data/JavaPolicy';
+import { runtimeStatus } from '../common/data/JavaEnvScanner';
 import { JRE_ID_MEOW, JRE_ID_MEOW_LEGACY } from '../common/constants/Paths';
 import { LOADER_FABRIC, LOADER_LEGACY_FABRIC, LOADER_FORGE, LOADER_NEO_FORGE, VERSION_FORM_VANILLA } from '../common/data/VersionResolver';
 import { SettingsTools } from '../common/data/SettingsTools';
@@ -33,7 +34,7 @@ import {
 } from '../common/data/VersionLaunch';
 import { getInstallerState, InstallerState, INSTALL_ERR_INSTALL, INSTALL_ERR_LOADER, INSTALL_ERR_MANIFEST, INSTALL_ERR_NO_WRITE, INSTALL_ERR_NONE, LOADER_KIND_FABRIC, LOADER_KIND_NEO_FORGE, LOADER_KIND_VANILLA } from '../common/state/InstallerState';
 import { msAuthErrorText } from './MsAuthErrorText';
-import { promptJreNotReady } from './LaunchJrePrompt';
+import { promptJreNotReady, JRE_ACTION_INSTALL } from './LaunchJrePrompt';
 import { getLauncherState, LauncherState } from '../common/state/LauncherState';
 import { AccountState, getAccountState } from '../common/state/AccountState';
 
@@ -863,7 +864,7 @@ export struct GameVersionsView {
     return NAME_OK;
   }
 
-  /** 确认安装：名称合法且不冲突、游戏未运行才真正安装（否则禁止）。 */
+  /** 确认安装：名称合法且不冲突、游戏未运行、NeoForge 的工具 JVM 那套 JRE 已就绪才真正安装。 */
   private async confirmInstall(): Promise<void> {
     const remote = this.installTargetRef;
     if (remote === null || !this.canConfirmInstall()) {
@@ -871,6 +872,19 @@ export struct GameVersionsView {
     }
     const kind = this.installer.loaderKind;
     const name = this.installName.trim();
+    // NeoForge 安装期会起**工具 JVM**（`:neoinstall` 独立进程，无 UI ⇒ 对话框只能在这里弹）。
+    // 工具 JVM 一律用**现代套**（`defaultRuntime()`，见 NeoInstallAbility）⇒ 就绪判据 = 同一处
+    // 的 `runtimeStatus`（与启动前检查同源）。未就绪 ⇒ 弹与启动同一个对话框并**保留安装面板**
+    // （准备完成后用户再点一次「确认安装」即可，见 LaunchJrePrompt.prepareJre 的提示）。
+    if (kind === LOADER_KIND_NEO_FORGE) {
+      const toolRuntime = defaultRuntime();
+      const toolJre = runtimeStatus(this.context().filesDir, toolRuntime);
+      if (!toolJre.installed) {
+        promptJreNotReady(this.getUIContext(), toolRuntime.id, toolRuntime.javaMajor,
+          toolJre.needsUpgrade, JRE_ACTION_INSTALL);
+        return;
+      }
+    }
     this.closeInstallPanel();
     if (kind === LOADER_KIND_NEO_FORGE) {
       await this.installNeoForgeRemote(remote, name);
