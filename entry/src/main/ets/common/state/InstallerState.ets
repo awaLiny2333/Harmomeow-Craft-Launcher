@@ -64,7 +64,12 @@ export class InstallerState {
   @Trace errorKind: number = INSTALL_ERR_NONE;
   @Trace errorDetail: string = '';
 
-  /** 当前下载源（'mirror' / 'official'），由下载面板设置。 */
+  /**
+   * 当前版本下载源（原版 'mirror' / 'official'），由下载面板设置。
+   * **只服务纯原版路径**（清单 + client jar + 原版库 + 资源）：三个 loader 各有独立源，不读它
+   * （依据 HMCL：文件源/列表源是**全局一对**、装 loader 时整条链共用同一源，不存在"原版走共享源、
+   * loader 制品走另一源"的拆分；见 ref/HMCL `.../download/AutoDownloadProvider.java:78-101`）。
+   */
   @Trace source: string = SOURCE_MIRROR;
 
   /** 版本类型过滤（release / snapshot / other），由下载面板设置。 */
@@ -75,6 +80,20 @@ export class InstallerState {
 
   /** Fabric 下载源（**与版本源 this.source 独立**；镜像/官方）。 */
   @Trace fabricSource: string = SOURCE_MIRROR;
+
+  /**
+   * Forge 下载源（**与版本源 this.source 独立**；镜像/官方）。
+   * 语义上与 Fabric 的 fabricSource 对称：Forge 制品（构建列表 / installer / 库）来自 MinecraftForge，
+   * **不是 Mojang 提供** ⇒ 复用版本源的「官方（Mojang）」对本 loader 语义错误，故自持一份。
+   */
+  @Trace forgeSource: string = SOURCE_MIRROR;
+
+  /**
+   * NeoForge 下载源（**与版本源 this.source 独立**；镜像/官方）。
+   * 与 fabricSource / forgeSource 同款：NeoForge 制品（版本列表 / installer / 库）来自 **NeoForged**
+   * （`maven.neoforged.net`），不是 Mojang ⇒ 复用版本源的「官方（Mojang）」语义错误，故自持一份。
+   */
+  @Trace neoForgeSource: string = SOURCE_MIRROR;
 
   /** Fabric loader 版本列表与选中项（UI 展示/选择用）。 */
   @Trace fabricLoaders: FabricLoaderVersion[] = [];
@@ -105,7 +124,7 @@ export class InstallerState {
    */
   private neoLoaderSeq: number = 0;
 
-  /** Forge 构建列表与选中项（**仅 MC 1.7–1.12.2**；列表与 installer 都复用版本源 this.source）。 */
+  /** Forge 构建列表与选中项（**仅 MC 1.7–1.12.2**；列表与 installer 都按 **this.forgeSource**）。 */
   @Trace forgeLoaders: string[] = [];
   @Trace forgeLoader: string = '';
   @Trace forgeLoadersLoading: boolean = false;
@@ -208,6 +227,24 @@ export class InstallerState {
     this.resetFabricLoaders();
   }
 
+  /** 设置 Forge 下载源；作废在途请求并清空列表（下次按新源重拉）。与 setFabricSource 对称。 */
+  setForgeSource(source: string): void {
+    if (source === this.forgeSource) {
+      return;
+    }
+    this.forgeSource = source;
+    this.resetForgeLoaders();
+  }
+
+  /** 设置 NeoForge 下载源；作废在途请求并清空列表（下次按新源重拉）。与 setFabricSource 对称。 */
+  setNeoForgeSource(source: string): void {
+    if (source === this.neoForgeSource) {
+      return;
+    }
+    this.neoForgeSource = source;
+    this.resetNeoLoaders();
+  }
+
   /** 拉取某游戏版本的 Fabric loader 列表（按 loader 源）；成功后默认选最新。 */
   async refreshFabricLoaders(gameVersion: string): Promise<void> {
     if (gameVersion.length === 0) {
@@ -247,8 +284,10 @@ export class InstallerState {
   }
 
   /**
-   * 安装 Fabric 实例（**单实例、HMCL 补丁式**）：vanilla 资产按 `this.source`（版本源），
-   * Fabric 元数据/库按 `this.fabricSource`（loader 源）。返回是否成功。
+   * 安装 Fabric 实例（**单实例、HMCL 补丁式**）：**整条安装链**（vanilla 清单 / client jar / 原版库 /
+   * 资源 + Fabric 元数据 / 库）都按 `this.fabricSource`（loader 自己的源）——对齐 HMCL 的"一次安装只有一个
+   * 文件源"（`AutoDownloadProvider` 同时管列表与文件，不区分原版件与 loader 件；
+   * ref/HMCL `.../download/AutoDownloadProvider.java:78-101`）。返回是否成功。
    */
   async installFabric(gameRoot: string, remote: RemoteVersion, instanceName: string): Promise<boolean> {
     if (this.installingId.length > 0) {
@@ -271,8 +310,7 @@ export class InstallerState {
     this.fileTotal = 0;
     let ok = true;
     try {
-      await installFabricVersion(gameRoot, remote, this.fabricLoader, instanceName,
-        this.source, this.fabricSource,
+      await installFabricVersion(gameRoot, remote, this.fabricLoader, instanceName, this.fabricSource,
         (phase: number) => {
           this.phase = phase;
         },
@@ -312,14 +350,16 @@ export class InstallerState {
 
   /**
    * 拉取某游戏版本的 NeoForge 列表（仅 1.20.2+，调用方负责版本门槛）；成功后默认选最新。
-   * 复用「版本源」(this.source)：数据层内部按 镜像(BMCLAPI) → 官方 降级。
+   * 按 **NeoForge 自己的下载源**(this.neoForgeSource)（与 Fabric/Forge 同款：制品来自 NeoForged，
+   * 非 Mojang，不用版本源 this.source）；数据层内部按 镜像(BMCLAPI) → 官方 降级（官方源则只走官方 API）。
    */
   async refreshNeoLoaders(gameVersion: string): Promise<void> {
     if (gameVersion.length === 0) {
       return;
     }
     const seq = ++this.neoLoaderSeq;
-    const source = this.source;
+    // 先取当次源：await 期间源可能被改，结果只在序号仍最新时才采用（与 refreshFabricLoaders 一致）。
+    const source = this.neoForgeSource;
     this.neoLoadersLoading = true;
     this.errorKind = INSTALL_ERR_NONE;
     this.errorDetail = '';
@@ -357,8 +397,9 @@ export class InstallerState {
   }
 
   /**
-   * 安装 NeoForge 实例（**仅 MC 1.20.2+**；HMCL 形态）。资产按 `this.source`（版本源）；
-   * installer 与库的 url 由下载层按下载源重写为镜像。返回是否成功。
+   * 安装 NeoForge 实例（**仅 MC 1.20.2+**；HMCL 形态）。整个安装（清单 / installer / 库 / 资产）都按
+   * `this.neoForgeSource`（**NeoForge 自己的源**，与 installForge 传 forgeSource 对称）——制品来自
+   * NeoForged（`maven.neoforged.net`），不复用版本源 this.source。
    * `jreId` = 安装期**工具 JVM** 用的那套 JRE id（由调用方按 (MC 版本 × NeoForge) 经 `JavaPolicy`
    * 解析得出，与启动路径同源）；一路透传到 `:neoinstall`，不在此重解析。
    */
@@ -384,8 +425,8 @@ export class InstallerState {
     this.fileTotal = 0;
     let ok = true;
     try {
-      await installNeoForgeVersion(ctx, gameRoot, gameRootUri, remote, this.neoLoader, instanceName, this.source,
-        ctx.cacheDir, jreId,
+      await installNeoForgeVersion(ctx, gameRoot, gameRootUri, remote, this.neoLoader, instanceName,
+        this.neoForgeSource, ctx.cacheDir, jreId,
         (phase: number) => {
           this.phase = phase;
         },
@@ -424,14 +465,19 @@ export class InstallerState {
 
   /**
    * 拉取某游戏版本的 Forge 构建列表（**仅 1.7–1.12.2**，调用方负责版本门槛）；成功后默认选最新。
-   * 复用「版本源」(this.source)：数据层内部按 BMCLAPI → 官方 maven-metadata 降级（与 NeoForge 同形）。
+   * 按 **Forge 自己的下载源**(this.forgeSource)——与 Fabric 的 refreshFabricLoaders 同款（Forge 制品来自
+   * MinecraftForge，非 Mojang，不用版本源 this.source）；列表源顺序随所选源变化（所选源在前、另一源尽力兜底）：
+   *   · mirror  → BMCLAPI 专用列表端点 → 官方 maven-metadata（兜底）；
+   *   · official → 仅官方 maven-metadata（不请求 BMCLAPI）。
+   * 细节见 `VersionInstaller.fetchForgeVersions` 的文档注释。
    */
   async refreshForgeLoaders(gameVersion: string): Promise<void> {
     if (gameVersion.length === 0) {
       return;
     }
     const seq = ++this.forgeLoaderSeq;
-    const source = this.source;
+    // 先取当次源：await 期间源可能被改，结果只在序号仍最新时才采用（与 refreshFabricLoaders 一致）。
+    const source = this.forgeSource;
     this.forgeLoadersLoading = true;
     this.errorKind = INSTALL_ERR_NONE;
     this.errorDetail = '';
@@ -469,8 +515,10 @@ export class InstallerState {
 
   /**
    * 安装 Forge 实例（**零 JVM 面：仅 MC 1.7–1.12.2**；见 `VersionInstaller.installForgeVersion`）。
-   * 资产与 installer 都按 `this.source`（版本源）。全程在 ArkTS 内完成（不起工具 JVM ⇒
-   * **无需** JRE 就绪前置，与 NeoForge/processor 形态不同）；`cacheDir` 只用于 installer 解包。
+   * 整个安装（构建列表之外的清单 / installer / 库 / 资产）都按 `this.forgeSource`（**Forge 自己的源**，
+   * 与 Fabric 的 installFabric 传 loaderSource 对称）——Forge 制品来自 MinecraftForge，不复用版本源 this.source。
+   * 全程在 ArkTS 内完成（不起工具 JVM ⇒ **无需** JRE 就绪前置，与 NeoForge/processor 形态不同）；
+   * `cacheDir` 只用于 installer 解包。
    */
   async installForge(gameRoot: string, remote: RemoteVersion, instanceName: string,
     cacheDir: string): Promise<boolean> {
@@ -494,7 +542,7 @@ export class InstallerState {
     this.fileTotal = 0;
     let ok = true;
     try {
-      await installForgeVersion(gameRoot, remote, this.forgeLoader, instanceName, this.source, cacheDir,
+      await installForgeVersion(gameRoot, remote, this.forgeLoader, instanceName, this.forgeSource, cacheDir,
         (phase: number) => {
           this.phase = phase;
         },
@@ -521,7 +569,7 @@ export class InstallerState {
     return ok;
   }
 
-  /** 设置下载源（面板用）；清空已加载的清单，等待用户点「获取版本列表」。 */
+  /** 设置版本下载源（面板用）；清空已加载的清单，等待用户点「获取版本列表」。 */
   setSource(source: string): void {
     if (source === this.source) {
       return;
@@ -530,9 +578,8 @@ export class InstallerState {
     this.manifestLoaded = false;
     this.manifest = [];
     this.visible = [];
-    // 与 Fabric 的 setFabricSource 对称：NeoForge/Forge 列表复用版本源 ⇒ 切源后必须作废重拉。
-    this.resetNeoLoaders();
-    this.resetForgeLoaders();
+    // 三个 loader 各有独立源（fabricSource / forgeSource / neoForgeSource）⇒ 切**版本源**不影响它们的列表，
+    // 故此处不作废任何 loader 列表（各自的 setXxxSource 才作废自己的那份）。
     this.errorKind = INSTALL_ERR_NONE;
     this.errorDetail = '';
   }

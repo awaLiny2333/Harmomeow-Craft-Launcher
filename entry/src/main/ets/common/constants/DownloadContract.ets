@@ -154,13 +154,31 @@ export function forgeBmclListUrl(mcVersion: string): string {
  */
 export const FORGE_MAVEN_METADATA_URL: string = `${FORGE_MAVEN}${FORGE_GROUP_PATH}/maven-metadata.xml`;
 
+/**
+ * Forge 官方 `maven-metadata.xml` 的候选地址（按下载源）——与 {@link fabricLoaderListCandidates}
+ * 的**降级语义完全一致**（所选源在前、另一源仅"尽力而为"兜底）：
+ * - 官方源（SOURCE_OFFICIAL）→ `[官方]`（不碰镜像）；
+ * - 镜像源（SOURCE_MIRROR）  → `[BMCLAPI/maven/…, 官方]`（`FORGE_MAVEN` 命中前缀重写表）。
+ * 依据 HMCL：列表源与文件源都随用户所选 `DownloadSource` 变化，官方只给官方、镜像给"镜像首选 + 官方兜底"
+ * （ref/HMCL `.../setting/DownloadProviders.java:88-97`、`.../download/BMCLAPIDownloadProvider.java:141-171`）。
+ */
+export function forgeMetadataCandidates(source: string): string[] {
+  return fileCandidates(FORGE_MAVEN_METADATA_URL, source);
+}
+
 /** Forge installer jar 的官方地址（`classifier = <mc 版本>-<loader 版本号>`）。 */
 export function forgeInstallerUrl(mcVersion: string, loaderVersion: string): string {
   const classifier = `${mcVersion}-${loaderVersion}`;
   return `${FORGE_MAVEN}${FORGE_GROUP_PATH}/${classifier}/forge-${classifier}-installer.jar`;
 }
 
-/** installer jar 候选地址（按下载源；镜像 = `/maven/**` 前缀重写，与 HMCL 一致）。 */
+/**
+ * installer jar 候选地址（按下载源；镜像 = `/maven/**` 前缀重写，与 HMCL 一致）：
+ * - 官方源 → `[官方 maven]`（单条，无兜底）；
+ * - 镜像源 → `[BMCLAPI/maven/…, 官方 maven]`（镜像优先、官方兜底）。
+ * 注意：BMCLAPI 的旧 `/forge/download?...` 专用接口**已失效**（实测 404），镜像一律走前缀重写后的
+ * `/maven/**`（见本文件上方的 Forge 段注释与 notes 20-design/launch/Forge支持-调研.md §6）。
+ */
 export function forgeInstallerCandidates(mcVersion: string, loaderVersion: string,
   source: string): string[] {
   return fileCandidates(forgeInstallerUrl(mcVersion, loaderVersion), source);

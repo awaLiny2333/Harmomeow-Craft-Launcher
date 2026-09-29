@@ -376,9 +376,9 @@ export class SettingsTools {
     });
   }
 
-  // ---- mod loader 下载源（**与版本源独立**；目前仅 Fabric）----
+  // ---- mod loader 下载源（**与版本源独立**；按 loader 各存一份：Fabric / Forge / NeoForge）----
 
-  /** loader 下载源；未设置 → 镜像（SOURCE_MIRROR）。 */
+  /** Fabric 下载源；未设置 → 镜像（SOURCE_MIRROR）。 */
   fabricSource(): string {
     return this.current().fabricSource;
   }
@@ -386,6 +386,28 @@ export class SettingsTools {
   setFabricSource(source: string): void {
     this.update((s: GlobalSettings) => {
       s.fabricSource = source;
+    });
+  }
+
+  /** Forge 下载源；未设置 → 镜像（SOURCE_MIRROR）。**独立于版本源与其它 loader 源**。 */
+  forgeSource(): string {
+    return this.current().forgeSource;
+  }
+
+  setForgeSource(source: string): void {
+    this.update((s: GlobalSettings) => {
+      s.forgeSource = source;
+    });
+  }
+
+  /** NeoForge 下载源；未设置 → 镜像（SOURCE_MIRROR）。**独立于版本源与其它 loader 源**。 */
+  neoForgeSource(): string {
+    return this.current().neoForgeSource;
+  }
+
+  setNeoForgeSource(source: string): void {
+    this.update((s: GlobalSettings) => {
+      s.neoForgeSource = source;
     });
   }
 

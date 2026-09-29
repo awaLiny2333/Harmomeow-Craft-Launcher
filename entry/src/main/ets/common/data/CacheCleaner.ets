@@ -100,7 +100,9 @@ function topLevelTargets(cacheDir: string): string[] {
 }
 
 /**
- * 清除沙箱缓存并返回结果。**调用方**负责在游戏运行时先拒绝（本函数不判游戏状态）。
+ * 清除沙箱缓存并返回结果。**调用方**负责先拒绝**游戏运行中**与**安装进行中**两种状态
+ * （本函数不判任何运行状态）：后者因为 `neo-installer/` / `forge-installer/` 里是安装器**正在用**的
+ * 活文件（installer.jar / 解包数据 / job / `{MINECRAFT_JAR}` 副本）。
  * 一条稳定的英文日志（释放字节 + 条目清单），供实机排障。
  */
 export function clearSandboxCaches(cacheDir: string): CacheClearOutcome {

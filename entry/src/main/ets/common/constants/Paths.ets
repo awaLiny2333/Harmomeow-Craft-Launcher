@@ -58,10 +58,10 @@ export const MC_CP_DIR: string = 'mc-cp';
  *  故「按前缀收集沙箱缓存」时可一并覆盖两者（见 CacheCleaner）。 */
 export const MC_RUN_DIR_PREFIX: string = 'mc-run-';
 
-/** NeoForge 安装工作目录名（cacheDir 下，后接 loaderVersion）：installer jar / 解包 / job / mainclass 缓存。 */
+/** NeoForge 安装工作目录名（cacheDir 下，实际为 `neo-installer/<loaderSource>/<loaderVersion>`；带源＝切源不静默复用另一源下过的 installer）：installer jar / 解包 / job / mainclass 缓存。 */
 export const NEO_INSTALLER_DIR: string = 'neo-installer';
 
-/** Forge 安装工作目录名（cacheDir 下，后接 loaderVersion）：installer jar / 解包。 */
+/** Forge 安装工作目录名（cacheDir 下，实际为 `forge-installer/<loaderSource>/<loaderVersion>`；带源同 NeoForge）：installer jar / 解包。 */
 export const FORGE_INSTALLER_DIR: string = 'forge-installer';
 
 /** natives 子目录名（JNA 解压 / java.library.path 兜底）。 */

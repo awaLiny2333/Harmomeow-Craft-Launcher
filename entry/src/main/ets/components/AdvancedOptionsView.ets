@@ -4,6 +4,7 @@ import { exportSettings } from '../common/data/AppSettings';
 import { pickDirectory, authorizeDirectory } from '../common/access/FileAccess';
 import { clearSandboxCaches, CacheClearOutcome } from '../common/data/CacheCleaner';
 import { getLauncherState, LauncherState } from '../common/state/LauncherState';
+import { getInstallerState, InstallerState } from '../common/state/InstallerState';
 import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY,
   SCROLL_SPEED_DEFAULT_PERCENT, TOUCH_SENSITIVITY_DEFAULT_PERCENT, TOUCH_AS_MOUSE_DEFAULT,
   TOUCH_CONTROLS_DEFAULT, TOUCH_CONTROLS_INSET_DEFAULT, TOUCH_CONTROLS_SCALE_DEFAULT_PERCENT,
@@ -57,6 +58,9 @@ export struct AdvancedOptionsView {
   @Local detectedCpus: number = 0;
   /** 共享启动器状态（只为读 gameRunning：游戏运行中禁止清缓存；与启动按钮同一状态源）。 */
   @Local state: LauncherState = getLauncherState();
+  /** 共享安装器状态（只为读 installingId：安装进行中禁止清缓存 —— 清 `neo-installer/` 会删掉
+   *  正在运行的 processor 的活文件；与安装面板同一状态源，见 CacheCleaner 的说明）。 */
+  @Local installer: InstallerState = getInstallerState();
 
   private settings: SettingsTools | undefined = undefined;
 
@@ -234,11 +238,18 @@ export struct AdvancedOptionsView {
   }
 
   /**
-   * 执行清理：游戏运行中**拒绝**（按钮已按 gameRunning 禁用，但轮询有 ~2s 延迟，这里实时复检）；
-   * 否则清 `ctx.cacheDir` 下**本项目自己的**条目（见 CacheCleaner），按**实测释放字节**回报，
-   * 并把被占用未删净的项目如实列出（部分失败不崩、不假成功）。
+   * 执行清理：游戏运行中 / 安装进行中**拒绝**（按钮已按这两个状态禁用，但状态轮询各有延迟，
+   * 这里实时复检）；否则清 `ctx.cacheDir` 下**本项目自己的**条目（见 CacheCleaner），按**实测释放
+   * 字节**回报，并把被占用未删净的项目如实列出（部分失败不崩、不假成功）。
+   *
+   * 安装期必须拒绝的原因：`neo-installer/`（及 `forge-installer/`）里放的是**正在跑**的安装器的
+   * installer.jar / 解包数据 / job / `{MINECRAFT_JAR}` 副本，清掉就是删活文件（见 CacheCleaner 的清单）。
    */
   private doClearCache(): void {
+    if (this.installer.installingId.length > 0) {
+      this.getUIContext().showAlertDialog({ message: $r('app.string.settings_clear_cache_installing') });
+      return;
+    }
     if (this.state.gameRunning) {
       this.getUIContext().showAlertDialog({ message: $r('app.string.settings_clear_cache_running') });
       return;
@@ -640,12 +651,13 @@ export struct AdvancedOptionsView {
 
       // 危险入口（置于本区最下方）：清除沙箱缓存 —— 只清 cacheDir 下本项目自己的条目，
       // 绝不触碰游戏数据 / 存档或 filesDir 下的 JRE 解压（见 CacheCleaner）。
+      // 禁用条件与 doClearCache 的实时复检同源：游戏运行中、或安装器正在跑（活文件不可删）。
       Divider().padding({ top: LAYOUT_SPACE_SMALL });
       Text($r('app.string.settings_clear_cache_hint'))
         .opacity(OPACITY_SECONDARY);
       Button($r('app.string.settings_clear_cache'))
         .backgroundColor($r('app.color.danger'))
-        .enabled(!this.state.gameRunning)
+        .enabled(!this.state.gameRunning && this.installer.installingId.length === 0)
         .onClick(() => this.confirmClearCache());
     }
     .width('100%')

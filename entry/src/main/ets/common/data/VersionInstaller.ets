@@ -4,10 +4,10 @@ import { zlib } from '@kit.BasicServicesKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DEFAULT_LIBRARY_URL, DOWNLOAD_CONCURRENCY, ENV_OS_ARCH, ENV_OS_BITS, ENV_OS_NAME,
-  FABRIC_MAVEN, FORGE_MAVEN_METADATA_URL, HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_NOT_FOUND,
+  FABRIC_MAVEN, HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_NOT_FOUND,
   LEGACY_INDEX_URL_PREFIX, MOJANG_RESOURCES, NEOFORGE_RELEASES, SOURCE_OFFICIAL,
   fabricLaunchMetaCandidates, fabricLoaderListCandidates, fileCandidates, forgeBmclListUrl,
-  forgeInstallerCandidates, manifestCandidates,
+  forgeInstallerCandidates, forgeMetadataCandidates, manifestCandidates,
   neoforgeInstallerCandidates } from '../constants/DownloadContract';
 import { ASSET_HASH_PREFIX_LENGTH, assetObjectPath, assetsIndexesDir, FORGE_INSTALLER_DIR, librariesDir,
   NEO_INSTALLER_DIR, NEO_JVM_RESULT, versionDir, versionJarPath, versionJsonPath } from '../constants/Paths';
@@ -825,10 +825,16 @@ export async function fetchFabricLoaders(gameVersion: string, source: string): P
 
 /**
  * 安装 Fabric 实例（**单实例、HMCL 补丁式**）：`versions/<名>/<名>.json` = 顶层扁平化 + `patches[game,fabric]`。
- * vanilla 资产按 `versionSource`（版本源）；Fabric 元数据/库按 `loaderSource`（**loader 自己的源**，独立）。
+ *
+ * **整条链按 `loaderSource`**（Fabric 自己的源）：vanilla 清单 / client jar / 原版库 / 资源索引与对象
+ * 与 Fabric 元数据 / 库**同一个源**。依据 HMCL：一次安装只有一个**文件源**（`AutoDownloadProvider`
+ * 的文件候选来自 `fileDownloadSource`，同时服务原版件与 loader 件，不存在"原版件走共享源、loader 件走
+ * 另一个源"的拆分；ref/HMCL `.../download/AutoDownloadProvider.java:78-101` 与
+ * `.../download/BMCLAPIDownloadProvider.java:77-98` 的替换表里同时含 Mojang / Fabric / Forge / NeoForge 前缀）。
+ * ⇒ 本函数**不再**接受"版本源"参数（此前 vanilla 件走版本源属实现不一致，2026-09-29 对齐 HMCL）。
  */
 export async function installFabricVersion(gameRoot: string, gameRemote: RemoteVersion,
-  loaderVersion: string, instanceName: string, versionSource: string, loaderSource: string,
+  loaderVersion: string, instanceName: string, loaderSource: string,
   onPhase: (phase: number) => void,
   onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void,
@@ -840,14 +846,14 @@ export async function installFabricVersion(gameRoot: string, gameRemote: RemoteV
     throw new Error('fabric loader version missing');
   }
 
-  // 1) vanilla 清单（版本源）
+  // 1) vanilla 清单（Fabric 源）
   onPhase(PHASE_FILES);
-  const vanillaText = await fetchText(fileCandidates(gameRemote.url, versionSource));
+  const vanillaText = await fetchText(fileCandidates(gameRemote.url, loaderSource));
   const vanilla = JSON.parse(vanillaText) as VersionJson;
   const vanillaId = vanilla.id ?? '';
   const gameVersion = vanillaId.length > 0 ? vanillaId : gameRemote.id;
 
-  // 2) Fabric 元数据（loader 源）
+  // 2) Fabric 元数据（Fabric 源）
   const metaText = await fetchText(fabricLaunchMetaCandidates(gameVersion, loaderVersion, loaderSource));
   const meta = JSON.parse(metaText) as FabricMeta;
   const mainClass = fabricMainClass(meta);
@@ -856,7 +862,7 @@ export async function installFabricVersion(gameRoot: string, gameRemote: RemoteV
   }
   const fabricDeps = fabricLibraries(meta);
 
-  // 3) vanilla 文件：client jar（落 <名>.jar）+ 原版库 + 资源索引（版本源）
+  // 3) vanilla 文件：client jar（落 <名>.jar）+ 原版库 + 资源索引（Fabric 源）
   const files: DownloadItem[] = [];
   const client = vanilla.downloads?.client;
   if (client !== undefined) {
@@ -876,9 +882,9 @@ export async function installFabricVersion(gameRoot: string, gameRemote: RemoteV
   if (indexItem !== null) {
     files.push(indexItem);
   }
-  await runDownloads(files, versionSource, onCount, onCurrent, onFileProgress);
+  await runDownloads(files, loaderSource, onCount, onCurrent, onFileProgress);
 
-  // 4) 资源对象（依赖已下好的索引；版本源）
+  // 4) 资源对象（依赖已下好的索引；Fabric 源）
   const assetId = (vanilla.assetIndex?.id ?? '').length > 0
     ? (vanilla.assetIndex?.id ?? '')
     : (vanilla.assets ?? '');
@@ -890,10 +896,10 @@ export async function installFabricVersion(gameRoot: string, gameRemote: RemoteV
     } catch {
       index = {};
     }
-    await runDownloads(assetObjectItems(gameRoot, index), versionSource, onCount, onCurrent, onFileProgress);
+    await runDownloads(assetObjectItems(gameRoot, index), loaderSource, onCount, onCurrent, onFileProgress);
   }
 
-  // 5) Fabric 库（loader 源；maven.fabricmc.net → 镜像/官方）
+  // 5) Fabric 库（Fabric 源；maven.fabricmc.net → 镜像/官方）
   onPhase(PHASE_FILES);
   const fabricItems: DownloadItem[] = [];
   for (const lib of fabricDeps) {
@@ -940,9 +946,15 @@ function concatArgs(a?: ArgumentsJson, b?: ArgumentsJson): ArgumentsJson | undef
   return { game: game, jvm: jvm };
 }
 
-/** NeoForge 工作目录（installer jar / 解包 / job 文件；位于 cacheDir，可随时重下）。 */
-function neoWorkDir(cacheDir: string, loaderVersion: string): string {
-  return `${cacheDir}/${NEO_INSTALLER_DIR}/${loaderVersion}`;
+/**
+ * NeoForge 工作目录（installer jar / 解包 / job 文件；位于 cacheDir，可随时重下）。
+ *
+ * 目录名带 `loaderSource`（与 `installForgeVersion` 同款）：`installer.jar` 按路径"命中即跳过"，
+ * 若不带源，切换下载源后会**静默复用**另一源下过的文件（切源 = 不做任何下载、也看不出选的是哪个源）。
+ * 隔离后切源必按新候选顺序重下，"所选源"在磁盘布局上也可观测；整棵树由 `CacheCleaner` 清理。
+ */
+function neoWorkDir(cacheDir: string, loaderSource: string, loaderVersion: string): string {
+  return `${cacheDir}/${NEO_INSTALLER_DIR}/${loaderSource}/${loaderVersion}`;
 }
 
 /** 确保目录存在（递归；已存在则忽略）。 */
@@ -1026,12 +1038,18 @@ function composeNeoForgeManifest(vanilla: VersionJson, instanceName: string, gam
  * ⚠️ processor 链（T3 待实现）会产出 patched client jar；**未完成前本函数会在写出清单之前抛错**，
  * 以免留下"能列出但起不来"的残缺实例。
  *
+ * **整条链按 `loaderSource`**（NeoForge 自己的下载源）——NeoForge 制品来自 NeoForged
+ * （`maven.neoforged.net`）、不是 Mojang，故不复用版本源（与 `installForgeVersion` 的语义一致）：
+ *  - vanilla 清单 / client jar / 原版库 / 资源：`loaderSource`；
+ *  - installer jar 与 NeoForge 库：同样 `loaderSource`（`runDownloads` → 前缀重写表）。
+ * 依据 HMCL：一次安装只有一个文件源（ref/HMCL `.../download/AutoDownloadProvider.java:78-101`）。
+ *
  * `jreId` = processor **工具 JVM** 用的那套 JRE id（由 `confirmInstall` 经 `JavaPolicy` 按
  * (MC 版本 × NeoForge) 解析，与启动路径同源）；仅**透传**到 `:neoinstall`，本函数不解析 JRE。
  */
 export async function installNeoForgeVersion(ctx: common.UIAbilityContext, gameRoot: string,
   gameRootUri: string, gameRemote: RemoteVersion, loaderVersion: string, instanceName: string,
-  versionSource: string, cacheDir: string, jreId: string,
+  loaderSource: string, cacheDir: string, jreId: string,
   onPhase: (phase: number) => void,
   onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void,
@@ -1043,21 +1061,21 @@ export async function installNeoForgeVersion(ctx: common.UIAbilityContext, gameR
     throw new Error('neoforge loader version missing');
   }
 
-  // 1) vanilla 清单（版本源）
+  // 1) vanilla 清单（NeoForge 源）
   onPhase(PHASE_FILES);
-  const vanillaText = await fetchText(fileCandidates(gameRemote.url, versionSource));
+  const vanillaText = await fetchText(fileCandidates(gameRemote.url, loaderSource));
   const vanilla = JSON.parse(vanillaText) as VersionJson;
   const gameVersion = (vanilla.id ?? '').length > 0 ? (vanilla.id ?? '') : gameRemote.id;
 
   // 2) installer jar（数据容器）→ 解包 → 读 profile 与内嵌启动清单
-  const workDir = neoWorkDir(cacheDir, loaderVersion);
+  const workDir = neoWorkDir(cacheDir, loaderSource, loaderVersion);
   ensureDir(workDir);
   const jarPath = `${workDir}/installer.jar`;
   await runDownloads([newItem('neoforge-installer.jar',
-    neoforgeInstallerCandidates(loaderVersion, versionSource), jarPath, '', 0)],
-    versionSource, onCount, onCurrent, onFileProgress);
+    neoforgeInstallerCandidates(loaderVersion, loaderSource), jarPath, '', 0)],
+    loaderSource, onCount, onCurrent, onFileProgress);
   const unzipDir = `${workDir}/unzipped`;
-  // 幂等：该目录按 loader 版本**跨实例复用**（同名 job 目录），先清后解，避免
+  // 幂等：该目录按 **下载源 + loader 版本** 跨实例复用（同名 job 目录），先清后解，避免
   // 「第二次安装/失败重试」时同名目录已存在导致的重复解压与半截残留。
   removeTreeBestEffort(unzipDir);
   ensureDir(unzipDir);
@@ -1067,7 +1085,7 @@ export async function installNeoForgeVersion(ctx: common.UIAbilityContext, gameR
   const launchRel = (profile.json ?? '/version.json').replace(/^\//, '');
   const launch = readJsonFile<NeoForgeLaunchJson>(`${unzipDir}/${launchRel}`);
 
-  // 3) vanilla 文件：client jar（落 <名>.jar）+ 原版库 + 资源索引（版本源）
+  // 3) vanilla 文件：client jar（落 <名>.jar）+ 原版库 + 资源索引（NeoForge 源）
   const files: DownloadItem[] = [];
   const client = vanilla.downloads?.client;
   if (client !== undefined) {
@@ -1087,7 +1105,7 @@ export async function installNeoForgeVersion(ctx: common.UIAbilityContext, gameR
   if (indexItem !== null) {
     files.push(indexItem);
   }
-  // NeoForge 两份库一并下（maven 树；url 指向 maven.neoforged.net，由下载源重写为镜像）。
+  // NeoForge 两份库一并下（maven 树；url 指向 maven.neoforged.net，按 **NeoForge 源**重写为镜像/官方）。
   const profileLibs = (profile.libraries ?? []) as LibraryJson[];
   for (const lib of profileLibs) {
     const item = libraryItem(gameRoot, lib);
@@ -1125,9 +1143,9 @@ export async function installNeoForgeVersion(ctx: common.UIAbilityContext, gameR
       files.push(newItem(e.fileName, [`${NEOFORGE_RELEASES}${e.relPath}`], dest, '', 0));
     }
   }
-await runDownloads(files, versionSource, onCount, onCurrent, onFileProgress);
+await runDownloads(files, loaderSource, onCount, onCurrent, onFileProgress);
 
-  // 4) 资源对象（依赖已下好的索引；版本源）
+  // 4) 资源对象（依赖已下好的索引；NeoForge 源）
   const assetId = (vanilla.assetIndex?.id ?? '').length > 0
     ? (vanilla.assetIndex?.id ?? '')
     : (vanilla.assets ?? '');
@@ -1139,7 +1157,7 @@ await runDownloads(files, versionSource, onCount, onCurrent, onFileProgress);
     } catch {
       index = {};
     }
-    await runDownloads(assetObjectItems(gameRoot, index), versionSource, onCount, onCurrent, onFileProgress);
+    await runDownloads(assetObjectItems(gameRoot, index), loaderSource, onCount, onCurrent, onFileProgress);
   }
 
   // 5) processor 链：installer 只当数据容器，按 profile 顺序执行工具，产出 patched client jar。
@@ -1298,44 +1316,125 @@ async function waitNeoInstallGone(): Promise<void> {
   }
 }
 
-/** 轮询结果文件，等出 `JLI_RETURNED code=N`；超时抛错。 */
+/**
+ * 轮询结果文件，等出 `JLI_RETURNED code=N`；超时抛错。
+ *
+ * 裁决顺序（**返回码权威**）：文件里一旦出现 `JLI_RETURNED code=N` 就按 N 返回（0 成功；非 0
+ * 交调用方判失败，**绝不吞**）；只有 `JLI_BEGIN` 而无返回码时，才允许用「进程探测」兜底判异常终结；
+ * 两样都没写 = 尚未开始，继续轮询到 deadline。
+ *
+ * 【2026-09-30 设备取证 → 为什么这样改】NeoForge 安装报 `processor terminated without exit code
+ * (installertools)`，但握手文件
+ * `/data/storage/el2/base/haps/entry/files/meow-neo-jvm-result.txt` 里是
+ * `JLI_BEGIN args=13` + `JLI_RETURNED code=0` —— 工具 JVM 明明退了 0（`neo-installer/**` 也有产物、
+ * 无 `hs_err_pid*.log`）。桥侧（`meowjrebridge.cpp`：`"JLI_RETURNED code=" + int(code)` 追加一行）
+ * 与旧解析器（`lastIndexOf('JLI_RETURNED code=')` + `parseInt`）**文本完全对得上** ⇒ 缺陷不是格式，
+ * 而是这段裁决的**竞态**：旧实现用「一个轮询周期前读到的那份 `text`」+「一次瞬时
+ * `getRunningProcessInformation` 快照」判死，抛错前**不再重读**。桥是**先写返回码、200ms 后才
+ * `_exit`**，故只要这段窗口里返回码已落盘、或快照恰好漏列刚起的 `:neoinstall`，就会在
+ * 「code=0 其实已写出」时误判「无退出码」。
+ * 现改为：返回码权威、**抛错前重读一次**、进程探测只在**确实见过该进程存活**时才可信
+ * （否则一律继续轮询到 deadline —— 2026-09-30 的事故正说明「没列出来」≠「没在跑」）。
+ */
 async function waitProcessorExit(resultPath: string, timeoutMs: number, label: string): Promise<number> {
-  const deadline = Date.now() + timeoutMs;
+  const startMs = Date.now();
+  const deadline = startMs + timeoutMs;
+  const marker = 'JLI_RETURNED code=';
+  // 读一次握手文件；缺失/读失败一律按空串（文件可能正被创建/替换）。空串 ≠ 成功，绝不会误判。
+  const readHandshake = (): string => {
+    try {
+      if (fileIo.accessSync(resultPath)) {
+        return fileIo.readTextSync(resultPath);
+      }
+    } catch {
+      // 读失败按空处理（见上）。
+    }
+    return '';
+  };
+  // 取返回码；**无返回码行 ⇒ undefined**（与 0 区分开，避免把「还没写」当成「成功」）。
+  const returnedCode = (text: string): number | undefined => {
+    const at = text.lastIndexOf(marker);
+    if (at < 0) {
+      return undefined;
+    }
+    const n = parseInt(text.substring(at + marker.length).split('\n')[0].trim(), 10);
+    return Number.isNaN(n) ? -1 : n;   // 有行但非数字 ⇒ -1（沿旧语义：判失败，绝不吞）
+  };
+  // 单行握手摘要（日志用）：空 ⇒ absent；否则标 partial/complete 并附原文（换行折成 " | "）。
+  const handshakeDigest = (text: string): string => {
+    const t = text.trim();
+    if (t.length === 0) {
+      return 'absent';
+    }
+    const body = t.split('\n').join(' | ');
+    return returnedCode(text) === undefined ? `partial(${body})` : `complete(${body})`;
+  };
   let missedPolls = 0;
+  let processEverAlive = false;
   while (Date.now() < deadline) {
     await new Promise<void>((resolve: () => void) => {
       setTimeout(resolve, PROCESSOR_POLL_MS);
     });
-    let text = '';
-    try {
-      if (fileIo.accessSync(resultPath)) {
-        text = fileIo.readTextSync(resultPath);
+    const text = readHandshake();
+    // 1) 返回码权威：一旦写上立刻裁决，0 与非 0 都原样返回给调用方（绝不吞非 0）。
+    const code = returnedCode(text);
+    if (code !== undefined) {
+      hilog.info(LOG_DOMAIN, LOG_TAG,
+        'processor %{public}s handshake returned code=%{public}d elapsedMs=%{public}d',
+        label, code, Date.now() - startMs);
+      return code;
+    }
+    // 2) 无返回码：只有看到 `JLI_BEGIN`（JVM 确已起）才允许进程探测兜底；否则继续轮询。
+    if (!text.includes('JLI_BEGIN')) {
+      continue;
+    }
+    if (await neoInstallProcessAlive()) {
+      processEverAlive = true;
+      missedPolls = 0;
+      continue;
+    }
+    // 3) 探测不到：**仅在确实见过它存活时**才当「已退出」用（否则「没列出来」可能只是快照漏列）。
+    if (!processEverAlive) {
+      if (missedPolls === 0) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG,
+          'processor %{public}s never observed alive; ignoring probe-gone and waiting for handshake (elapsedMs=%{public}d)',
+          label, Date.now() - startMs);
       }
-    } catch {
-      text = '';
+      missedPolls++;
+      continue;
     }
-    const marker = 'JLI_RETURNED code=';
-    const at = text.lastIndexOf(marker);
-    if (at >= 0) {
-      const numText = text.substring(at + marker.length).split('\n')[0].trim();
-      const n = parseInt(numText, 10);
-      return Number.isNaN(n) ? -1 : n;
+    // 连续 2 次探测不到才可疑：进程列表是瞬时快照，单次漏列不该误杀正在干活的 processor。
+    missedPolls++;
+    if (missedPolls < 2) {
+      continue;
     }
-    // 异常终结：桥已写 `JLI_BEGIN`（JVM 起来了），但进程已消失却没写 `JLI_RETURNED`
-    // ⇒ 工具自己 `System.exit`/崩溃了。此时不必干等到超时（300s），立刻判失败。
-    // 注意：进程存活但长时间无输出是**正常**的（processor 干活可能几分钟），故只在进程消失时判定。
-    if (text.includes('JLI_BEGIN')) {
-      if (await neoInstallProcessAlive()) {
-        missedPolls = 0;
-      } else {
-        // 需**连续 2 次**探测不到才判失败：进程列表是瞬时快照，单次漏列不该误杀正在干活的 processor。
-        missedPolls++;
-        if (missedPolls >= 2) {
-          throw new Error(`processor terminated without exit code (${label})`);
-        }
-      }
+    // 4) 决定前**重读一次**：此刻若返回码已补上就以它为准 —— 探测绝不覆盖已写出的退出码。
+    const recheck = readHandshake();
+    const recheckCode = returnedCode(recheck);
+    if (recheckCode !== undefined) {
+      hilog.info(LOG_DOMAIN, LOG_TAG,
+        'processor %{public}s handshake returned code=%{public}d (on re-read) elapsedMs=%{public}d',
+        label, recheckCode, Date.now() - startMs);
+      return recheckCode;
     }
+    hilog.error(LOG_DOMAIN, LOG_TAG,
+      'processor %{public}s ended without exit code: handshake=%{public}s probeAlive=false elapsedMs=%{public}d',
+      label, handshakeDigest(recheck), Date.now() - startMs);
+    throw new Error(`processor terminated without exit code (${label})`);
   }
+  // 到 deadline：再重读一次（返回码可能刚好落盘），拿到就用。
+  const finalText = readHandshake();
+  const finalCode = returnedCode(finalText);
+  if (finalCode !== undefined) {
+    hilog.info(LOG_DOMAIN, LOG_TAG,
+      'processor %{public}s handshake returned code=%{public}d (at timeout) elapsedMs=%{public}d',
+      label, finalCode, Date.now() - startMs);
+    return finalCode;
+  }
+  hilog.error(LOG_DOMAIN, LOG_TAG,
+    'processor %{public}s timeout after %{public}d ms: handshake=%{public}s probeAlive=%{public}s elapsedMs=%{public}d',
+    label, timeoutMs, handshakeDigest(finalText),
+    (await neoInstallProcessAlive()) ? 'true' : 'false', Date.now() - startMs);
   throw new Error(`processor timeout (${label}) after ${timeoutMs} ms`);
 }
 
@@ -1440,7 +1539,16 @@ function forgeVersionsOfMavenMetadata(xml: string, mcVersion: string): string[] 
 /**
  * 拉取某 MC 版本的 Forge 构建列表（loader 版本号 = **installer 的 maven 目录名去掉 `<mc>-` 前缀**）。
  *
- * 源顺序：非官方源时 **BMCLAPI → Forge 官方 maven-metadata**；每个源内部：
+ * **列表源顺序随所选下载源变化**（`source` = `InstallerState.forgeSource`，Forge **自己的**源；语义与
+ * Fabric 的 `fabricLoaderListCandidates` 完全一致：**所选源在前，另一源只作"尽力而为"兜底** —— 镜像源才兜到官方，
+ * 官方源不碰镜像）：
+ *  - 镜像源（SOURCE_MIRROR，默认）：`[BMCLAPI /forge/minecraft/<mc>]` → 失败/空结果时 `[官方 maven-metadata]`；
+ *  - 官方源（SOURCE_OFFICIAL）    ：`[官方 maven-metadata]`（**不请求 BMCLAPI**）。
+ * 依据 HMCL：列表源与文件源都随用户所选 `DownloadSource` 变化（ref/HMCL `.../setting/DownloadProviders.java:88-97`），
+ * 且 BMCLAPI 的 Forge 列表是**独立端点**（`.../forge/ForgeBMCLVersionList.java:79`），不是官方 URL 换域名
+ * ⇒ 只能这样显式分流（见 notes 20-design/launch/Forge支持-调研.md §2）。
+ *
+ * 每个源内部：
  *  - HTTP 4xx ⇒ 由 `fetchText` 判失败（**不解析 body**）→ 继续下一个源；
  *  - HTTP 200 + **空结果** ⇒ 视为「该源无结果」→ 继续下一个源（**不要**直接断定"无可用版本"）。
  * 两源形状不同：BMCLAPI 给分层字段（`version` + `branch`，**目录名要两段拼**，且带 installer 文件信息），
@@ -1452,7 +1560,9 @@ export async function fetchForgeVersions(mcVersion: string, source: string): Pro
     return result;
   }
 
-  if (source !== SOURCE_OFFICIAL) {
+  // 只有镜像源（含默认值）才先走 BMCLAPI 列表端点；官方源从官方 maven-metadata 起步。
+  const mirrorFirst = source !== SOURCE_OFFICIAL;
+  if (mirrorFirst) {
     try {
       const text = await fetchText([forgeBmclListUrl(mcVersion)],
         [HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_NOT_FOUND]);
@@ -1496,7 +1606,7 @@ export async function fetchForgeVersions(mcVersion: string, source: string): Pro
   }
 
   try {
-    const text = await fetchText(fileCandidates(FORGE_MAVEN_METADATA_URL, source));
+    const text = await fetchText(forgeMetadataCandidates(source));
     const out = forgeVersionsOfMavenMetadata(text, mcVersion);
     if (out.length > 0) {
       sortForgeNewestFirst(out);
@@ -1692,15 +1802,24 @@ function composeForgeManifest(vanilla: VersionJson, instanceName: string, gameVe
 /**
  * 安装 Forge 实例（**零 JVM 面：MC 1.7–1.12.2**；installer jar 只作数据容器）。
  *
- * 步骤：拉 vanilla 清单 → 下 installer jar（镜像 + 官方两候选）→ 解包读
+ * 步骤：拉 vanilla 清单 → 下 installer jar → 解包读
  * `install_profile.json` 判型 → 按形态把 loader 制品落共享库区 → 下 vanilla 资产（client jar 落
  * `<名>.jar`）与 Forge 库（老 = 模板库表；新 = profile 库表 + 模板库表）→ 写清单。
+ *
+ * **整个安装按 `loaderSource`（Forge 自己的下载源）**——Forge 制品来自 MinecraftForge、不是 Mojang，
+ * 故不复用版本源（与 `installFabricVersion` 传 `loaderSource` 的语义一致）：
+ *  - vanilla 清单 / client jar / 原版库 / 资源：`loaderSource`（镜像时 BMCLAPI 重写，官方时直连原 host）；
+ *  - installer jar：`forgeInstallerCandidates(…, loaderSource)`；
+ *  - Forge 库：`runDownloads(…, loaderSource)` → `fileCandidates`（同一个前缀重写表）。
+ * 镜像源 = 镜像优先 + 官方兜底，官方源 = 仅官方。
+ * 依据 HMCL `DownloadProvider.injectURL*` 与 `BMCLAPIDownloadProvider.replacement`
+ * （ref/HMCL `.../download/BMCLAPIDownloadProvider.java:84-86,141-171`）。
  *
  * ⚠️ `spec` 形态带 client processor（1.13+，需外部 JVM）⇒ **在写出清单之前明确拒绝**，
  * 以免留下"能列出但起不来"的残缺实例（本轮范围外，见方案文档 §13.6 第 3 条）。
  */
 export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVersion,
-  loaderVersion: string, instanceName: string, source: string, cacheDir: string,
+  loaderVersion: string, instanceName: string, loaderSource: string, cacheDir: string,
   onPhase: (phase: number) => void,
   onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void,
@@ -1712,22 +1831,28 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
     throw new Error('forge loader version missing');
   }
 
-  // 1) vanilla 清单（版本源）
+  // 1) vanilla 清单（Forge 源）
   onPhase(PHASE_FILES);
-  const vanillaText = await fetchText(fileCandidates(gameRemote.url, source));
+  const vanillaText = await fetchText(fileCandidates(gameRemote.url, loaderSource));
   const vanilla = JSON.parse(vanillaText) as VersionJson;
   const gameVersion = (vanilla.id ?? '').length > 0 ? (vanilla.id ?? '') : gameRemote.id;
 
-  // 2) installer jar → 解包 → 判型。工作目录按 loader 版本跨实例复用，先清后解（同 NeoForge 的做法）。
-  const workDir = `${cacheDir}/${FORGE_INSTALLER_DIR}/${loaderVersion}`;
+  // 2) installer jar → 解包 → 判型。工作目录按 **下载源 + loader 版本** 定位（跨实例复用），先清后解。
+  //    把 `loaderSource` 纳入目录名：installer.jar 按路径"命中即跳过"，若不带源，切换下载源后会**静默复用**
+  //    另一源下过的文件（切源 = 不做任何下载、也看不出选的是哪个源）。隔离后，切源必按新候选顺序重下，
+  //    "所选源"在磁盘布局上也可观测。整棵 `forge-installer/` 由 `CacheCleaner` 清理（见 CacheCleaner.ets）。
+  //    注：同一个 (mc, loader) 的 installer 在不同源下内容一致（BMCLAPI 是 Forge maven 的镜像），
+  //    故这是"可观测性 + 不跨源静默复用"的取舍，代价是切源后重下一次（installer 无 sha1 可校，见 §13.6.1）。
+  const workDir = `${cacheDir}/${FORGE_INSTALLER_DIR}/${loaderSource}/${loaderVersion}`;
   ensureDir(workDir);
   const jarPath = `${workDir}/installer.jar`;
   if (!exists(jarPath)) {
-    // 候选 = [镜像, 官方] 两条（见 `forgeInstallerCandidates`）；**直接走下载原语**以确保官方兜底不丢：
-    // `runDownloads` 只对 `urls[0]` 再做一次前缀展开，而 `urls[0]` 若已是镜像地址就展不出官方了。
+    // 候选顺序见 `forgeInstallerCandidates`（镜像源 = [镜像, 官方]；官方源 = [官方]）。
+    // **直接走下载原语**以确保官方兜底不丢：`runDownloads` 只对 `urls[0]` 再做一次前缀展开，
+    // 而 `urls[0]` 若已是镜像地址就展不出官方了。
     onCount(0, 1);
     onCurrent('forge-installer.jar');
-    await downloadFile(forgeInstallerCandidates(gameRemote.id, loaderVersion, source), jarPath, '',
+    await downloadFile(forgeInstallerCandidates(gameRemote.id, loaderVersion, loaderSource), jarPath, '',
       onFileProgress);
     onCount(1, 1);
   }
@@ -1836,9 +1961,9 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
       files.push(item);
     }
   }
-  await runDownloads(files, source, onCount, onCurrent, onFileProgress);
+  await runDownloads(files, loaderSource, onCount, onCurrent, onFileProgress);
 
-  // 7) 资源对象（依赖已下好的索引；版本源）
+  // 7) 资源对象（依赖已下好的索引；Forge 源）
   const assetId = (vanilla.assetIndex?.id ?? '').length > 0
     ? (vanilla.assetIndex?.id ?? '')
     : (vanilla.assets ?? '');
@@ -1850,7 +1975,7 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
     } catch {
       index = {};
     }
-    await runDownloads(assetObjectItems(gameRoot, index), source, onCount, onCurrent, onFileProgress);
+    await runDownloads(assetObjectItems(gameRoot, index), loaderSource, onCount, onCurrent, onFileProgress);
   }
 
   // 8) 写清单：顶层扁平 + patches[game, forge]

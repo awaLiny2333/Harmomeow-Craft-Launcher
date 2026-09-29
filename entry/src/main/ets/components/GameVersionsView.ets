@@ -135,10 +135,12 @@ export struct GameVersionsView {
    * 全局设置现为**应用级、全局唯一**（`app-settings.json` 的 global 段）：挂载时读一次即可，不随目录变化。
    */
   private reloadInstallerSettings(): void {
-    // 下载源（持久化）：默认镜像，海外可切官方。
+    // 版本下载源（持久化）：默认镜像，海外可切官方。
     this.installer.source = new SettingsTools(this.context()).downloadSource();
-    // mod loader 下载源（**独立于版本源**）：持久化载入。
+    // mod loader 下载源（**独立于版本源**，按 loader 各一份）：持久化载入。
     this.installer.fabricSource = new SettingsTools(this.context()).fabricSource();
+    this.installer.forgeSource = new SettingsTools(this.context()).forgeSource();
+    this.installer.neoForgeSource = new SettingsTools(this.context()).neoForgeSource();
     // 版本类型过滤（持久化）：默认正式版。
     this.installer.setVersionType(new SettingsTools(this.context()).versionType());
   }
@@ -762,7 +764,7 @@ export struct GameVersionsView {
     }
   }
 
-  /** 切换 mod loader 下载源（独立于版本源）：持久化 + 清列表 + 重拉。 */
+  /** 切换 Fabric 下载源（独立于版本源）：持久化 + 清列表 + 重拉。 */
   private setFabricSource(index: number): void {
     const src = index === 1 ? SOURCE_OFFICIAL : SOURCE_MIRROR;
     new SettingsTools(this.context()).setFabricSource(src);
@@ -770,22 +772,70 @@ export struct GameVersionsView {
     this.installer.refreshFabricLoaders(this.installTargetId);
   }
 
+  /**
+   * 切换 Forge 下载源（独立于版本源；**Forge 制品来自 MinecraftForge，非 Mojang**）：持久化 + 清列表 + 重拉。
+   * 与 setFabricSource 对称（同一套"改源 = 作废重拉"节奏）。
+   */
+  private setForgeSource(index: number): void {
+    const src = index === 1 ? SOURCE_OFFICIAL : SOURCE_MIRROR;
+    new SettingsTools(this.context()).setForgeSource(src);
+    this.installer.setForgeSource(src);
+    this.installer.refreshForgeLoaders(this.installTargetId);
+  }
+
+  /**
+   * 切换 NeoForge 下载源（独立于版本源；**NeoForge 制品来自 NeoForged，非 Mojang**）：持久化 + 清列表 + 重拉。
+   * 与 setFabricSource / setForgeSource 对称。
+   */
+  private setNeoForgeSource(index: number): void {
+    const src = index === 1 ? SOURCE_OFFICIAL : SOURCE_MIRROR;
+    new SettingsTools(this.context()).setNeoForgeSource(src);
+    this.installer.setNeoForgeSource(src);
+    this.installer.refreshNeoLoaders(this.installTargetId);
+  }
+
   // 注：源/版本文案按 **loader 维度**组织（资源名以 loader 结尾），便于日后新增 loader。
-  /** 该 loader 的下载源下拉项（镜像 / 官方；官方文案按 loader 区分，Fabric=官方（FabricMC））。 */
+  /** 当前 loader 的下载源（Forge = forgeSource；NeoForge = neoForgeSource；其余 = fabricSource；均独立于版本源）。 */
+  private loaderSourceIndex(): number {
+    return this.loaderSource() === SOURCE_OFFICIAL ? 1 : 0;
+  }
+
+  /** 当前 loader 自己的下载源字符串（= 其下拉应展示的值）。 */
+  private loaderSource(): string {
+    if (this.installer.loaderKind === LOADER_KIND_FORGE) {
+      return this.installer.forgeSource;
+    }
+    if (this.installer.loaderKind === LOADER_KIND_NEO_FORGE) {
+      return this.installer.neoForgeSource;
+    }
+    return this.installer.fabricSource;
+  }
+
+  /**
+   * 当前 loader 的「官方」源文案（按 loader 区分：Fabric=官方（FabricMC）/ Forge=官方（MinecraftForge）/
+   * NeoForge=官方（NeoForged））——三家制品分别来自 FabricMC / MinecraftForge / NeoForged，都不是 Mojang。
+   */
+  private loaderOfficialSourceLabel(): Resource {
+    if (this.installer.loaderKind === LOADER_KIND_FORGE) {
+      return $r('app.string.source_official_forge');
+    }
+    if (this.installer.loaderKind === LOADER_KIND_NEO_FORGE) {
+      return $r('app.string.source_official_neoforge');
+    }
+    return $r('app.string.source_official_fabric');
+  }
+
+  /** 该 loader 的下载源下拉项（镜像 / 官方）。 */
   private loaderSourceOptions(): SelectOption[] {
     return [
       { value: $r('app.string.source_mirror') },
-      { value: $r('app.string.source_official_fabric') },
+      { value: this.loaderOfficialSourceLabel() },
     ];
-  }
-
-  private loaderSourceIndex(): number {
-    return this.installer.fabricSource === SOURCE_OFFICIAL ? 1 : 0;
   }
 
   private loaderSourceValue(): Resource {
     return this.loaderSourceIndex() === 1
-      ? $r('app.string.source_official_fabric')
+      ? this.loaderOfficialSourceLabel()
       : $r('app.string.source_mirror');
   }
 
@@ -1516,8 +1566,32 @@ export struct GameVersionsView {
                     .alignItems(VerticalAlign.Center);
                   }
                 }
-                // NeoForge：版本门槛 + loader 版本下拉（安装执行待实现，故 confirm 按钮禁用并给出提示）
+                // NeoForge：loader 子面板（该 loader 的下载源 + loader 版本，均收进下拉省空间）
                 if (this.installer.loaderKind === LOADER_KIND_NEO_FORGE) {
+                  // 下载源（镜像 / 官方（NeoForged））：与 Fabric / Forge 子面板同形——NeoForge 制品来自
+                  // NeoForged（maven.neoforged.net，**不是 Mojang**），故设 **NeoForge 自己的源**
+                  // （neoForgeSource），不复用版本源。
+                  Row({ space: LAYOUT_SPACE }) {
+                    Column({ space: LAYOUT_SPACE_SMALL }) {
+                      Text($r('app.string.loader_source_label'));
+                      Text($r('app.string.loader_source_hint'))
+                        .opacity(OPACITY_SECONDARY);
+                    }
+                    .layoutWeight(1)
+                    .alignItems(HorizontalAlign.Start);
+                    Select(this.loaderSourceOptions())
+                      .width('auto')
+                      .selected(this.loaderSourceIndex())
+                      .value(this.loaderSourceValue())
+                      .onSelect((index: number) => {
+                        this.setNeoForgeSource(index);
+                      })
+                      .selectedOptionBgColor($r('app.color.brand_bg'))
+                      .selectedOptionFontColor($r('app.color.brand'))
+                      .enabled(this.installer.installingId.length === 0);
+                  }
+                  .width('100%')
+                  .alignItems(VerticalAlign.Center);
                   if (!this.neoForgeSupported()) {
                     Text($r('app.string.loader_neoforge_unsupported'))
                       .opacity(OPACITY_SECONDARY)
@@ -1565,8 +1639,32 @@ export struct GameVersionsView {
                     }
                   }
                 }
-                // Forge：版本门槛（**仅 1.7–1.12.2**，零 JVM 安装）+ 构建号下拉
+                // Forge：loader 子面板（该 loader 的下载源 + 构建号，均收进下拉省空间）
                 if (this.installer.loaderKind === LOADER_KIND_FORGE) {
+                  // 下载源（镜像 / 官方（MinecraftForge））：与 Fabric 子面板同形——Forge 制品来自
+                  // MinecraftForge（非 Mojang），故设 **Forge 自己的源**（forgeSource），不复用版本源。
+                  Row({ space: LAYOUT_SPACE }) {
+                    Column({ space: LAYOUT_SPACE_SMALL }) {
+                      Text($r('app.string.loader_source_label'));
+                      Text($r('app.string.loader_source_hint'))
+                        .opacity(OPACITY_SECONDARY);
+                    }
+                    .layoutWeight(1)
+                    .alignItems(HorizontalAlign.Start);
+                    Select(this.loaderSourceOptions())
+                      .width('auto')
+                      .selected(this.loaderSourceIndex())
+                      .value(this.loaderSourceValue())
+                      .onSelect((index: number) => {
+                        this.setForgeSource(index);
+                      })
+                      .selectedOptionBgColor($r('app.color.brand_bg'))
+                      .selectedOptionFontColor($r('app.color.brand'))
+                      .enabled(this.installer.installingId.length === 0);
+                  }
+                  .width('100%')
+                  .alignItems(VerticalAlign.Center);
+                  // 版本门槛（**仅 1.7–1.12.2**，零 JVM 安装）+ 构建号下拉
                   if (!this.forgeSupported()) {
                     Text($r('app.string.loader_forge_unsupported'))
                       .opacity(OPACITY_SECONDARY)

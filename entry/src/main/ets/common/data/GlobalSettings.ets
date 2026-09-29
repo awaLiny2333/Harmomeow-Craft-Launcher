@@ -38,6 +38,8 @@ interface RuntimeGroupJson {
 interface NetworkGroupJson {
   downloadSource?: string;
   fabricSource?: string;
+  forgeSource?: string;
+  neoForgeSource?: string;
   msClientId?: string;
 }
 
@@ -55,7 +57,7 @@ export interface GlobalSettingsJson {
  * 不再按游戏目录各存一份、也不再随游戏目录迁移。分三组：
  * - `launcher`：滚动速度 / 采样率 overlay / 版本类型 / 上次启动；
  * - `runtime`：CPU 线程数 / 最大堆 / 显示缩放 / 渲染环境变量 / JVM 参数；
- * - `network`：版本下载源 / loader 下载源 / 微软 client_id。
+ * - `network`：版本下载源 / Fabric 下载源 / Forge 下载源 / NeoForge 下载源 / 微软 client_id。
  *
  * 触控设置（触屏当鼠标 / 虚拟触屏按键 / 灵敏度 / 缩放 / 四边内距）**不在这里**：
  * 独立成 `<filesDir>/meow-settings/touch-controls.json`，见 `SettingsTools.ets`。
@@ -86,8 +88,12 @@ export class GlobalSettings {
   // ---- network 组 ----
   /** 版本下载源：mirror / official。 */
   downloadSource: string = SOURCE_MIRROR;
-  /** mod loader 下载源（与版本源独立）：mirror / official。 */
+  /** Fabric 下载源（与版本源独立）：mirror / official。 */
   fabricSource: string = SOURCE_MIRROR;
+  /** Forge 下载源（与版本源独立；**Forge 制品来自 MinecraftForge，不是 Mojang**）：mirror / official。 */
+  forgeSource: string = SOURCE_MIRROR;
+  /** NeoForge 下载源（与版本源独立；**制品来自 NeoForged，不是 Mojang**）：mirror / official。 */
+  neoForgeSource: string = SOURCE_MIRROR;
   /** 微软登录 client_id（用户自填）；空 = 不可用。 */
   msClientId: string = '';
 
@@ -172,6 +178,8 @@ export function parseGlobalNode(raw: GlobalSettingsJson | undefined): GlobalSett
   if (n !== undefined && n !== null) {
     s.downloadSource = normalizeSource(n.downloadSource);
     s.fabricSource = normalizeSource(n.fabricSource);
+    s.forgeSource = normalizeSource(n.forgeSource);
+    s.neoForgeSource = normalizeSource(n.neoForgeSource);
     s.msClientId = typeof n.msClientId === 'string' ? n.msClientId : '';
   }
   return s;
@@ -193,6 +201,8 @@ export function normalizeGlobalSettings(s: GlobalSettings): GlobalSettings {
   s.renderScale = normalizeRenderScale(s.renderScale);
   s.downloadSource = normalizeSource(s.downloadSource);
   s.fabricSource = normalizeSource(s.fabricSource);
+  s.forgeSource = normalizeSource(s.forgeSource);
+  s.neoForgeSource = normalizeSource(s.neoForgeSource);
   return s;
 }
 
@@ -271,6 +281,8 @@ export function buildGlobalNode(data: GlobalSettings,
   const network = asRecord(base['network']);
   putString(network, 'downloadSource', normalizeSource(data.downloadSource), SOURCE_MIRROR);
   putString(network, 'fabricSource', normalizeSource(data.fabricSource), SOURCE_MIRROR);
+  putString(network, 'forgeSource', normalizeSource(data.forgeSource), SOURCE_MIRROR);
+  putString(network, 'neoForgeSource', normalizeSource(data.neoForgeSource), SOURCE_MIRROR);
   putString(network, 'msClientId', data.msClientId, '');
   base['network'] = isEmptyRecord(network) ? undefined : network;
   return isEmptyRecord(base) ? undefined : base;

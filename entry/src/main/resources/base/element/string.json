@@ -141,6 +141,10 @@
       "value": "游戏运行中：请先关闭游戏窗口再清除缓存"
     },
     {
+      "name": "settings_clear_cache_installing",
+      "value": "安装进行中：安装器的工作文件正在使用，请等安装结束后再清除缓存"
+    },
+    {
       "name": "launch_last",
       "value": "继续玩：%s"
     },
@@ -803,6 +807,14 @@
     {
       "name": "source_official_fabric",
       "value": "官方（FabricMC）"
+    },
+    {
+      "name": "source_official_forge",
+      "value": "官方（MinecraftForge）"
+    },
+    {
+      "name": "source_official_neoforge",
+      "value": "官方（NeoForged）"
     },
     {
       "name": "loader_source_label",
