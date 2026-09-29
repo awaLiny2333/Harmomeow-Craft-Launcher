@@ -12,7 +12,7 @@ import {
 import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES,
   RENDERER_BACKEND_VULKAN, RENDERER_BACKEND_GL4ES3, JAVA_ENV_AUTO } from '../common/constants/LaunchDefaults';
 import { rendererForVersion } from '../common/data/RendererPolicy';
-import { JavaRuntime, BUNDLED_RUNTIMES, defaultRuntime } from '../common/data/JavaRuntime';
+import { JavaRuntime, BUNDLED_RUNTIMES } from '../common/data/JavaRuntime';
 import { resolveJavaRuntime } from '../common/data/JavaPolicy';
 import { runtimeStatus } from '../common/data/JavaEnvScanner';
 import { JRE_ID_MEOW, JRE_ID_MEOW_LEGACY } from '../common/constants/Paths';
@@ -873,21 +873,27 @@ export struct GameVersionsView {
     const kind = this.installer.loaderKind;
     const name = this.installName.trim();
     // NeoForge 安装期会起**工具 JVM**（`:neoinstall` 独立进程，无 UI ⇒ 对话框只能在这里弹）。
-    // 工具 JVM 一律用**现代套**（`defaultRuntime()`，见 NeoInstallAbility）⇒ 就绪判据 = 同一处
-    // 的 `runtimeStatus`（与启动前检查同源）。未就绪 ⇒ 弹与启动同一个对话框并**保留安装面板**
-    // （准备完成后用户再点一次「确认安装」即可，见 LaunchJrePrompt.prepareJre 的提示）。
+    // ★ 工具 JVM 用**哪套 JRE = 与启动路径同一处解析**：`JavaPolicy.resolveJavaRuntime(MC 版本, loader, 覆盖)`
+    //   （`GameLauncher.resolveLaunchRuntime` / `checkLaunchJre` 内部也调它；目标实例尚未创建 ⇒ 无实例覆盖，
+    //   传 AUTO）。故安装器与将来启动该实例跑的是**同一套**，不存在"第二事实源"。
+    //   目标 (mcVersion, loader) 取自**安装面板当前选择**：`remote.id`（选中的 MC 版本）+ `LOADER_NEO_FORGE`。
+    //   今天 NeoForge 命中策略的"无约束 ⇒ 取最新"分支 ⇒ 恰好 = 现代套（行为不变，见 JavaPolicy 表 A）。
+    // 就绪判据 = 同一处 `runtimeStatus`（与「Java 环境」区、启动前检查同源）。未就绪 ⇒ 弹与启动同一个
+    // 对话框并**保留安装面板**（准备完成后用户再点一次「确认安装」即可，见 LaunchJrePrompt.prepareJre）。
+    let toolRuntimeId = '';
     if (kind === LOADER_KIND_NEO_FORGE) {
-      const toolRuntime = defaultRuntime();
+      const toolRuntime = resolveJavaRuntime(remote.id, LOADER_NEO_FORGE, JAVA_ENV_AUTO).runtime;
       const toolJre = runtimeStatus(this.context().filesDir, toolRuntime);
       if (!toolJre.installed) {
         promptJreNotReady(this.getUIContext(), toolRuntime.id, toolRuntime.javaMajor,
           toolJre.needsUpgrade, JRE_ACTION_INSTALL);
         return;
       }
+      toolRuntimeId = toolRuntime.id;
     }
     this.closeInstallPanel();
     if (kind === LOADER_KIND_NEO_FORGE) {
-      await this.installNeoForgeRemote(remote, name);
+      await this.installNeoForgeRemote(remote, name, toolRuntimeId);
     } else if (kind === LOADER_KIND_FABRIC) {
       await this.installFabricRemote(remote, name);
     } else {
@@ -956,8 +962,10 @@ export struct GameVersionsView {
   /**
    * 安装 NeoForge 实例（**仅 1.20.2+**；installer 只作数据容器、processor 链见 VersionInstaller）。
    * 安装前校验写权限；成功后默认开启隔离并刷新列表。
+   * `jreId` = `confirmInstall` 按 (MC 版本 × NeoForge) 解析出的**工具 JVM 那套 JRE id**，一路传到
+   * `:neoinstall`（见 `NeoInstallAbility`）⇒ 安装期与启动期同源，不写死现代套。
    */
-  async installNeoForgeRemote(remote: RemoteVersion, instanceName: string): Promise<void> {
+  async installNeoForgeRemote(remote: RemoteVersion, instanceName: string, jreId: string): Promise<void> {
     const root = resolveGameRoot(this.state.selected);
     if (root.length === 0) {
       this.installer.errorKind = INSTALL_ERR_INSTALL;
@@ -969,7 +977,8 @@ export struct GameVersionsView {
       this.installer.errorDetail = '';
       return;
     }
-    const ok = await this.installer.installNeoForge(this.context(), root, this.state.selected, remote, instanceName);
+    const ok = await this.installer.installNeoForge(this.context(), root, this.state.selected, remote,
+      instanceName, jreId);
     if (ok) {
       // 与 HMCL 一致：新装实例默认开启版本隔离。
       const s = InstanceSettings.defaults();

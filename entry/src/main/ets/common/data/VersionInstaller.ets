@@ -1022,10 +1022,13 @@ function composeNeoForgeManifest(vanilla: VersionJson, instanceName: string, gam
  *
  * ⚠️ processor 链（T3 待实现）会产出 patched client jar；**未完成前本函数会在写出清单之前抛错**，
  * 以免留下"能列出但起不来"的残缺实例。
+ *
+ * `jreId` = processor **工具 JVM** 用的那套 JRE id（由 `confirmInstall` 经 `JavaPolicy` 按
+ * (MC 版本 × NeoForge) 解析，与启动路径同源）；仅**透传**到 `:neoinstall`，本函数不解析 JRE。
  */
 export async function installNeoForgeVersion(ctx: common.UIAbilityContext, gameRoot: string,
   gameRootUri: string, gameRemote: RemoteVersion, loaderVersion: string, instanceName: string,
-  versionSource: string, cacheDir: string,
+  versionSource: string, cacheDir: string, jreId: string,
   onPhase: (phase: number) => void,
   onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void,
@@ -1157,7 +1160,7 @@ await runDownloads(files, versionSource, onCount, onCurrent, onFileProgress);
     mavenPathOf: (name: string): string => mavenPath(name)
   };
   const set = await buildNeoForgeProcessorPlans(profile, expandCtx, workDir);
-  await runNeoForgeProcessors(ctx, set, workDir, gameRootUri, onCount, onCurrent);
+  await runNeoForgeProcessors(ctx, set, workDir, gameRootUri, jreId, onCount, onCurrent);
   if (set.patchedPath.length === 0 || !exists(set.patchedPath)) {
     throw new Error('neoforge patched client jar missing after processors');
   }
@@ -1174,9 +1177,12 @@ await runDownloads(files, versionSource, onCount, onCurrent, onFileProgress);
  * 为什么逐次起进程：JLI_Launch 一进程只能起一次；`System.exit` 只杀该进程；工具间静态状态互不污染。
  * 退出码来自桥在 headless 模式写的 `<filesDir>/meow-neo-jvm-result.txt`（native 只有 hilog，拿不到返回值）；
  * ⚠️ 工具**多数 fail-open（参数错也退 0）** ⇒ 成败另有产物断言（调用方负责）。
+ *
+ * `jreId` = 工具 JVM 该用哪套 JRE（由 `confirmInstall` 经 `JavaPolicy` 解析、与启动路径同源）；
+ * 写进 job 文件交给 `:neoinstall`，让该进程用**同一套**起 `startJvm`（不在本层解析）。
  */
 async function runNeoForgeProcessors(ctx: common.UIAbilityContext, set: NeoForgeProcessorSet,
-  workDir: string, gameRootUri: string, onCount: (done: number, total: number) => void,
+  workDir: string, gameRootUri: string, jreId: string, onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void): Promise<void> {
   const resultPath = `${ctx.filesDir}/${NEO_JVM_RESULT}`;
   const total = set.plans.length;
@@ -1190,6 +1196,8 @@ async function runNeoForgeProcessors(ctx: common.UIAbilityContext, set: NeoForge
     // job：完整 java 参数（不经 meow.launcher；headless 由 rendererLib='' 触发）
     const job = new NeoForgeProcessorJob();
     job.rootUri = gameRootUri;
+    // 工具 JVM 用哪套 JRE：与启动路径同源解析出的 id（`:neoinstall` 据此取 runtime）。
+    job.jreId = jreId;
     // `-Djava.io.tmpdir` 必须指可写沙箱目录（鸿蒙无 /tmp，与游戏路径的注入保持一致）：
     // 部分工具（解压/落盘中间产物）会用它，默认值在设备上不可写。
     job.argv = ['java', `-Djava.io.tmpdir=${workDir}`, '-cp', plan.classpath.join(':'), plan.mainClass];

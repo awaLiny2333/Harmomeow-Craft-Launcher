@@ -93,6 +93,12 @@ export class NeoForgeProcessorJob {
   argv: string[] = [];
   /** 游戏目录的用户文件 URI（ability 进程内再激活一次持久化授权；best-effort）。 */
   rootUri: string = '';
+  /**
+   * 工具 JVM 该用哪套 JRE 的 id（= [`JavaRuntime.id`](JavaRuntime.ets)）。由安装编排按
+   * (MC 版本 × loader) 经 `JavaPolicy` 解析得出，与启动路径**同源** ⇒ 安装期与游戏期同一套 JRE。
+   * 空串 = 旧 job / 未提供（`:neoinstall` 回退现代套并记 warn，见 `NeoInstallAbility`）。
+   */
+  jreId: string = '';
 }
 
 /** 展开 context：库路径解析函数由调用方注入（避免与本模块形成循环依赖）。 */

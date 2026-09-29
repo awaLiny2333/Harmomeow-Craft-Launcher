@@ -3,7 +3,7 @@ import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { LOG_DOMAIN } from '../common/constants/Constants';
 import { startJvm } from '../common/state/JvmLauncher';
-import { defaultRuntime } from '../common/data/JavaRuntime';
+import { JavaRuntime, defaultRuntime, runtimeById } from '../common/data/JavaRuntime';
 import { runtimeStatus } from '../common/data/JavaEnvScanner';
 import { NeoForgeProcessorJob } from '../common/data/NeoForgeInstaller';
 import { activateDirectory } from '../common/access/FileAccess';
@@ -62,14 +62,12 @@ export default class NeoInstallAbility extends UIAbility {
       }
     }
     // headless：渲染器参数全空 ⇒ 桥不加载 GL，只起一个纯工具 JVM。
-    // JRE 选择：安装期是**工具 JVM**（跑 Forge 的 processor 工具，不是游戏），目前一律用**现代套**
-    // ——这是 NeoForge 1.20.2+ 的既有行为（已发布、可用）。
-    // ⚠️ 未决（见 notes `多JRE共存-方案.md` §5 待办）：legacy Forge 1.13–1.16 的 processor 工具
-    //    是否也需要 Java 8？本 job（`NeoForgeProcessorJob`）里**没有** mcVersion/loader ⇒ 现在无法
-    //    走 JavaPolicy；要判定得先给 job 带上目标实例的 (mcVersion, loader)。
-    const toolRuntime = defaultRuntime();
+    // JRE 选择：安装期是**工具 JVM**（跑 Forge 的 processor 工具，不是游戏）。**与启动路径同源**——
+    // id 由父进程 `GameVersionsView.confirmInstall` 经 `JavaPolicy.resolveJavaRuntime(MC 版本 × loader)`
+    // 解析、写进 job 带过来（见 `NeoForgeProcessorJob.jreId`），本进程**不重解析**（无第二事实源）。
+    const toolRuntime = toolRuntimeForJob(job.jreId);
     // 【兜底数据门】主进程安装入口（`GameVersionsView.confirmInstall`）已按**同一判据**
-    // （`runtimeStatus` × `defaultRuntime`）放行过；但数据可能在放行后被删/升级，本进程又**无 UI**
+    // （`runtimeStatus` × 同一解析结果）放行过；但数据可能在放行后被删/升级，本进程又**无 UI**
     // 弹不出对话框 ⇒ 这里同步早退，绝不硬起工具 JVM（`startJvm` 只自检 el1 的 `libjli.so`，
     // 管不到 java.home 的数据）。**判据与主进程同源，此处不另写解析逻辑。**
     if (!runtimeStatus(this.context.filesDir, toolRuntime).installed) {
@@ -78,4 +76,24 @@ export default class NeoInstallAbility extends UIAbility {
     }
     startJvm(this.context, job.argv, toolRuntime, '', '', '', '');
   }
+}
+
+/**
+ * 取工具 JVM 该用的 runtime：job 带的 id（父进程按策略解析）→ 查表；**缺失/未知 ⇒ 现代套 + warn**。
+ * 只做"id → runtime"查表，**不解析策略**（策略只在父进程一处，见 `JavaPolicy`）⇒ 无第二事实源。
+ * 回退保证向后兼容：旧 job（无 `jreId`，`JSON.parse` 后该字段为 `undefined`）或表里没有的 id
+ * 也照跑，行为 = 单 JRE 时代（现代套）。
+ */
+function toolRuntimeForJob(jreId: string | undefined): JavaRuntime {
+  if (jreId === undefined || jreId.length === 0) {
+    hilog.warn(LOG_DOMAIN, LOG_TAG, 'job has no jreId (old job?) -> fallback to default runtime');
+    return defaultRuntime();
+  }
+  const rt = runtimeById(jreId);
+  if (rt === undefined) {
+    hilog.warn(LOG_DOMAIN, LOG_TAG, 'job jreId "%{public}s" unknown -> fallback to default runtime', jreId);
+    return defaultRuntime();
+  }
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'tool JVM JRE = %{public}s (from job, policy-resolved)', rt.id);
+  return rt;
 }

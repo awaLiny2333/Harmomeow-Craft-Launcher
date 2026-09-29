@@ -343,9 +343,11 @@ export class InstallerState {
   /**
    * 安装 NeoForge 实例（**仅 MC 1.20.2+**；HMCL 形态）。资产按 `this.source`（版本源）；
    * installer 与库的 url 由下载层按下载源重写为镜像。返回是否成功。
+   * `jreId` = 安装期**工具 JVM** 用的那套 JRE id（由调用方按 (MC 版本 × NeoForge) 经 `JavaPolicy`
+   * 解析得出，与启动路径同源）；一路透传到 `:neoinstall`，不在此重解析。
    */
   async installNeoForge(ctx: common.UIAbilityContext, gameRoot: string, gameRootUri: string,
-    remote: RemoteVersion, instanceName: string): Promise<boolean> {
+    remote: RemoteVersion, instanceName: string, jreId: string): Promise<boolean> {
     if (this.installingId.length > 0) {
       return false;
     }
@@ -367,7 +369,7 @@ export class InstallerState {
     let ok = true;
     try {
       await installNeoForgeVersion(ctx, gameRoot, gameRootUri, remote, this.neoLoader, instanceName, this.source,
-        ctx.cacheDir,
+        ctx.cacheDir, jreId,
         (phase: number) => {
           this.phase = phase;
         },
