@@ -274,11 +274,11 @@
     },
     {
       "name": "java_env_modern",
-      "value": "现代 / 原版"
+      "value": "OpenJDK 26（现代 / 原版）"
     },
     {
       "name": "java_env_legacy",
-      "value": "旧版 / 模组"
+      "value": "OpenJDK 8（旧版 / 模组）"
     },
     {
       "name": "version_edit_glthread_label",
