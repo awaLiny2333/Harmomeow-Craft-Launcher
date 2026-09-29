@@ -1,6 +1,7 @@
 import { fileIo } from '@kit.CoreFileKit';
 import { zlib } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { removeTreeBestEffort } from './VersionTools';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'NeoForgeInstaller';
@@ -184,6 +185,11 @@ export async function readToolMainClassAsync(jarPath: string, cacheDir: string):
     // 忽略。
   }
   const outDir = `${cacheDir}/mainclass/${base}`;
+  // 先清后解（与 installer 解包点同款）：`.txt` 只在解包成功后写入，故上一次安装若在解压中途被打断，
+  // 会留下半截的 `<base>/` 却没有 `.txt` ⇒ 下一次会**再次解压进这个半截目录**（重复解压 / 残留陈旧条目）。
+  // 清掉即可廉价重算——工具 jar 是**源制品**（共享库区、按 maven 版本定址，内容由坐标钉死），
+  // 不在这里重下；`.txt` 也因此不会与 jar 失配（同 workDir 内 jar 名 = 内容）。
+  removeTreeBestEffort(outDir);
   ensureDir(outDir);
   await zlib.decompressFile(jarPath, outDir);
   const manifestPath = `${outDir}/META-INF/MANIFEST.MF`;

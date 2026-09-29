@@ -1027,6 +1027,12 @@ function composeNeoForgeManifest(vanilla: VersionJson, instanceName: string, gam
   return vanilla;
 }
 
+/** NeoForge installer 的解包结果：profile 与内嵌启动清单（**两者都读到**才算"这个 jar 可用"）。 */
+interface NeoForgeArchive {
+  profile: NeoForgeInstallProfileJson;
+  launch: NeoForgeLaunchJson;
+}
+
 /**
  * 安装 NeoForge 实例（**仅 1.20.2+**）。
  *
@@ -1041,7 +1047,8 @@ function composeNeoForgeManifest(vanilla: VersionJson, instanceName: string, gam
  * **整条链按 `loaderSource`**（NeoForge 自己的下载源）——NeoForge 制品来自 NeoForged
  * （`maven.neoforged.net`）、不是 Mojang，故不复用版本源（与 `installForgeVersion` 的语义一致）：
  *  - vanilla 清单 / client jar / 原版库 / 资源：`loaderSource`；
- *  - installer jar 与 NeoForge 库：同样 `loaderSource`（`runDownloads` → 前缀重写表）。
+ *  - installer jar 与 NeoForge 库：同样按 `loaderSource` 展开候选（installer 直连 `downloadFile`
+ *    〔候选含官方兜底〕，库走 `runDownloads` → 前缀重写表）。
  * 依据 HMCL：一次安装只有一个文件源（ref/HMCL `.../download/AutoDownloadProvider.java:78-101`）。
  *
  * `jreId` = processor **工具 JVM** 用的那套 JRE id（由 `confirmInstall` 经 `JavaPolicy` 按
@@ -1071,19 +1078,69 @@ export async function installNeoForgeVersion(ctx: common.UIAbilityContext, gameR
   const workDir = neoWorkDir(cacheDir, loaderSource, loaderVersion);
   ensureDir(workDir);
   const jarPath = `${workDir}/installer.jar`;
-  await runDownloads([newItem('neoforge-installer.jar',
-    neoforgeInstallerCandidates(loaderVersion, loaderSource), jarPath, '', 0)],
-    loaderSource, onCount, onCurrent, onFileProgress);
   const unzipDir = `${workDir}/unzipped`;
-  // 幂等：该目录按 **下载源 + loader 版本** 跨实例复用（同名 job 目录），先清后解，避免
+
+  // 下 installer jar（候选顺序见 `neoforgeInstallerCandidates`）。
+  // **直接走下载原语 `downloadFile`**（与 Forge 链同款），不再用 `runDownloads` —— 依据评审两条 finding：
+  //  ① `runDownloads` 只对 `urls[0]` 再做一次前缀展开；`urls[0]` 已是镜像地址时展不出官方兜底，
+  //     镜像取不到 installer 即无官方回退（notes 已知限制与待解 §E 的 finding (a)）。
+  //  ② `runDownloads` 对"目标已存在"跳过下载；复用期自愈删坏文件后若删除失败，日志会打
+  //     "re-downloading"却没真重下 ⇒ 坏缓存退化为"每次解包都失败"。`downloadFile` 落盘前先删目标再 rename，两者兼治。
+  const downloadInstaller = async (): Promise<void> => {
+    onCount(0, 1);
+    onCurrent('neoforge-installer.jar');
+    await downloadFile(neoforgeInstallerCandidates(loaderVersion, loaderSource), jarPath, '',
+      onFileProgress);
+    onCount(1, 1);
+  };
+
+  // 解包 installer 并读 `install_profile.json` 与内嵌启动清单（先清后解）；任一步失败即视为"这个 jar 不可用"。
+  // 下游 processor 链正是靠这两份 JSON（profile 的 processors/libraries + launch 的 mainClass/arguments）。
+  // 幂等：`unzipped/` 按 **下载源 + loader 版本** 跨实例复用（同名 job 目录），先清后解，避免
   // 「第二次安装/失败重试」时同名目录已存在导致的重复解压与半截残留。
-  removeTreeBestEffort(unzipDir);
-  ensureDir(unzipDir);
-  onCurrent('installer-profile');
-  await zlib.decompressFile(jarPath, unzipDir);
-  const profile = readJsonFile<NeoForgeInstallProfileJson>(`${unzipDir}/install_profile.json`);
-  const launchRel = (profile.json ?? '/version.json').replace(/^\//, '');
-  const launch = readJsonFile<NeoForgeLaunchJson>(`${unzipDir}/${launchRel}`);
+  const extractArchive = async (): Promise<NeoForgeArchive> => {
+    removeTreeBestEffort(unzipDir);
+    ensureDir(unzipDir);
+    onCurrent('installer-profile');
+    await zlib.decompressFile(jarPath, unzipDir);
+    const profile = readJsonFile<NeoForgeInstallProfileJson>(`${unzipDir}/install_profile.json`);
+    const launchRel = (profile.json ?? '/version.json').replace(/^\//, '');
+    const launch = readJsonFile<NeoForgeLaunchJson>(`${unzipDir}/${launchRel}`);
+    return { profile: profile, launch: launch };
+  };
+
+  // `installer.jar` 经通用下载原语落在 `neo-installer/**`，按路径"命中即跳过"（sha1 为空，无从校验）：
+  // 复用到的文件若已损坏（半截 / 被破坏 / 上次中断留下），必须能**自愈**，否则坏文件会被永久复用
+  // （每次都在下游解包处失败，且 `exists` 为真 ⇒ 永不重下）。
+  // HMCL 不靠"路径命中即跳过"：它每次下到**专门的临时文件**、用 ZIP 结构完整性校验把关、用完即删
+  // （ref/HMCL `.../download/neoforge/NeoForgeInstallTask.java:67` 建临时文件、`:69-76` 下到临时文件并挂
+  // `ZIP_INTEGRITY_CHECK_HANDLER`、`:85` 删除），坏文件从不进持久位置；其 `install()` 同样是先开 zip、
+  // 读 `install_profile.json`（同文件 `:122-124`）——与"能不能解出 profile"这个可用性判据同源。
+  // 这里保留跨实例复用的缓存目录，但**复用前先解一次**：zip 打不开、或缺 `install_profile.json` /
+  // 内嵌启动清单，即判为坏文件 → 删除 → 重下再解。于是坏缓存最多只影响当次任务（当次即修），
+  // 不会永久卡死。与 `installForgeVersion` 的自愈同款（见 ForgeInstallTask.java:76-84/92-93 的对应注释）。
+  let archive: NeoForgeArchive | null = null;
+  if (exists(jarPath)) {
+    try {
+      archive = await extractArchive();
+    } catch (error) {
+      const err = error as BusinessError;
+      hilog.warn(LOG_DOMAIN, LOG_TAG,
+        'cached neoforge installer unusable, re-downloading: %{public}s (%{public}s)',
+        jarPath, err.message ?? '');
+      try {
+        fileIo.unlinkSync(jarPath);
+      } catch {
+        // 删除失败也继续：`downloadFile` 落盘前会先删目标再 rename。
+      }
+    }
+  }
+  if (archive === null) {
+    await downloadInstaller();
+    archive = await extractArchive();
+  }
+  const profile = archive.profile;
+  const launch = archive.launch;
 
   // 3) vanilla 文件：client jar（落 <名>.jar）+ 原版库 + 资源索引（NeoForge 源）
   const files: DownloadItem[] = [];
@@ -1478,6 +1535,16 @@ interface ForgeInstallProfileJson {
 /** 一条 processor（只判"有没有 client 侧任务"，故只取 `sides`）。 */
 interface ForgeProcessorJson {
   sides?: string[];
+}
+
+/**
+ * Forge installer 的解包结果（对齐 NeoForge 的 `NeoForgeArchive`）：`install_profile.json` 与
+ * `spec` 形态必需的**内嵌启动清单**（`profile.json` 指向的文件）。老形态的清单在 `profile.versionInfo`
+ * 内、无独立文件 ⇒ `launch` 为 undefined。
+ */
+interface ForgeArchive {
+  profile: ForgeInstallProfileJson;
+  launch?: VersionJson;
 }
 
 /** BMCLAPI 列表里的一条 Forge 构建。 */
@@ -1896,25 +1963,36 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
     onCount(1, 1);
   };
 
-  // 解包 installer 并读 `install_profile.json`（先清后解）；任一步失败即视为"这个 jar 不可用"。
-  const extractProfile = async (): Promise<ForgeInstallProfileJson> => {
+  // 解包 installer 并读所需文件（先清后解）；任一步失败即视为"这个 jar 不可用"。
+  // 复用校验须覆盖**下游真正要用的东西**（对齐 NeoForge 的 `NeoForgeArchive`）：除 `install_profile.json` 外，
+  // `spec` 形态（如 1.12.2）的启动清单在 `profile.json` 指向的内嵌文件里、且下游在 **try/catch 之外**才读它
+  // ⇒ 若这里只证明有 `install_profile.json`，这类坏缓存会通过自愈、然后在同一处反复失败（评审：Forge 复用
+  // 校验应与 NeoForge 校验同样的事项）。故 `spec` 形态在这里一并读到，缺任一即判坏。
+  const extractArchive = async (): Promise<ForgeArchive> => {
     removeTreeBestEffort(unzipDir);
     ensureDir(unzipDir);
     onCurrent('installer-profile');
     await zlib.decompressFile(jarPath, unzipDir);
-    return readJsonFile<ForgeInstallProfileJson>(`${unzipDir}/install_profile.json`);
+    const profile = readJsonFile<ForgeInstallProfileJson>(`${unzipDir}/install_profile.json`);
+    if (classifyForgeProfile(profile) === FORGE_FORM_SPEC_NO_PROCESSOR) {
+      const rel = (profile.json ?? '/version.json').replace(/^\//, '');
+      const launch = readJsonFile<VersionJson>(`${unzipDir}/${rel}`);
+      return { profile: profile, launch: launch };
+    }
+    return { profile: profile };
   };
 
   // `installer.jar` 按路径"命中即跳过"⇒ 复用到的文件若已损坏（半截 / 被破坏），必须能**自愈**，
   // 否则坏文件会被永久复用（每次都在下游解包/读 profile 处失败，且永远不重下）。
   // HMCL 不靠"路径命中即跳过"：它每次下到临时文件、ZIP 结构校验通过才落盘、用完即删
   // （ref/HMCL `.../download/forge/ForgeInstallTask.java:76-84`、`:92-93`），坏文件从不进持久位置。
-  // 这里保留跨实例复用的缓存目录，但**复用前先解一次**：解不开、或解出后没有 `install_profile.json`，
-  // 即判为坏文件 → 删除 → 重下再解。于是坏缓存最多只影响当次任务（当次即修），不会永久卡死。
-  let profile: ForgeInstallProfileJson | null = null;
+  // 这里保留跨实例复用的缓存目录，但**复用前先解一次**：解不开、或解不出所需文件（`install_profile.json`，
+  // `spec` 形态还需内嵌启动清单 —— 见 `extractArchive`），即判为坏文件 → 删除 → 重下再解。
+  // 于是坏缓存最多只影响当次任务（当次即修），不会永久卡死。
+  let archive: ForgeArchive | null = null;
   if (exists(jarPath)) {
     try {
-      profile = await extractProfile();
+      archive = await extractArchive();
     } catch (error) {
       const err = error as BusinessError;
       hilog.warn(LOG_DOMAIN, LOG_TAG,
@@ -1926,10 +2004,11 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
       }
     }
   }
-  if (profile === null) {
+  if (archive === null) {
     await downloadInstaller();
-    profile = await extractProfile();
+    archive = await extractArchive();
   }
+  const profile = archive.profile;
   const form = classifyForgeProfile(profile);
   if (form === FORGE_FORM_UNSUPPORTED) {
     // 明确拒绝（且不留残缺实例）：1.13+ 需外部 JVM；两键皆无 = 格式不认识。
@@ -1942,7 +2021,8 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
     throw new Error(`forge install unsupported (needs a JVM): ${reason}`);
   }
 
-  // 3) 启动清单模板：老形态 = `install.versionInfo`；新形态 = 内嵌 `profile.json`（如 `/version.json`）。
+  // 3) 启动清单模板：老形态 = `install.versionInfo`；新形态 = 内嵌 `profile.json`（如 `/version.json`，
+  //    已在 `extractArchive` 复用校验时读到）。
   let template: VersionJson;
   if (form === FORGE_FORM_LEGACY) {
     const info = profile.versionInfo;
@@ -1951,8 +2031,11 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
     }
     template = info;
   } else {
-    const rel = (profile.json ?? '/version.json').replace(/^\//, '');
-    template = readJsonFile<VersionJson>(`${unzipDir}/${rel}`);
+    const launch = archive.launch;
+    if (launch === undefined) {
+      throw new Error('forge install profile incomplete');
+    }
+    template = launch;
   }
 
   // 4) loader 制品落共享库区。**必须在库下载之前**：主制品在库表里 `url` 为空（Forge 官方的写法），
