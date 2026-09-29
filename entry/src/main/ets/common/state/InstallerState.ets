@@ -3,7 +3,8 @@ import { AppStorageV2 } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { RemoteVersion, fetchManifest, installVersion, removeIncompleteInstance,
   fetchFabricLoaders, installFabricVersion, installNeoForgeVersion, fetchForgeVersions,
-  installForgeVersion, FabricLoaderVersion, ForgeListResult } from '../data/VersionInstaller';
+  installForgeVersion, FabricLoaderVersion, ForgeListResult,
+  ForgeInstallerUnavailableError } from '../data/VersionInstaller';
 import { fetchNeoForgeVersions, NeoForgeListResult, NeoForgeRemoteVersion } from '../data/NeoForgeVersionList';
 import { SOURCE_MIRROR, TYPE_OTHER, TYPE_RELEASE,
   TYPE_SNAPSHOT } from '../constants/DownloadContract';
@@ -35,6 +36,11 @@ export const INSTALL_ERR_NONE: number = 0;
 export const INSTALL_ERR_MANIFEST: number = 1;
 export const INSTALL_ERR_INSTALL: number = 2;
 export const INSTALL_ERR_NO_WRITE: number = 3;
+/**
+ * Forge 所选构建没有 installer jar（官方列表可能含"不带安装器"的构建）。
+ * 单列一种：UI 要给出**逐构建**的可操作文案（其余安装失败仍是 INSTALL_ERR_INSTALL 的泛用文案）。
+ */
+export const INSTALL_ERR_FORGE_NO_INSTALLER: number = 5;
 
 @ObservedV2
 export class InstallerState {
@@ -560,9 +566,15 @@ export class InstallerState {
     } catch (error) {
       // 失败收尾：清掉半装残留（缺 <名>.json 才清，绝不碰完整实例）。
       removeIncompleteInstance(gameRoot, instanceName);
-      const err = error as BusinessError;
-      this.errorKind = INSTALL_ERR_INSTALL;
-      this.errorDetail = err.message ?? '';
+      if (error instanceof ForgeInstallerUnavailableError) {
+        // 该构建在所选源下没有 installer jar ⇒ 专属文案（把构建名带上，供 UI 作 $r 参数）。
+        this.errorKind = INSTALL_ERR_FORGE_NO_INSTALLER;
+        this.errorDetail = error.buildId;
+      } else {
+        const err = error as BusinessError;
+        this.errorKind = INSTALL_ERR_INSTALL;
+        this.errorDetail = err.message ?? '';
+      }
       ok = false;
     }
     this.installingId = '';

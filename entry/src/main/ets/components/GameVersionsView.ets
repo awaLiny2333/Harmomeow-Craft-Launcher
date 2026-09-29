@@ -34,7 +34,7 @@ import {
   launchInMainProcess, LAUNCH_OK, LAUNCH_ERR_NO_ACCOUNT, LAUNCH_ERR_MS_EXPIRED,
   LAUNCH_ERR_JRE_NOT_READY
 } from '../common/data/VersionLaunch';
-import { getInstallerState, InstallerState, INSTALL_ERR_INSTALL, INSTALL_ERR_LOADER, INSTALL_ERR_MANIFEST, INSTALL_ERR_NO_WRITE, INSTALL_ERR_NONE, LOADER_KIND_FABRIC, LOADER_KIND_FORGE, LOADER_KIND_NEO_FORGE, LOADER_KIND_VANILLA } from '../common/state/InstallerState';
+import { getInstallerState, InstallerState, INSTALL_ERR_FORGE_NO_INSTALLER, INSTALL_ERR_INSTALL, INSTALL_ERR_LOADER, INSTALL_ERR_MANIFEST, INSTALL_ERR_NO_WRITE, INSTALL_ERR_NONE, LOADER_KIND_FABRIC, LOADER_KIND_FORGE, LOADER_KIND_NEO_FORGE, LOADER_KIND_VANILLA } from '../common/state/InstallerState';
 import { msAuthErrorText } from './MsAuthErrorText';
 import { promptJreNotReady, JRE_ACTION_INSTALL } from './LaunchJrePrompt';
 import { getLauncherState, LauncherState } from '../common/state/LauncherState';
@@ -643,6 +643,10 @@ export struct GameVersionsView {
   private errorText(): Resource {
     if (this.installer.errorKind === INSTALL_ERR_NO_WRITE) {
       return $r('app.string.download_error_no_write');
+    }
+    if (this.installer.errorKind === INSTALL_ERR_FORGE_NO_INSTALLER) {
+      // 逐构建的可操作文案：errorDetail 里放的就是构建名（见 InstallerState.installForge 的失败分支）。
+      return $r('app.string.install_forge_no_installer', this.installer.errorDetail);
     }
     if (this.installer.errorKind === INSTALL_ERR_MANIFEST) {
       return $r('app.string.common_list_error');
@@ -1751,6 +1755,10 @@ export struct GameVersionsView {
                     this.fmtSize(this.installer.fileTotal)))
                     .opacity(OPACITY_SECONDARY);
                 }
+              } else if (this.installer.errorKind === INSTALL_ERR_FORGE_NO_INSTALLER) {
+                // 构建名已由 $r 的 %s 参数带出，不再额外渲染 errorDetail（避免重复显示裸构建名）。
+                Text(this.errorText())
+                  .opacity(OPACITY_SECONDARY);
               } else if (this.installer.errorKind === INSTALL_ERR_INSTALL
                 || this.installer.errorKind === INSTALL_ERR_NO_WRITE) {
                 Text(this.errorText())

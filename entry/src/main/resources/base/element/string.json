@@ -785,6 +785,10 @@
       "value": "目录无写入权限，请重新授权后再下载"
     },
     {
+      "name": "install_forge_no_installer",
+      "value": "构建 %s 没有可用的安装器。请尝试改选其它构建 / 使用镜像"
+    },
+    {
       "name": "download_type_release",
       "value": "正式版"
     },

@@ -1800,6 +1800,21 @@ function composeForgeManifest(vanilla: VersionJson, instanceName: string, gameVe
 }
 
 /**
+ * Forge installer jar 不可用：所选构建的所有候选地址都失败（例如官方列表列出"不带 installer"的构建）。
+ * 单独成形，好让 UI 层把它从泛用的"安装失败"里区分出来（专属、可操作的逐构建文案）。
+ */
+export class ForgeInstallerUnavailableError extends Error {
+  /** 出问题的构建（`<mc>-<loaderVersion>`）。 */
+  readonly buildId: string;
+
+  constructor(buildId: string) {
+    super(`forge installer jar unavailable: ${buildId}`);
+    this.name = 'ForgeInstallerUnavailableError';
+    this.buildId = buildId;
+  }
+}
+
+/**
  * 安装 Forge 实例（**零 JVM 面：MC 1.7–1.12.2**；installer jar 只作数据容器）。
  *
  * 步骤：拉 vanilla 清单 → 下 installer jar → 解包读
@@ -1850,10 +1865,23 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
     // 候选顺序见 `forgeInstallerCandidates`（镜像源 = [镜像, 官方]；官方源 = [官方]）。
     // **直接走下载原语**以确保官方兜底不丢：`runDownloads` 只对 `urls[0]` 再做一次前缀展开，
     // 而 `urls[0]` 若已是镜像地址就展不出官方了。
+    const installerUrls = forgeInstallerCandidates(gameRemote.id, loaderVersion, loaderSource);
     onCount(0, 1);
     onCurrent('forge-installer.jar');
-    await downloadFile(forgeInstallerCandidates(gameRemote.id, loaderVersion, loaderSource), jarPath, '',
-      onFileProgress);
+    try {
+      await downloadFile(installerUrls, jarPath, '', onFileProgress);
+    } catch (error) {
+      // 官方列表（`maven-metadata.xml`）只有目录名、**没有文件清单** ⇒ 会列出"该目录不含 installer jar"的
+      // 构建（HMCL 不踩这个坑：它的列表项自带文件表，镜像端点更直接过滤 `category == "installer"`）。
+      // 所有候选都失败 ⇒ 按"该构建没有安装器"给出**逐构建**的可读错误（而非常规的下载失败）。
+      // 仅此一步分型：其余下载失败继续走泛用的 INSTALL_ERR_INSTALL（见 InstallerState）。
+      const err = error as BusinessError;
+      const buildId = `${gameRemote.id}-${loaderVersion}`;
+      hilog.error(LOG_DOMAIN, LOG_TAG,
+        'forge installer jar unavailable for build %{public}s; candidates tried: %{public}s; last error: %{public}s',
+        buildId, installerUrls.join(', '), err.message ?? '');
+      throw new ForgeInstallerUnavailableError(buildId);
+    }
     onCount(1, 1);
   }
   const unzipDir = `${workDir}/unzipped`;
