@@ -18,7 +18,7 @@ import { LOADER_FORGE } from './VersionResolver';
  *     不静默）；AUTO 才是策略说话的地方。
  */
 
-/** 约束（Java 主版本的闭区间；0 = 该侧不设限）+ 首选 + 人类可读依据。 */
+/** 约束（Java 主版本的闭区间；0 = 该侧不设限）+ 首选 + 日志依据。 */
 export class JavaRequirement {
   /** 下限（0 = 不设）。 */
   minMajor: number;
@@ -26,32 +26,34 @@ export class JavaRequirement {
   maxMajor: number;
   /** 首选主版本（0 = 无偏好，求解时取"最新"）。 */
   preferredMajor: number;
-  /** 依据：**展示用** resource（UI 提示；一句话说清"为什么"，随 locale 变）。 */
-  reasonRes: ResourceStr;
-  /** 依据：**日志用**稳定英文诊断串（机器可读、可 grep；**不本地化**）。 */
+  /**
+   * 日志用稳定英文诊断串（含完整依据，机器可读可 grep；不本地化）。
+   * UI 不再展示逐段理由：只显示静态提示 `java_env_mismatch_caveat`，
+   * 逐段/逐选择依据仅经此字段进日志（见段→依据台账）。
+   */
   reasonDiag: string;
 
   constructor(minMajor: number, maxMajor: number, preferredMajor: number,
-    reasonRes: ResourceStr, reasonDiag: string) {
+    reasonDiag: string) {
     this.minMajor = minMajor;
     this.maxMajor = maxMajor;
     this.preferredMajor = preferredMajor;
-    this.reasonRes = reasonRes;
     this.reasonDiag = reasonDiag;
   }
 }
 
-/** 选择结果：选中的 runtime + 理由（用于日志自证与 UI 展示）。 */
+/** 选择结果：选中的 runtime + 日志依据。 */
 export class JavaChoice {
   runtime: JavaRuntime;
-  /** 为什么选它：**展示用** resource（UI 显示，随 locale 变）。 */
-  reasonRes: ResourceStr;
-  /** 为什么选它：**日志用**稳定英文诊断串（进 hilog：`实例 X → JRE Y（reasonDiag）`；**不本地化**）。 */
+  /**
+   * 日志用稳定英文诊断串（含完整依据，机器可读可 grep；不本地化）。
+   * UI 不再展示逐选择理由：只显示静态提示 `java_env_mismatch_caveat`，
+   * 逐段/逐选择依据仅经此字段进日志（见段→依据台账）。
+   */
   reasonDiag: string;
 
-  constructor(runtime: JavaRuntime, reasonRes: ResourceStr, reasonDiag: string) {
+  constructor(runtime: JavaRuntime, reasonDiag: string) {
     this.runtime = runtime;
-    this.reasonRes = reasonRes;
     this.reasonDiag = reasonDiag;
   }
 }
@@ -111,21 +113,17 @@ function requirementFor(mcVersion: string, loader: string): JavaRequirement | nu
     // LaunchWrapper 段（Forge ≤1.12.2）：**强制上限 8**。
     if (le(v, new McVersion(1, 12, 999))) {
       return new JavaRequirement(0, 8, 8,
-        $r('app.string.java_policy_reason_forge_legacy_launchwrapper'),
         'forge<=1.12.2 launchwrapper: needs java.util.jar.Pack200 (removed JDK14) and SecurityManager (banned JDK24) => max 8 (HMCL)');
     }
     // ModLauncher/Mixin 段（1.13–1.16.999）：偏好 8，上限 17（HMCL MODLAUNCHER_8）；**未实测**。
     if (le(v, new McVersion(1, 16, 999))) {
       return new JavaRequirement(0, 17, 8,
-        $r('app.string.java_policy_reason_forge_modlauncher_8'),
         'forge 1.13-1.16.999 modlauncher/mixin: HMCL says Java 8 (max 17); untested on modern JRE => prefer 8');
     }
     if (le(v, new McVersion(1, 20, 4))) {
-      return new JavaRequirement(16, 0, 17,
-        $r('app.string.java_policy_reason_forge_16_17'), 'forge 1.17-1.20.4: HMCL says Java 16/17');
+      return new JavaRequirement(16, 0, 17, 'forge 1.17-1.20.4: HMCL says Java 16/17');
     }
-    return new JavaRequirement(21, 0, 21,
-      $r('app.string.java_policy_reason_forge_21'), 'forge >=1.20.5: HMCL says Java 21');
+    return new JavaRequirement(21, 0, 21, 'forge >=1.20.5: HMCL says Java 21');
   }
   // 香草 / Fabric / NeoForge / 其它：**不设约束**（保持现状：取最新）。
   // 香草下限（HMCL GameJavaVersion：≥1.13→8、≥1.17→16、≥1.18→17、≥1.20.5→21、≥26.1→25）
@@ -183,16 +181,13 @@ export function resolveJavaRuntime(mcVersion: string, loader: string, overrideId
       const req = requirementFor(mcVersion, loader);
       if (req !== null && !satisfies(picked, req)) {
         return new JavaChoice(picked,
-          $r('app.string.java_policy_reason_user_override_conflict', picked.id, req.preferredMajor),
           `override:${picked.id} conflicts with segment rule (prefer java${req.preferredMajor})`);
       }
-      return new JavaChoice(picked,
-        $r('app.string.java_policy_reason_user_override', picked.id), `override:${picked.id}`);
+      return new JavaChoice(picked, `override:${picked.id}`);
     }
     // 未知 id（旧设置/手改）：回落自动并说清楚，绝不静默当默认。
     const auto = autoChoice(mcVersion, loader);
     return new JavaChoice(auto.runtime,
-      $r('app.string.java_policy_reason_unknown_env_fallback', overrideId),
       `unknown env="${overrideId}" => fallback auto (${auto.reasonDiag})`);
   }
   return autoChoice(mcVersion, loader);
@@ -205,10 +200,9 @@ function autoChoice(mcVersion: string, loader: string): JavaChoice {
     // 无规则命中：取最新（保持单 JRE 时代行为）。
     const best = pickBest(BUNDLED_RUNTIMES, 0);
     if (best === null) {
-      return new JavaChoice(defaultRuntime(), $r('app.string.java_policy_reason_no_bundled'),
-        'auto: no bundled JRE (abnormal)');
+      return new JavaChoice(defaultRuntime(), 'auto: no bundled JRE (abnormal)');
     }
-    return new JavaChoice(best, $r('app.string.java_policy_reason_auto_latest', best.javaMajor),
+    return new JavaChoice(best,
       `auto: no constraint => latest (java${best.javaMajor})`);
   }
   const candidates: JavaRuntime[] = [];
@@ -222,9 +216,7 @@ function autoChoice(mcVersion: string, loader: string): JavaChoice {
     // 无候选（例如将来表 A 的区间比随包 JRE 更严）：兜底现代套并**明说**。
     const fallback = defaultRuntime();
     return new JavaChoice(fallback,
-      $r('app.string.java_policy_reason_no_candidate_fallback', req.preferredMajor, fallback.id,
-        fallback.javaMajor),
       `auto: no bundled JRE satisfies segment (prefer java${req.preferredMajor}) => fallback ${fallback.id} (java${fallback.javaMajor}, may fail)`);
   }
-  return new JavaChoice(best, req.reasonRes, req.reasonDiag);
+  return new JavaChoice(best, req.reasonDiag);
 }

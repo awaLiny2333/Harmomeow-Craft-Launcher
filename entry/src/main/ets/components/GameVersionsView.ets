@@ -9,8 +9,10 @@ import {
 import {
   SOURCE_MIRROR, SOURCE_OFFICIAL, TYPE_OTHER, TYPE_RELEASE, TYPE_SNAPSHOT
 } from '../common/constants/DownloadContract';
-import { RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES,
-  RENDERER_BACKEND_VULKAN, RENDERER_BACKEND_GL4ES3, JAVA_ENV_AUTO } from '../common/constants/LaunchDefaults';
+import {
+  RENDERER_AUTO, RENDERER_ENV, RENDERER_ENV_GL4ES,
+  RENDERER_BACKEND_VULKAN, RENDERER_BACKEND_GL4ES3, JAVA_ENV_AUTO
+} from '../common/constants/LaunchDefaults';
 import { rendererForVersion } from '../common/data/RendererPolicy';
 import { JavaRuntime, BUNDLED_RUNTIMES } from '../common/data/JavaRuntime';
 import { resolveJavaRuntime } from '../common/data/JavaPolicy';
@@ -37,6 +39,7 @@ import { msAuthErrorText } from './MsAuthErrorText';
 import { promptJreNotReady, JRE_ACTION_INSTALL } from './LaunchJrePrompt';
 import { getLauncherState, LauncherState } from '../common/state/LauncherState';
 import { AccountState, getAccountState } from '../common/state/AccountState';
+import { LengthMetrics } from '@kit.ArkUI';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'GameVersionsView';
@@ -211,6 +214,9 @@ export struct GameVersionsView {
 
   /** 发行日期显示：releaseTime 为 ISO 串（如 2024-06-13T15:00:00+00:00），只取日期部分。 */
   private fmtReleaseDate(raw: string): string {
+    if (raw.length <= 0) {
+      return '/';
+    }
     return raw.length >= 10 ? raw.substring(0, 10) : raw;
   }
 
@@ -438,17 +444,13 @@ export struct GameVersionsView {
   }
 
   /**
-   * 该实例**实际会**用哪套 JRE + 理由 —— 与 `GameLauncher` 的启动日志**同源**
-   * （同一个 `resolveJavaRuntime`）⇒ UI 与日志不会互相打脸；这也是"为什么自动选了 8"的自证。
-   * 副行由两段拼成：`Java <主版本> · ` + **展示用**理由 resource（`reasonRes`，见下方两个取值器）。
+   * 该实例**实际会**用哪套 JRE —— 与 `GameLauncher` 的启动日志**同源**
+   * （同一个 `resolveJavaRuntime`）⇒ 显示的主版本与启动日志一致。
+   * 副行由两段拼成：`Java <主版本> · ` + **静态**提示 `java_env_mismatch_caveat`；
+   * 逐段/逐选择依据不进 UI，只经 `reasonDiag` 进日志（见 `JavaPolicy` 段→依据台账）。
    */
   private editingJavaMajor(v: GameVersion): number {
     return resolveJavaRuntime(v.mcVersion, v.loader, this.editingSettings.javaEnv).runtime.javaMajor;
-  }
-
-  /** 该实例实际会用哪套 JRE 的**展示用**理由（`$r` 构造的 `ResourceStr`，随 locale 变）。 */
-  private editingJavaReason(v: GameVersion): ResourceStr {
-    return resolveJavaRuntime(v.mcVersion, v.loader, this.editingSettings.javaEnv).reasonRes;
   }
 
   /** 切换某版本的 Java 环境（`auto` 或某套 JRE id）；写盘失败从磁盘重读（不撒谎）。 */
@@ -1005,19 +1007,18 @@ export struct GameVersionsView {
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
           Text(this.editTitle(this.editing));
-          // 次要元信息合一行：版本类型 · 发行日期 · JSON 相对路径（JSON 可长 → 占余量 + 省略号）
-          Row({ space: LAYOUT_SPACE }) {
-            Text(this.versionTypeLabel(this.editing))
-              .opacity(OPACITY_SECONDARY);
-            if (this.editing.releaseTime.length > 0) {
-              Text(this.fmtReleaseDate(this.editing.releaseTime))
-                .opacity(OPACITY_SECONDARY);
-            }
-            Text(this.relJsonPath(this.editing))
-              .layoutWeight(1)
-              .opacity(OPACITY_SECONDARY);
+          // 次要元信息
+          Flex({
+            space: { cross: LengthMetrics.vp(LAYOUT_SPACE_SMALL), main: LengthMetrics.vp(LAYOUT_SPACE_SMALL) },
+            wrap: FlexWrap.Wrap
+          }) {
+            Text(this.versionTypeLabel(this.editing));
+            Text($r('app.string.versions_jre_major', this.editing.javaVersion));
+            Text(this.fmtReleaseDate(this.editing.releaseTime));
+            Text(this.relJsonPath(this.editing));
           }
-          .alignItems(VerticalAlign.Center);
+          .width('100%')
+          .opacity(OPACITY_SECONDARY);
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1);
@@ -1071,13 +1072,13 @@ export struct GameVersionsView {
       .alignItems(VerticalAlign.Center);
 
       // Java 环境（逐版本）：自动（推荐：交给 JavaPolicy 按 MC 版本 × 加载器选）/ 指定某套 JRE。
-      // 副行显示**实际会用的那套 + 理由**（与启动日志同源、同一个 resolveJavaRuntime）⇒ 不必猜"自动"选了什么。
+      // 副行显示**实际会用的那套**（与启动日志同源、同一个 resolveJavaRuntime）⇒ 不必猜"自动"选了什么；提示句为静态。
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
           Text($r('app.string.version_edit_java_label'));
           Text() {
-            Span($r('app.string.java_policy_effective_fmt', this.editingJavaMajor(this.editing)))
-            Span(this.editingJavaReason(this.editing))
+            Span($r('app.string.java_policy_effective_fmt', this.editingJavaMajor(this.editing)));
+            Span($r('app.string.java_env_mismatch_caveat'));
           }
           .opacity(OPACITY_SECONDARY)
           .maxLines(2);
@@ -1216,13 +1217,10 @@ export struct GameVersionsView {
                         .width('100%')
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis });
-                      // 副行：游戏类型（原版 / Fabric / 未知…） · JRE 大版本
-                      Row({ space: LAYOUT_SPACE_SMALL }) {
-                        Text(this.versionTypeLabel(obj.item));
-                        Text($r('app.string.versions_jre_suffix', obj.item.javaVersion));
-                      }
-                      .width('100%')
-                      .opacity(OPACITY_SECONDARY);
+                      // 副行：游戏类型（原版 / Fabric / 未知…）；不再显示 JRE 大版本（用户 2026-09-29 要求去掉）
+                      Text(this.versionTypeLabel(obj.item))
+                        .width('100%')
+                        .opacity(OPACITY_SECONDARY);
                     }
                     .layoutWeight(1)
                     .alignItems(HorizontalAlign.Start);
