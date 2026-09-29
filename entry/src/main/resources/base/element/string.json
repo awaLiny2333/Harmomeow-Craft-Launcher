@@ -349,6 +349,50 @@
       "value": "令牌 %s → %s"
     },
     {
+      "name": "java_policy_effective_fmt",
+      "value": "Java %d · "
+    },
+    {
+      "name": "java_policy_reason_forge_legacy_launchwrapper",
+      "value": "Forge ≤1.12.2 走 LaunchWrapper：需 java.util.jar.Pack200（JDK 14 删）与可用的 SecurityManager（JDK 24 禁）⇒ 上限 8（HMCL 同口径）"
+    },
+    {
+      "name": "java_policy_reason_forge_modlauncher_8",
+      "value": "Forge 1.13–1.16.999 走 ModLauncher/Mixin：HMCL 口径为 Java 8（上限 17）；我们在现代 JRE 上未验 ⇒ 偏好 8"
+    },
+    {
+      "name": "java_policy_reason_forge_16_17",
+      "value": "Forge 1.17–1.20.4：HMCL 口径 Java 16/17"
+    },
+    {
+      "name": "java_policy_reason_forge_21",
+      "value": "Forge ≥1.20.5：HMCL 口径 Java 21"
+    },
+    {
+      "name": "java_policy_reason_auto_latest",
+      "value": "无版本约束 ⇒ 取最新（Java %d）"
+    },
+    {
+      "name": "java_policy_reason_no_bundled",
+      "value": "无随包 JRE（异常）"
+    },
+    {
+      "name": "java_policy_reason_user_override",
+      "value": "用户指定 %s"
+    },
+    {
+      "name": "java_policy_reason_user_override_conflict",
+      "value": "用户指定 %s（⚠️ 与建议冲突：该段建议 Java %d）"
+    },
+    {
+      "name": "java_policy_reason_unknown_env_fallback",
+      "value": "设置里的 javaEnv=\"%s\" 不是已知 JRE ⇒ 回落自动"
+    },
+    {
+      "name": "java_policy_reason_no_candidate_fallback",
+      "value": "⚠️ 无随包 JRE 满足该段约束（建议 Java %d）⇒ 兜底 %s（Java %d，可能启动失败）"
+    },
+    {
       "name": "accounts_title",
       "value": "账户"
     },

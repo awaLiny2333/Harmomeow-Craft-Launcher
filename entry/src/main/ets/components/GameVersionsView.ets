@@ -440,10 +440,15 @@ export struct GameVersionsView {
   /**
    * 该实例**实际会**用哪套 JRE + 理由 —— 与 `GameLauncher` 的启动日志**同源**
    * （同一个 `resolveJavaRuntime`）⇒ UI 与日志不会互相打脸；这也是"为什么自动选了 8"的自证。
+   * 副行由两段拼成：`Java <主版本> · ` + **展示用**理由 resource（`reasonRes`，见下方两个取值器）。
    */
-  private editingJavaEffective(v: GameVersion): string {
-    const choice = resolveJavaRuntime(v.mcVersion, v.loader, this.editingSettings.javaEnv);
-    return `Java ${choice.runtime.javaMajor} · ${choice.reason}`;
+  private editingJavaMajor(v: GameVersion): number {
+    return resolveJavaRuntime(v.mcVersion, v.loader, this.editingSettings.javaEnv).runtime.javaMajor;
+  }
+
+  /** 该实例实际会用哪套 JRE 的**展示用**理由（`$r` 构造的 `ResourceStr`，随 locale 变）。 */
+  private editingJavaReason(v: GameVersion): ResourceStr {
+    return resolveJavaRuntime(v.mcVersion, v.loader, this.editingSettings.javaEnv).reasonRes;
   }
 
   /** 切换某版本的 Java 环境（`auto` 或某套 JRE id）；写盘失败从磁盘重读（不撒谎）。 */
@@ -1070,9 +1075,12 @@ export struct GameVersionsView {
       Row({ space: LAYOUT_SPACE }) {
         Column({ space: LAYOUT_SPACE_SMALL }) {
           Text($r('app.string.version_edit_java_label'));
-          Text(this.editingJavaEffective(this.editing))
-            .opacity(OPACITY_SECONDARY)
-            .maxLines(2);
+          Text() {
+            Span($r('app.string.java_policy_effective_fmt', this.editingJavaMajor(this.editing)))
+            Span(this.editingJavaReason(this.editing))
+          }
+          .opacity(OPACITY_SECONDARY)
+          .maxLines(2);
         }
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start);

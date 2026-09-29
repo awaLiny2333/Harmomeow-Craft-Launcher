@@ -104,7 +104,7 @@ export async function selectBridge(runtime: JavaRuntime): Promise<boolean> {
   if (activeBridge !== undefined) {
     if (activeHspModule !== runtime.hspModule) {
       hilog.error(LOG_DOMAIN, LOG_TAG,
-        '桥已绑定 %{public}s，无法切到 %{public}s（同进程只能一套）',
+        'bridge already bound to %{public}s, cannot switch to %{public}s (one per process)',
         activeHspModule, runtime.hspModule);
       return false;
     }
@@ -171,7 +171,7 @@ export async function startJvm(uiContext: common.UIAbilityContext, argv: string[
   }
   if (!deployed) {
     hilog.error(LOG_DOMAIN, LOG_TAG,
-      'JRE "%{public}s" el1 未就绪：缺 %{public}s/libjli.so ⇒ HSP 模块 "%{public}s" 没安装/没重建（须先装 HSP 再装 HAP）',
+      'JRE "%{public}s" el1 not ready: missing %{public}s/libjli.so => HSP module "%{public}s" not installed/rebuilt (install HSP before HAP)',
       runtime.id, libsDir, runtime.hspModule);
     jvmStarted = false;   // 什么都没起（进程内 JVM 仍未启动）⇒ 允许修完部署后重试
     return false;
@@ -186,10 +186,10 @@ export async function startJvm(uiContext: common.UIAbilityContext, argv: string[
         hasJvm = true;
       }
     }
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'el1(ArkTS 视图) %{public}s: %{public}d 件，libjvm=%{public}s',
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'el1(ArkTS view) %{public}s: %{public}d entries, libjvm=%{public}s',
       libsDir, names.length, hasJvm ? 'yes' : 'no');
   } catch (e) {
-    hilog.warn(LOG_DOMAIN, LOG_TAG, 'el1(ArkTS 视图) 读不到: %{public}s', libsDir);
+    hilog.warn(LOG_DOMAIN, LOG_TAG, 'el1(ArkTS view) unreadable: %{public}s', libsDir);
   }
   try {
     if (!await selectBridge(runtime)) {

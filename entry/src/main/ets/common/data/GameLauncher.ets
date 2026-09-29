@@ -46,14 +46,14 @@ export class LaunchJreStatus {
   installed: boolean;
   /** 有数据但令牌不符（旧数据 → 需升级），区别于完全未解压。 */
   needsUpgrade: boolean;
-  /** 为什么选这套（JavaPolicy 的依据；进日志/可展示）。 */
-  reason: string;
+  /** 为什么选这套（JavaPolicy 的**日志用**稳定英文诊断串；进 hilog）。 */
+  reasonDiag: string;
 
-  constructor(runtime: JavaRuntime, installed: boolean, needsUpgrade: boolean, reason: string) {
+  constructor(runtime: JavaRuntime, installed: boolean, needsUpgrade: boolean, reasonDiag: string) {
     this.runtime = runtime;
     this.installed = installed;
     this.needsUpgrade = needsUpgrade;
-    this.reason = reason;
+    this.reasonDiag = reasonDiag;
   }
 }
 
@@ -70,7 +70,7 @@ export function checkLaunchJre(filesDir: string, gameRoot: string, versionId: st
   jsonPath: string): LaunchJreStatus {
   const choice = resolveLaunchRuntime(gameRoot, versionId, jsonPath);
   const status = runtimeStatus(filesDir, choice.runtime);
-  return new LaunchJreStatus(choice.runtime, status.installed, status.needsUpgrade, choice.reason);
+  return new LaunchJreStatus(choice.runtime, status.installed, status.needsUpgrade, choice.reasonDiag);
 }
 
 /**
@@ -173,7 +173,7 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   // 日志自证（排查"这台实例为什么用了 8 而不是 26"时先看这一行）：
   const jre = checkLaunchJre(ctx.filesDir, gameRoot, versionId, jsonPath);
   hilog.info(LOG_DOMAIN, LOG_TAG, 'JRE for %{public}s: %{public}s (%{public}s)',
-    versionId, jre.runtime.id, jre.reason);
+    versionId, jre.runtime.id, jre.reasonDiag);
   // 【兜底数据门】主进程启动门（`launchInMainProcess`）已按**同一判据**放行过；但数据可能在
   // 放行后被删/改，`launchGame` 也可能被别的入口直接调用 ⇒ 这里再判一次，缺数据绝不硬起
   // （`startJvm` 只自检 el1 的 `libjli.so`，管不到 java.home 的数据）。
