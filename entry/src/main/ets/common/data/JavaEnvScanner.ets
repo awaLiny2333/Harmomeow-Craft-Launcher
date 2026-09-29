@@ -1,7 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { JRES_ROOT } from '../constants/Paths';
 import { JavaRuntime, BUNDLED_RUNTIMES } from './JavaRuntime';
 
 // native 导出（installJre：rawfile <jreId>.tar.gz -> filesDir/meow-jres/<jreId>）
@@ -9,9 +8,6 @@ import native from 'libmeowassets.so';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'JavaEnvScanner';
-
-/** JRE 数据根目录名（= Paths.JRES_ROOT；保留别名以兼容既有引用）。 */
-export const JRES_DIR: string = JRES_ROOT;
 
 /**
  * Java 运行时（JRE）环境条目。

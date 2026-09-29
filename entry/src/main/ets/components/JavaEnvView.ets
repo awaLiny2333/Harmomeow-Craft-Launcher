@@ -1,7 +1,8 @@
 import { common } from '@kit.AbilityKit';
-import { installRuntime, JavaEnvInfo, JRES_DIR } from '../common/data/JavaEnvScanner';
+import { installRuntime, JavaEnvInfo } from '../common/data/JavaEnvScanner';
 import { LauncherState, getLauncherState } from '../common/state/LauncherState';
 import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY } from '../common/constants/Constants';
+import { jreHomeDir } from '../common/constants/Paths';
 
 /**
  * Java 环境区块（与 GameVersionsView 平级，由 Index 挂载）。
@@ -49,7 +50,7 @@ export struct JavaEnvView {
   /** 行副行文本：<版本>  <java.home 完整路径>（版本未装时省略，主行已显 id）。 */
   private rowSubText(env: JavaEnvInfo): string {
     const ver = env.version.length > 0 ? `${env.version}  ` : '';
-    return `${ver}${this.context().filesDir}/${JRES_DIR}/${env.id}`;
+    return `${ver}${jreHomeDir(this.context().filesDir, env.id)}`;
   }
 
   build() {
