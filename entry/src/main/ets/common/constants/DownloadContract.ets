@@ -122,7 +122,51 @@ export function neoforgeOfficialListCandidates(): string[] {
   return [NEOFORGE_VERSION_API];
 }
 
-/** BMCLAPI 前缀替换表（原版 host + Fabric meta/maven；路径对齐 HMCL）。 */
+// ---- Forge（mod loader；**本次只做 MC 1.7–1.12.2 的零 JVM 安装**）----
+// 依据：真 installer 实测（工作区根 stuffs/research/forge-support/evidence/**）+ HMCL 做法对照，见
+// notes 20-design/launch/Forge支持-调研.md §3/§11 与 Forge支持-改动方案.md §13（**按格式事实自研，不搬 HMCL 代码**）。
+//
+// 实测（2026-09-29，14 份真 installer + 官方 `maven-metadata.xml` 的 5054 条目录名）：
+// - installer 的 maven 目录名 = **`<mc 版本>-<Forge 构建号>[-<branch>]`**，branch 由列表项给出
+//   （1.7.10 / 1.8.9 / 1.9 / 1.9.4 非空，1.10.2–1.12.2 为空）⇒ 名字要按两段拼，**只有一种目录布局**。
+// - host 只有一族：`maven.minecraftforge.net` 与旧名 `files.minecraftforge.net/maven` 是同一仓库
+//   （样本里库 `url` 全是前者）⇒ 无需照抄「两种布局」。
+// - BMCLAPI 的 `/forge/download?...` 专用接口**已失效**（两种写法实测均 404）⇒ 镜像走前缀重写后的
+//   `/maven/**`（installer 与 `maven-metadata.xml` 均实测 200）。
+
+/** Forge 官方 Maven 根（installer jar 与 `net.minecraftforge:forge` 制品；带尾斜杠）。 */
+export const FORGE_MAVEN: string = 'https://maven.minecraftforge.net/';
+
+/** Forge 制品 group 路径（Maven 布局）。 */
+export const FORGE_GROUP_PATH: string = 'net/minecraftforge/forge';
+
+/** BMCLAPI：按 MC 版本的 Forge 列表（返回含 `mcversion` / `version` / `branch` / `files` 的数组）。 */
+export function forgeBmclListUrl(mcVersion: string): string {
+  return `${BMCLAPI_ROOT}/forge/minecraft/${mcVersion}`;
+}
+
+/**
+ * Forge 官方 Maven 元数据：`<versions>` 里每一条 `<version>` **就是 installer 的目录名**
+ * （即上面那个 `<mc 版本>-<构建号>[-<branch>]`），故它是「目录名」的权威来源 ⇒ 用作官方兜底源。
+ * ⚠️ 不采用 HMCL 自托管的 `hmcl.glavo.site/metadata/forge/`（HMCL 专有基础设施，见方案文档 §13.4），
+ * 也不用 Forge 的 `promotions_slim.json`：后者只给裸构建号，而 1.7.10/1.8.9/1.9/1.9.4 的真实目录名
+ * 还带 `-branch`（裸名目录下没有 installer）⇒ 会拼出 404 的地址。
+ */
+export const FORGE_MAVEN_METADATA_URL: string = `${FORGE_MAVEN}${FORGE_GROUP_PATH}/maven-metadata.xml`;
+
+/** Forge installer jar 的官方地址（`classifier = <mc 版本>-<loader 版本号>`）。 */
+export function forgeInstallerUrl(mcVersion: string, loaderVersion: string): string {
+  const classifier = `${mcVersion}-${loaderVersion}`;
+  return `${FORGE_MAVEN}${FORGE_GROUP_PATH}/${classifier}/forge-${classifier}-installer.jar`;
+}
+
+/** installer jar 候选地址（按下载源；镜像 = `/maven/**` 前缀重写，与 HMCL 一致）。 */
+export function forgeInstallerCandidates(mcVersion: string, loaderVersion: string,
+  source: string): string[] {
+  return fileCandidates(forgeInstallerUrl(mcVersion, loaderVersion), source);
+}
+
+/** BMCLAPI 前缀替换表（原版 host + Fabric meta/maven + NeoForge/Forge maven；路径对齐 HMCL）。 */
 export const BMCLAPI_REWRITES: UrlRewrite[] = [
   { from: MOJANG_PISTON_META, to: BMCLAPI_ROOT },
   { from: MOJANG_PISTON_DATA, to: BMCLAPI_ROOT },
@@ -132,6 +176,8 @@ export const BMCLAPI_REWRITES: UrlRewrite[] = [
   { from: FABRIC_META_ROOT, to: `${BMCLAPI_ROOT}/fabric-meta` },
   { from: FABRIC_MAVEN, to: `${BMCLAPI_ROOT}/maven/` },
   { from: NEOFORGE_RELEASES, to: `${BMCLAPI_ROOT}/maven/` },
+  // Forge 的库 `url` 与 installer 都指向 Forge maven ⇒ 一并入镜像表（实测镜像有 `/maven/**` 全量）。
+  { from: FORGE_MAVEN, to: `${BMCLAPI_ROOT}/maven/` },
 ];
 
 /**

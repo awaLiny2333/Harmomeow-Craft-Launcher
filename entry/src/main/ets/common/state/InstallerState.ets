@@ -2,17 +2,22 @@ import { common } from '@kit.AbilityKit';
 import { AppStorageV2 } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { RemoteVersion, fetchManifest, installVersion, removeIncompleteInstance,
-  fetchFabricLoaders, installFabricVersion, installNeoForgeVersion,
-  FabricLoaderVersion } from '../data/VersionInstaller';
+  fetchFabricLoaders, installFabricVersion, installNeoForgeVersion, fetchForgeVersions,
+  installForgeVersion, FabricLoaderVersion, ForgeListResult } from '../data/VersionInstaller';
 import { fetchNeoForgeVersions, NeoForgeListResult, NeoForgeRemoteVersion } from '../data/NeoForgeVersionList';
 import { SOURCE_MIRROR, TYPE_OTHER, TYPE_RELEASE,
   TYPE_SNAPSHOT } from '../constants/DownloadContract';
 
-/** 安装的 mod loader 种类（原版 / Fabric / NeoForge）。 */
+/** 安装的 mod loader 种类（原版 / Fabric / NeoForge / Forge）。 */
 export const LOADER_KIND_VANILLA: string = 'vanilla';
 export const LOADER_KIND_FABRIC: string = 'fabric';
 /** NeoForge：**仅 MC 1.20.2+**（见 notes 20-design/launch/NeoForge支持-改动方案.md）。 */
 export const LOADER_KIND_NEO_FORGE: string = 'neoforge';
+/**
+ * Forge：**本次只做 MC 1.7–1.12.2 的零 JVM 安装**（`spec` 形态带 client processor 的 1.13+
+ * 由数据层明确拒绝；见 notes 20-design/launch/Forge支持-改动方案.md §13）。
+ */
+export const LOADER_KIND_FORGE: string = 'forge';
 /** 安装错误码：loader 列表拉取失败 / 未选 loader 版本。 */
 export const INSTALL_ERR_LOADER: number = 4;
 
@@ -99,6 +104,17 @@ export class InstallerState {
    * NeoForge 列表请求序号（非观察态）：与 Fabric 同理，防「切源/换版本/重开面板后旧响应覆盖新状态」。
    */
   private neoLoaderSeq: number = 0;
+
+  /** Forge 构建列表与选中项（**仅 MC 1.7–1.12.2**；列表与 installer 都复用版本源 this.source）。 */
+  @Trace forgeLoaders: string[] = [];
+  @Trace forgeLoader: string = '';
+  @Trace forgeLoadersLoading: boolean = false;
+  @Trace forgeLoadersLoaded: boolean = false;
+  /** 已按哪个游戏版本拉过（换版本 → 需重拉）。 */
+  @Trace forgeLoadersGame: string = '';
+
+  /** Forge 列表请求序号（非观察态）：与 Fabric/NeoForge 同理，防旧响应覆盖新状态。 */
+  private forgeLoaderSeq: number = 0;
 
   /** 过滤后的可见版本列表（Repeat 渲染用；manifest 为原始全量）。 */
   @Trace visible: RemoteVersion[] = [];
@@ -396,6 +412,115 @@ export class InstallerState {
     return ok;
   }
 
+  /** 作废在途的 Forge 列表请求并清空（切源 / 换游戏版本 / 重开面板）。 */
+  resetForgeLoaders(): void {
+    this.forgeLoaderSeq++;
+    this.forgeLoadersLoading = false;
+    this.forgeLoaders = [];
+    this.forgeLoadersLoaded = false;
+    this.forgeLoadersGame = '';
+    this.forgeLoader = '';
+  }
+
+  /**
+   * 拉取某游戏版本的 Forge 构建列表（**仅 1.7–1.12.2**，调用方负责版本门槛）；成功后默认选最新。
+   * 复用「版本源」(this.source)：数据层内部按 BMCLAPI → 官方 maven-metadata 降级（与 NeoForge 同形）。
+   */
+  async refreshForgeLoaders(gameVersion: string): Promise<void> {
+    if (gameVersion.length === 0) {
+      return;
+    }
+    const seq = ++this.forgeLoaderSeq;
+    const source = this.source;
+    this.forgeLoadersLoading = true;
+    this.errorKind = INSTALL_ERR_NONE;
+    this.errorDetail = '';
+    try {
+      const result: ForgeListResult = await fetchForgeVersions(gameVersion, source);
+      if (seq !== this.forgeLoaderSeq) {
+        return;
+      }
+      this.forgeLoaders = result.versions;
+      this.forgeLoadersLoaded = true;
+      this.forgeLoadersGame = gameVersion;
+      this.forgeLoader = result.versions.length > 0 ? result.versions[0] : '';
+      // 空列表 + 有失败摘要 ⇒ 是「拉取失败」而不是「该版本没有」。
+      if (result.versions.length === 0 && result.errors.length > 0) {
+        this.errorKind = INSTALL_ERR_LOADER;
+        this.errorDetail = result.errors;
+      }
+    } catch (error) {
+      if (seq !== this.forgeLoaderSeq) {
+        return;
+      }
+      const err = error as BusinessError;
+      this.errorKind = INSTALL_ERR_LOADER;
+      this.errorDetail = err.message ?? '';
+      this.forgeLoaders = [];
+      this.forgeLoadersLoaded = false;
+      this.forgeLoadersGame = '';
+      this.forgeLoader = '';
+    } finally {
+      if (seq === this.forgeLoaderSeq) {
+        this.forgeLoadersLoading = false;
+      }
+    }
+  }
+
+  /**
+   * 安装 Forge 实例（**零 JVM 面：仅 MC 1.7–1.12.2**；见 `VersionInstaller.installForgeVersion`）。
+   * 资产与 installer 都按 `this.source`（版本源）。全程在 ArkTS 内完成（不起工具 JVM ⇒
+   * **无需** JRE 就绪前置，与 NeoForge/processor 形态不同）；`cacheDir` 只用于 installer 解包。
+   */
+  async installForge(gameRoot: string, remote: RemoteVersion, instanceName: string,
+    cacheDir: string): Promise<boolean> {
+    if (this.installingId.length > 0) {
+      return false;
+    }
+    // 硬门：所选 loader 版本必须与本次要装的游戏版本匹配（列表可能因切源/换版本而陈旧）。
+    if (this.forgeLoader.length === 0 || this.forgeLoadersGame !== remote.id) {
+      this.errorKind = INSTALL_ERR_LOADER;
+      this.errorDetail = '';
+      return false;
+    }
+    this.installingId = remote.id;
+    this.errorKind = INSTALL_ERR_NONE;
+    this.errorDetail = '';
+    this.phase = 0;
+    this.done = 0;
+    this.total = 0;
+    this.current = '';
+    this.fileReceived = 0;
+    this.fileTotal = 0;
+    let ok = true;
+    try {
+      await installForgeVersion(gameRoot, remote, this.forgeLoader, instanceName, this.source, cacheDir,
+        (phase: number) => {
+          this.phase = phase;
+        },
+        (done: number, total: number) => {
+          this.done = done;
+          this.total = total;
+        },
+        (label: string) => {
+          this.current = label;
+        },
+        (received: number, total: number) => {
+          this.fileReceived = received;
+          this.fileTotal = total;
+        });
+    } catch (error) {
+      // 失败收尾：清掉半装残留（缺 <名>.json 才清，绝不碰完整实例）。
+      removeIncompleteInstance(gameRoot, instanceName);
+      const err = error as BusinessError;
+      this.errorKind = INSTALL_ERR_INSTALL;
+      this.errorDetail = err.message ?? '';
+      ok = false;
+    }
+    this.installingId = '';
+    return ok;
+  }
+
   /** 设置下载源（面板用）；清空已加载的清单，等待用户点「获取版本列表」。 */
   setSource(source: string): void {
     if (source === this.source) {
@@ -405,8 +530,9 @@ export class InstallerState {
     this.manifestLoaded = false;
     this.manifest = [];
     this.visible = [];
-    // 与 Fabric 的 setFabricSource 对称：NeoForge 列表复用版本源 ⇒ 切源后必须作废重拉。
+    // 与 Fabric 的 setFabricSource 对称：NeoForge/Forge 列表复用版本源 ⇒ 切源后必须作废重拉。
     this.resetNeoLoaders();
+    this.resetForgeLoaders();
     this.errorKind = INSTALL_ERR_NONE;
     this.errorDetail = '';
   }

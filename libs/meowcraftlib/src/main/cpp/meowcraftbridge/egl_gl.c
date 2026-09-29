@@ -172,6 +172,70 @@ static void gl4es_getmainfbsize(int *width, int *height) {
     }
 }
 
+/* ------------------------------------------------------------------------- */
+/* gl4es per-EGL-context state binding (Forge-splash root fix, 2026-09-29)    */
+/* ------------------------------------------------------------------------- *
+ * gl4es (fork delta tools/gl4es/deltas/glcore/src/gl/meowctx.c) exports
+ * meow_gl4es_bind(EGLContext): it hands each EGL context its own glstate, so two
+ * threads can no longer corrupt a single process-global state. FML 1.7.10's
+ * console splash does exactly that — the splash thread renders on the main
+ * context while the main thread holds the shared context the whole loading phase
+ * (pause()/resume() are never called), so with one global state the two threads
+ * race gl4es's immediate-mode transaction / display-list state => SIGSEGV or an
+ * absurd vertex count => SIGTRAP (see notes/20-design/launch/
+ * Forge-splash-崩溃根因与共享上下文修复.md and notes/00-current/已知限制与待解.md C11).
+ *
+ * The bridge and libgl4es.so are SEPARATE shared objects and gl4es is only
+ * dlopen()ed at runtime, so this is resolved with dlsym (never a link-time
+ * dependency). An older libgl4es.so without the symbol degrades safely: one
+ * stable English log, then no-op for the rest of the process.
+ */
+typedef void *(*meow_gl4es_bind_fn)(void *eglContext);
+typedef void *(*meow_gl4es_unbind_fn)(void);
+typedef void  (*meow_gl4es_forget_fn)(void *eglContext);
+
+static meow_gl4es_bind_fn   g_gl4esBind;
+static meow_gl4es_unbind_fn g_gl4esUnbind;
+static meow_gl4es_forget_fn g_gl4esForget;
+static int g_gl4esHookLogged;   /* one-shot: resolved / missing */
+
+/* Resolve the optional hook out of the dlopen()ed libgl4es.so. Idempotent. */
+static void gl4es_resolve_ctx_hooks(void *lib) {
+    if (lib == NULL || g_gl4esBind != NULL || g_gl4esHookLogged) {
+        return;
+    }
+    g_gl4esBind   = (meow_gl4es_bind_fn)dlsym(lib, "meow_gl4es_bind");
+    g_gl4esUnbind = (meow_gl4es_unbind_fn)dlsym(lib, "meow_gl4es_unbind");
+    g_gl4esForget = (meow_gl4es_forget_fn)dlsym(lib, "meow_gl4es_forget");
+    g_gl4esHookLogged = 1;
+    if (g_gl4esBind == NULL) {
+        MEOWLOGW("gl4es: meow_gl4es_bind not found (old libgl4es.so?); per-context "
+                 "gl4es state disabled - a shared-context splash is still unsafe");
+    } else {
+        MEOWLOGI("gl4es: per-context state hook active (meow_gl4es_bind)");
+    }
+}
+
+/* Tell gl4es which EGL context is current on THIS thread. EGL_NO_CONTEXT means
+ * "released". No-op unless the FPE gl4es path is active: the GL3 core backend
+ * (MEOW_GL3=1) never calls initialize_gl4es() and has no gl4es state. */
+static void gl4es_notify_current(void *eglctx) {
+    if (!g_gl4es || g_gl4esCore) {
+        return;
+    }
+    if (eglctx == NULL || eglctx == (void *)EGL_NO_CONTEXT) {
+        if (g_gl4esUnbind != NULL) {
+            g_gl4esUnbind();
+        } else if (g_gl4esBind != NULL) {
+            g_gl4esBind(NULL); /* bind(NULL) is documented as unbind */
+        }
+        return;
+    }
+    if (g_gl4esBind != NULL) {
+        g_gl4esBind(eglctx);
+    }
+}
+
 /* dlopen gl4es and run initialize_gl4es() (requires a current GLES context). */
 static void gl4es_init_once(void) {
     if (!g_gl4es || g_gl4esInit) {
@@ -214,6 +278,9 @@ static void gl4es_init_once(void) {
         MEOWLOGE("gl4es: dlopen failed: %{public}s", dlerror());
         return;
     }
+    /* Optional per-EGL-context state hook (see the section above); absent in an
+     * older libgl4es.so and then simply inactive. */
+    gl4es_resolve_ctx_hooks(lib);
     void (*setfb)(void (*)(int *, int *)) =
         (void (*)(void (*)(int *, int *)))dlsym(lib, "set_getmainfbsize");
     if (setfb != NULL) {
@@ -588,6 +655,8 @@ static void egl_drop_surface(void) {
     }
     meow_drain_tc();
     eglMakeCurrent(g_egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    /* This thread no longer has a context: let gl4es detach its per-context state. */
+    gl4es_notify_current((void *)EGL_NO_CONTEXT);
     eglDestroySurface(g_egl.display, g_egl.surface);
     g_egl.surface = EGL_NO_SURFACE;
     g_egl.surfaceWindow = NULL;
@@ -674,6 +743,9 @@ static int egl_bind(void) {
     eglSwapInterval(g_egl.display, 0);
     /* gl4es must be initialized only after its GLES context is current. */
     gl4es_init_once();
+    /* Give gl4es the now-current context's own state (root fix; see the section
+     * above). Must run AFTER gl4es_init_once(), which resolves the hook. */
+    gl4es_notify_current((void *)g_egl.context);
     /* 一次性 GL 能力探针（诊断；env 门控）。 */
     meow_gl_info_once();
     return 1;
@@ -758,8 +830,9 @@ int meowInit(void) {
 
 void meowTerminate(void) {
     MEOWLOGI("meowTerminate");
-    /* Tear the shared contexts down before the display goes away (the primary slot is
-     * skipped by meowDestroySharedContext and cleared here). */
+    /* Tear the shared contexts down before the display goes away. meowDestroySharedContext
+     * skips the primary slot (an app-level ContextGL.destroy() must never tear this down);
+     * the primary EGL context itself is destroyed below, at process exit. */
     for (int i = 0; i < MEOW_MAX_CTX; ++i) {
         if (g_ctxSlots[i].handle != NULL) {
             meowDestroySharedContext(&g_ctxSlots[i]);
@@ -770,6 +843,15 @@ void meowTerminate(void) {
     if (g_egl.display != EGL_NO_DISPLAY) {
         egl_drop_surface();
         if (g_egl.context != EGL_NO_CONTEXT) {
+            /* The primary EGL context IS destroyed here (unlike the app-level ContextGL.destroy(),
+             * which meowDestroySharedContext ignores for the primary). Drop its gl4es state
+             * registry entry first, exactly as meowDestroySharedContext does for secondaries, so
+             * the registry never outlives the EGLContext it keys on (that address may be reused
+             * by a later context). The state object itself is still never freed -- see
+             * meow_gl4es_forget(). */
+            if (g_gl4esForget != NULL) {
+                g_gl4esForget((void *)g_egl.context);
+            }
             eglDestroyContext(g_egl.display, g_egl.context);
             g_egl.context = EGL_NO_CONTEXT;
         }
@@ -818,6 +900,8 @@ int meowMakeCurrentFor(void *window, void *handle) {
         if (g_egl.display != EGL_NO_DISPLAY) {
             eglMakeCurrent(g_egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         }
+        /* Released on this thread => gl4es detaches its per-context state here. */
+        gl4es_notify_current((void *)EGL_NO_CONTEXT);
         return 1;
     }
 
@@ -855,6 +939,10 @@ int meowMakeCurrentFor(void *window, void *handle) {
     /* gl4es must be initialised before any GL entry point runs on this thread: a shared
      * context can legitimately bind before the render thread ever made one current. */
     gl4es_init_once();
+    /* Bind the SHARED context's own glstate on this thread (root fix). It is a child of
+     * the first-bound context's state, so the object tables stay shared, but this thread's
+     * matrix/enable/transaction state is now isolated from the other context's thread. */
+    gl4es_notify_current((void *)slot->context);
     t_currentSlot = slot;
     return 1;
 }
@@ -869,32 +957,56 @@ void meowMakeCurrent(void *window) {
  * contract (DrawableGL.createSharedContext() -> new ContextGL(peer_info, attribs, ctx)),
  * i.e. plain GLX behaviour that desktop MC relies on for FML's console splash.
  *
- * ★2026-09-29 政策：**默认拒绝共享上下文**（详见 meow_allow_shared_ctx() 的注释）。
+ * ★2026-09-29 政策（本轮翻转）：**默认允许共享上下文**。此前默认拒绝，是因为共享上下文一旦
+ * 真建起来，splash 线程与主线程会**并发驱动 gl4es 的同一个进程级 `glstate`** ⇒ 数据竞争 ⇒
+ * 实机 SIGSEGV/SIGTRAP（`<HM_GPU> # Over the threasHold … vertexSum: 22364413`）。该竞争已由
+ * **每 EGL 上下文隔离 glstate** 修掉：gl4es delta `tools/gl4es/deltas/glcore/src/gl/meowctx.c`
+ * 把 `glstate` 变 `__thread` 并导出 `meow_gl4es_bind`，本文件每次成功 `eglMakeCurrent` 后按上下文
+ * 绑定。实机（2026-09-29 23:26）FML splash **打开**时跑至干净退出：日志有 `[meow-ctx] … (root)` +
+ * `… (shared child of root)`、`gl4es: per-context state hook active`，零 `rethrow signo(11)`。
+ * ⇒ 默认回到"允许"，把 env 改造成**显式退出开关**（语义见 meow_allow_shared_ctx()）。
+ *
+ * 另一条**硬门**见 meowCreateSharedContext()：FPE 渲染下若 per-context hook 不可用（旧
+ * `libgl4es.so`，dlsym 失败）⇒ **无条件拒绝**，因为那时"允许" = 重新引入上面那条竞争。
  *
  * `share == NULL` registers the primary slot and creates nothing eagerly: the primary EGL
  * context stays lazy (first make-current). Returns the handle to pass back to
  * meowMakeCurrentFor()/meowDestroySharedContext(), or NULL on failure.
  */
+/* env 真值解析：`0` 或 `false`（ASCII 大小写不敏感）= 假；其余（含空）= 真。 */
+static int meow_env_is_false(const char *v) {
+    if (v == NULL || v[0] == '\0') {
+        return 0;
+    }
+    if (v[0] == '0' && v[1] == '\0') {
+        return 1;
+    }
+    const char *f = "false";
+    int i = 0;
+    for (; f[i] != '\0'; ++i) {
+        char c = v[i];
+        if (c >= 'A' && c <= 'Z') {
+            c = (char)(c - 'A' + 'a');
+        }
+        if (c != f[i]) {
+            return 0;
+        }
+    }
+    return v[i] == '\0';
+}
+
 static int meow_allow_shared_ctx(void) {
     /*
-     * 实测（同一台 MateBook Fold；1.7.10 与 1.12.2 两套 Forge 实例、FML splash 打开）：
-     *  - 共享上下文**确实能建起来**（本文件下面就会打 `shared ctx created: …`，且
-     *    `eglMakeCurrent failed`/`make-current failed` 都归零）⇒ splash **真的开始跑 GL**；
-     *  - 但随即在加载期崩（无 Java crash report）：日志尾部为
-     *    `<HM_GPU> # Over the threasHold and potential OOM, drawCnt: 21, vertexSum: 22364413`
-     *    → `DFX_SignalHandler :: signo(5)`(SIGTRAP) / 另一次是 `signo(11)`(SIGSEGV)。
-     *  - 推断：splash 线程与主线程**并发驱动 gl4es 的全局状态**（gl4es 的前提是"同一时刻只有一个
-     *    GL 使用者"）⇒ 状态被搅坏 ⇒ 出现异常巨大的 draw ⇒ 撞驱动阈值被 trap。
-     *  - 反过来：这里**干净地返回 NULL** ⇒ shim 抛 LWJGLException ⇒ FML 捕获后**自己**把
-     *    `config/splash.properties` 写成 `enabled=false` 并关掉 splash ⇒ 游戏正常。
-     *    （这正是此前"1.7.10 能玩"的真正原因，见 notes 00-current/已知限制与待解.md C11 更正 5。）
-     * ⇒ 默认拒绝；将来驱动/并发问题解决后，用 MEOW_ALLOW_SHARED_CTX=1 重新打开。
-     * 本策略满足"**适配只在我们这一侧**"：零游戏目录写入、可逆、有明确日志。
+     * 默认**允许**（见上面的政策块；共享上下文现已安全，2026-09-29 实机验证）。语义 = 显式退出开关：
+     *   - 未设 / 空      ⇒ 允许（新默认）
+     *   - `1` 或其它真值 ⇒ 允许（`=1` 继续表示"允许"，与用户既有设置兼容）
+     *   - `0` / `false`  ⇒ 拒绝（用户知情关闭；FML 1.7.10 会把拒绝变成致命异常，故只作诊断/规避）
+     * 本决策**只**看 env；per-context hook 的可用性是另一道硬门（meowCreateSharedContext）。
      */
     static int allow = -1;
     if (allow < 0) {
         const char *e = getenv("MEOW_ALLOW_SHARED_CTX");
-        allow = (e != NULL && e[0] != '\0' && !(e[0] == '0' && e[1] == '\0')) ? 1 : 0;
+        allow = meow_env_is_false(e) ? 0 : 1;
     }
     return allow;
 }
@@ -921,15 +1033,33 @@ void *meowCreateSharedContext(void *share) {
     }
 
     if (!meow_allow_shared_ctx()) {
-        /* 默认策略：干净拒绝（返回 NULL）⇒ shim 抛 LWJGLException ⇒ FML 自禁 splash ⇒ 游戏可玩。
-         * 理由与实测证据见 meow_allow_shared_ctx() 的注释。 */
-        MEOWLOGW("shared ctx: refused by policy (set MEOW_ALLOW_SHARED_CTX=1 to re-enable); "
-                 "the FML splash will disable itself and the game continues");
+        /* 用户显式退出（MEOW_ALLOW_SHARED_CTX=0/false）。返回 NULL ⇒ shim 抛 LWJGLException。
+         * ★对 FML 1.7.10 这**不是**"自禁 splash 后游戏继续"：SplashProgress.start() 捕获该
+         * LWJGLException 后直接 `throw new RuntimeException(e)`（SplashProgress.java:199），
+         * 该类**不含** disableSplash 调用（disableSplash() 只从 finish() 引用、崩溃后永不执行）
+         * ⇒ 新装实例每次启动都崩。真因/证据见 notes 00-current/已知限制与待解.md C11。 */
+        MEOWLOGW("shared ctx: refused (MEOW_ALLOW_SHARED_CTX=0/false); FML 1.7.10 turns this "
+                 "into a fatal RuntimeException at SplashProgress.java:199");
         return NULL;
     }
 
     if (!egl_ensure_context()) {
         MEOWLOGE("shared ctx: no primary context to share with");
+        return NULL;
+    }
+
+    /*
+     * 硬门（2026-09-29）：共享上下文**只在** gl4es 的 per-context state hook 可用时才安全。
+     * FPE 渲染下两个上下文各跑一个线程：hook 不可用（旧 `libgl4es.so`，dlsym 失败 ⇒ 只剩一个
+     * 进程级 `glstate`）时允许共享 = 重新引入 2026-09-29 修掉的 SIGSEGV/SIGTRAP。此门与 env 策略
+     * **正交**：env 允许也不够，hook 缺了就无条件拒绝。core 后端（MEOW_GL3）不用 gl4es state
+     * （`gl4es_notify_current` 直接返回），不受此限；非 gl4es（桌面 GL）也没有可竞争的 gl4es 状态。
+     * 该拒绝**必须显眼**：它会让 shim 抛 LWJGLException ⇒ FML 1.7.10 变成致命 RuntimeException
+     * （SplashProgress.java:199）⇒ 解释"为什么接下来会 FML fatal"。
+     */
+    if (g_gl4es && !g_gl4esCore && g_gl4esBind == NULL) {
+        MEOWLOGW("shared ctx refused: per-context gl4es state hook unavailable "
+                 "(old libgl4es.so?) - FML 1.7.10 will fail at SplashProgress.java:199");
         return NULL;
     }
     MeowCtxSlot *parent = meow_slot_find(share);
@@ -967,8 +1097,9 @@ void *meowCreateSharedContext(void *share) {
     return slot;
 }
 
-/* Destroy a secondary context (own surface + context). The primary slot is process-wide
- * and survives — LWJGL's ContextGL.destroy() must not tear the bridge's state down. */
+/* Destroy a secondary context (own surface + context). The primary slot is skipped: an
+ * app-level LWJGL ContextGL.destroy() must not tear the bridge's primary state down. The
+ * primary IS destroyed at process exit, by meowTerminate() (which also forgets its state). */
 void meowDestroySharedContext(void *handle) {
     MeowCtxSlot *slot = meow_slot_find(handle);
     if (slot == NULL || slot->primary) {
@@ -978,7 +1109,14 @@ void meowDestroySharedContext(void *handle) {
         if (g_egl.display != EGL_NO_DISPLAY) {
             eglMakeCurrent(g_egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         }
+        /* Released on this thread => gl4es detaches this thread's per-context state. */
+        gl4es_notify_current((void *)EGL_NO_CONTEXT);
         t_currentSlot = NULL;
+    }
+    /* Drop the gl4es state registry entry for this EGLContext BEFORE it is destroyed, so a
+     * later context that reuses the same address cannot inherit this one's stale state. */
+    if (slot->context != EGL_NO_CONTEXT && g_gl4esForget != NULL) {
+        g_gl4esForget((void *)slot->context);
     }
     if (slot->surface != EGL_NO_SURFACE) {
         eglDestroySurface(g_egl.display, slot->surface);

@@ -173,7 +173,7 @@ Sys native 在 `DefaultSysImplementation`（`LinuxSysImplementation extends J2SE
     hs_err；**绝不要加 `-XX:-UseSignalChaining`**（OHOS 预装 SIGSEGV handler → JVM 启动即死）。`-Xlog:library=debug`
     可核对符号绑定。
 
-17. **Forge legacy 的 FML splash 要"共享对象的第二个 GL 上下文"**（2026-09-29；根因已定位、修复已实现、**真机验证**〔1.12.2 日志出现 `shared ctx created: share=0x… -> ctx=0x… slot=0x…`、`eglMakeCurrent failed` 与 `make-current failed` 双双归零〕；但**让共享上下文真的建起来后 splash 反而崩**〔splash 线程与主线程并发驱动 gl4es 全局状态 ⇒ 厂商驱动 trap/SIGSEGV〕⇒ **现按默认拒绝**：`meow_allow_shared_ctx()` 返回 0，env `MEOW_ALLOW_SHARED_CTX=1` 可重新打开）：
+17. **Forge legacy 的 FML splash 要"共享对象的第二个 GL 上下文"**（2026-09-29；根因已定位、修复已实现、**真机验证**〔1.12.2 日志出现 `shared ctx created: share=0x… -> ctx=0x… slot=0x…`、`eglMakeCurrent failed` 与 `make-current failed` 双双归零〕；早期"让共享上下文真的建起来后 splash 反而崩"〔splash 线程与主线程并发驱动 gl4es 的进程级全局 `glstate` ⇒ 厂商驱动 trap/SIGSEGV〕**已由 gl4es「每 EGL 上下文隔离 glstate」修掉**〔2026-09-29 23:26 实机：FML splash 打开跑至干净退出；见 `notes/00-current/已知限制与待解.md` C11 更正 7〕⇒ **共享上下文现默认允许**：`meow_allow_shared_ctx()` 返回 1（未设/空/`1`），env `MEOW_ALLOW_SHARED_CTX=0/false` 可**显式拒绝**；另有**硬门** —— 旧 `libgl4es.so` 缺 per-context hook 时 `meowCreateSharedContext` **无条件拒绝**）：
     `SharedDrawable` → `DrawableGL.createSharedContext()` → `new ContextGL(peer_info, attribs, context)`，
     即 LWJGL2 要求**第二个上下文**且与第一个**共享对象**（桌面 GLX 天生支持，FML splash 靠它在自己线程上渲染）。
     改前 `nCreate` 把 `shared_context_handle` 丢掉、`nMakeCurrent` 把 `context_handle` 丢掉，而桥只有唯一 EGL 上下文

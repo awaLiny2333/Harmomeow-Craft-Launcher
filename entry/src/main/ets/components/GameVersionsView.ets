@@ -34,7 +34,7 @@ import {
   launchInMainProcess, LAUNCH_OK, LAUNCH_ERR_NO_ACCOUNT, LAUNCH_ERR_MS_EXPIRED,
   LAUNCH_ERR_JRE_NOT_READY
 } from '../common/data/VersionLaunch';
-import { getInstallerState, InstallerState, INSTALL_ERR_INSTALL, INSTALL_ERR_LOADER, INSTALL_ERR_MANIFEST, INSTALL_ERR_NO_WRITE, INSTALL_ERR_NONE, LOADER_KIND_FABRIC, LOADER_KIND_NEO_FORGE, LOADER_KIND_VANILLA } from '../common/state/InstallerState';
+import { getInstallerState, InstallerState, INSTALL_ERR_INSTALL, INSTALL_ERR_LOADER, INSTALL_ERR_MANIFEST, INSTALL_ERR_NO_WRITE, INSTALL_ERR_NONE, LOADER_KIND_FABRIC, LOADER_KIND_FORGE, LOADER_KIND_NEO_FORGE, LOADER_KIND_VANILLA } from '../common/state/InstallerState';
 import { msAuthErrorText } from './MsAuthErrorText';
 import { promptJreNotReady, JRE_ACTION_INSTALL } from './LaunchJrePrompt';
 import { getLauncherState, LauncherState } from '../common/state/LauncherState';
@@ -46,6 +46,14 @@ const LOG_TAG = 'GameVersionsView';
 
 /** NeoForge 支持的 MC 版本下界（本工程只做 1.20.2+；见 notes 20-design/launch/NeoForge支持-改动方案.md）。 */
 const NEO_FORGE_MIN_MC: string = '1.20.2';
+
+/**
+ * Forge 支持的 MC 版本段（**本次只做零 JVM 安装 = 1.7–1.12.2**；见
+ * notes 20-design/launch/Forge支持-改动方案.md §13）。1.13+ 的 installer 带 client processor（需外部
+ * JVM）⇒ 数据层在写出清单前**明确拒绝**，这里先按版本把入口关掉，不给用户走到那一步。
+ */
+const FORGE_MIN_MC: string = '1.7';
+const FORGE_MAX_MC: string = '1.12.2';
 
 /** 实例名校验结果（UI 据此显示提示 / 是否允许「确认安装」）。 */
 const NAME_OK: number = 0;
@@ -691,14 +699,15 @@ export struct GameVersionsView {
     this.installer.setVersionType(t);
   }
 
-  // ---- mod loader 选择（原版 / Fabric / NeoForge）----
+  // ---- mod loader 选择（原版 / Fabric / NeoForge / Forge）----
 
-  /** 加载器 Select 选项（原版 / Fabric / NeoForge）。 */
+  /** 加载器 Select 选项（原版 / Fabric / NeoForge / Forge）。 */
   private loaderOptions(): SelectOption[] {
     return [
       { value: $r('app.string.version_type_vanilla') },
       { value: $r('app.string.version_type_fabric') },
       { value: $r('app.string.version_type_neoforge') },
+      { value: $r('app.string.version_type_forge') },
     ];
   }
 
@@ -706,15 +715,21 @@ export struct GameVersionsView {
     if (this.installer.loaderKind === LOADER_KIND_FABRIC) {
       return 1;
     }
-    return this.installer.loaderKind === LOADER_KIND_NEO_FORGE ? 2 : 0;
+    if (this.installer.loaderKind === LOADER_KIND_NEO_FORGE) {
+      return 2;
+    }
+    return this.installer.loaderKind === LOADER_KIND_FORGE ? 3 : 0;
   }
 
   private loaderValue(): Resource {
     if (this.installer.loaderKind === LOADER_KIND_FABRIC) {
       return $r('app.string.version_type_fabric');
     }
-    return this.installer.loaderKind === LOADER_KIND_NEO_FORGE
-      ? $r('app.string.version_type_neoforge')
+    if (this.installer.loaderKind === LOADER_KIND_NEO_FORGE) {
+      return $r('app.string.version_type_neoforge');
+    }
+    return this.installer.loaderKind === LOADER_KIND_FORGE
+      ? $r('app.string.version_type_forge')
       : $r('app.string.version_type_vanilla');
   }
 
@@ -723,10 +738,16 @@ export struct GameVersionsView {
     return compareVersionIds(this.installTargetId, NEO_FORGE_MIN_MC) >= 0;
   }
 
+  /** Forge 的版本门槛：本次只支持 1.7–1.12.2（1.13+ 的安装需外部 JVM，数据层会明确拒绝）。 */
+  private forgeSupported(): boolean {
+    return compareVersionIds(this.installTargetId, FORGE_MIN_MC) >= 0
+      && compareVersionIds(this.installTargetId, FORGE_MAX_MC) <= 0;
+  }
+
   /** 切换 mod loader 种类；切到某 loader 时拉取该游戏版本的列表（未拉过才拉）。 */
   private setLoaderKind(index: number): void {
     const kind = index === 1 ? LOADER_KIND_FABRIC
-      : (index === 2 ? LOADER_KIND_NEO_FORGE : LOADER_KIND_VANILLA);
+      : (index === 2 ? LOADER_KIND_NEO_FORGE : (index === 3 ? LOADER_KIND_FORGE : LOADER_KIND_VANILLA));
     this.installer.loaderKind = kind;
     if (kind === LOADER_KIND_FABRIC && this.installer.fabricLoadersGame !== this.installTargetId) {
       this.installer.refreshFabricLoaders(this.installTargetId);
@@ -734,6 +755,10 @@ export struct GameVersionsView {
     if (kind === LOADER_KIND_NEO_FORGE && this.neoForgeSupported()
       && this.installer.neoLoadersGame !== this.installTargetId) {
       this.installer.refreshNeoLoaders(this.installTargetId);
+    }
+    if (kind === LOADER_KIND_FORGE && this.forgeSupported()
+      && this.installer.forgeLoadersGame !== this.installTargetId) {
+      this.installer.refreshForgeLoaders(this.installTargetId);
     }
   }
 
@@ -764,12 +789,16 @@ export struct GameVersionsView {
       : $r('app.string.source_mirror');
   }
 
-  /** 该 loader 的版本号数组（Fabric = loader 版本；NeoForge = loader 版本）。 */
+  /** 该 loader 的版本号数组（Fabric = loader 版本；NeoForge = loader 版本；Forge = Forge 构建号）。 */
   private loaderVersionIds(): string[] {
     const out: string[] = [];
     if (this.installer.loaderKind === LOADER_KIND_NEO_FORGE) {
       for (const l of this.installer.neoLoaders) {
         out.push(l.loaderVersion);
+      }
+    } else if (this.installer.loaderKind === LOADER_KIND_FORGE) {
+      for (const v of this.installer.forgeLoaders) {
+        out.push(v);
       }
     } else {
       for (const l of this.installer.fabricLoaders) {
@@ -781,8 +810,11 @@ export struct GameVersionsView {
 
   /** 当前选中的 loader 版本号（空串 = 未选）。 */
   private selectedLoaderVersion(): string {
-    return this.installer.loaderKind === LOADER_KIND_NEO_FORGE
-      ? this.installer.neoLoader
+    if (this.installer.loaderKind === LOADER_KIND_NEO_FORGE) {
+      return this.installer.neoLoader;
+    }
+    return this.installer.loaderKind === LOADER_KIND_FORGE
+      ? this.installer.forgeLoader
       : this.installer.fabricLoader;
   }
 
@@ -814,12 +846,14 @@ export struct GameVersionsView {
     }
     if (this.installer.loaderKind === LOADER_KIND_NEO_FORGE) {
       this.installer.neoLoader = list[index];
+    } else if (this.installer.loaderKind === LOADER_KIND_FORGE) {
+      this.installer.forgeLoader = list[index];
     } else {
       this.installer.fabricLoader = list[index];
     }
   }
 
-  /** 「确认安装」是否可点：空闲 + 未运行 + 名合法 + （Fabric 时）已选 loader 版本。 */
+  /** 「确认安装」是否可点：空闲 + 未运行 + 名合法 + （Fabric/NeoForge/Forge 时）已选 loader 版本。 */
   private canConfirmInstall(): boolean {
     if (this.installer.installingId.length > 0 || this.state.gameRunning) {
       return false;
@@ -830,6 +864,10 @@ export struct GameVersionsView {
     if (this.installer.loaderKind === LOADER_KIND_NEO_FORGE) {
       // 门槛 + 已选 loader 版本（NeoForge 的安装执行 = processor 链，见 VersionInstaller）。
       return this.neoForgeSupported() && this.installer.neoLoader.length > 0;
+    }
+    if (this.installer.loaderKind === LOADER_KIND_FORGE) {
+      // 门槛 + 已选构建号（Forge 的安装执行 = 零 JVM 纯 ArkTS，见 VersionInstaller.installForgeVersion）。
+      return this.forgeSupported() && this.installer.forgeLoader.length > 0;
     }
     if (this.installer.loaderKind === LOADER_KIND_FABRIC && this.installer.fabricLoader.length === 0) {
       return false;
@@ -859,10 +897,11 @@ export struct GameVersionsView {
     this.installTargetId = remote.id;
     this.installName = remote.id;
     // 每次打开重置为原版；Fabric 源持久化，loader 列表按需重拉。
-    // resetFabricLoaders 同时作废在途请求，避免上一个版本的在途响应污染本面板。
+    // reset*Loaders 同时作废在途请求，避免上一个版本的在途响应污染本面板。
     this.installer.loaderKind = LOADER_KIND_VANILLA;
     this.installer.resetFabricLoaders();
     this.installer.resetNeoLoaders();
+    this.installer.resetForgeLoaders();
     this.installer.errorKind = INSTALL_ERR_NONE;
     this.installer.errorDetail = '';
   }
@@ -916,6 +955,8 @@ export struct GameVersionsView {
     this.closeInstallPanel();
     if (kind === LOADER_KIND_NEO_FORGE) {
       await this.installNeoForgeRemote(remote, name, toolRuntimeId);
+    } else if (kind === LOADER_KIND_FORGE) {
+      await this.installForgeRemote(remote, name);
     } else if (kind === LOADER_KIND_FABRIC) {
       await this.installFabricRemote(remote, name);
     } else {
@@ -1001,6 +1042,35 @@ export struct GameVersionsView {
     }
     const ok = await this.installer.installNeoForge(this.context(), root, this.state.selected, remote,
       instanceName, jreId);
+    if (ok) {
+      // 与 HMCL 一致：新装实例默认开启版本隔离。
+      const s = InstanceSettings.defaults();
+      s.isolation = true;
+      if (!writeInstanceSettings(root, instanceName, s)) {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'write default isolation failed for %{public}s', instanceName);
+      }
+    }
+    this.state.refreshVersions();
+  }
+
+  /**
+   * 安装 Forge 实例（**零 JVM 面：仅 MC 1.7–1.12.2**；installer jar 只作数据容器）。
+   * 全程在 ArkTS 内完成（不起工具 JVM）⇒ **无需** JRE 就绪前置；安装前校验写权限，
+   * 成功后默认开启隔离并刷新列表（与其它 loader 同）。
+   */
+  async installForgeRemote(remote: RemoteVersion, instanceName: string): Promise<void> {
+    const root = resolveGameRoot(this.state.selected);
+    if (root.length === 0) {
+      this.installer.errorKind = INSTALL_ERR_INSTALL;
+      this.installer.errorDetail = '';
+      return;
+    }
+    if (!canWriteDirectory(root)) {
+      this.installer.errorKind = INSTALL_ERR_NO_WRITE;
+      this.installer.errorDetail = '';
+      return;
+    }
+    const ok = await this.installer.installForge(root, remote, instanceName, this.context().cacheDir);
     if (ok) {
       // 与 HMCL 一致：新装实例默认开启版本隔离。
       const s = InstanceSettings.defaults();
@@ -1358,7 +1428,7 @@ export struct GameVersionsView {
                       this.installName = v;
                     })
                     .onSubmit(() => this.confirmInstall());
-                  // mod loader 选择（原版 / Fabric）
+                  // mod loader 选择（原版 / Fabric / NeoForge / Forge）
                   Select(this.loaderOptions())
                     .width('auto')
                     .selected(this.loaderIndex())
@@ -1468,6 +1538,55 @@ export struct GameVersionsView {
                         .onClick(() => this.installer.refreshNeoLoaders(this.installTargetId));
                     } else if (this.installer.neoLoaders.length === 0) {
                       Text($r('app.string.loader_neoforge_empty'))
+                        .opacity(OPACITY_SECONDARY)
+                        .width('100%');
+                    } else {
+                      Row({ space: LAYOUT_SPACE }) {
+                        Column({ space: LAYOUT_SPACE_SMALL }) {
+                          Text($r('app.string.loader_version_label'));
+                          Text($r('app.string.loader_version_hint'))
+                            .opacity(OPACITY_SECONDARY);
+                        }
+                        .layoutWeight(1)
+                        .alignItems(HorizontalAlign.Start);
+                        Select(this.loaderVersionOptions())
+                          .width('auto')
+                          .selected(this.loaderVersionIndex())
+                          .value(this.selectedLoaderVersion())
+                          .onSelect((index: number) => {
+                            this.selectLoaderVersionByIndex(index);
+                          })
+                          .selectedOptionBgColor($r('app.color.brand_bg'))
+                          .selectedOptionFontColor($r('app.color.brand'))
+                          .enabled(this.installer.installingId.length === 0);
+                      }
+                      .width('100%')
+                      .alignItems(VerticalAlign.Center);
+                    }
+                  }
+                }
+                // Forge：版本门槛（**仅 1.7–1.12.2**，零 JVM 安装）+ 构建号下拉
+                if (this.installer.loaderKind === LOADER_KIND_FORGE) {
+                  if (!this.forgeSupported()) {
+                    Text($r('app.string.loader_forge_unsupported'))
+                      .opacity(OPACITY_SECONDARY)
+                      .width('100%');
+                  } else {
+                    if (this.installer.forgeLoadersLoading) {
+                      Text($r('app.string.common_list_loading'))
+                        .opacity(OPACITY_SECONDARY)
+                        .width('100%');
+                    } else if (this.installer.errorKind === INSTALL_ERR_LOADER) {
+                      Text($r('app.string.common_list_error'))
+                        .opacity(OPACITY_SECONDARY)
+                        .width('100%');
+                      Button($r('app.string.common_retry'))
+                        .onClick(() => this.installer.refreshForgeLoaders(this.installTargetId));
+                    } else if (!this.installer.forgeLoadersLoaded) {
+                      Button($r('app.string.common_list_fetch'))
+                        .onClick(() => this.installer.refreshForgeLoaders(this.installTargetId));
+                    } else if (this.installer.forgeLoaders.length === 0) {
+                      Text($r('app.string.loader_forge_empty'))
                         .opacity(OPACITY_SECONDARY)
                         .width('100%');
                     } else {

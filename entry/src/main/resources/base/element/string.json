@@ -809,6 +809,14 @@
       "value": "该版本没有可用的 NeoForge"
     },
     {
+      "name": "loader_forge_unsupported",
+      "value": "Forge 安装仅支持 MC 1.7–1.12.2（1.13 及以上需要 JVM）"
+    },
+    {
+      "name": "loader_forge_empty",
+      "value": "该版本没有可用的 Forge"
+    },
+    {
       "name": "touch_btn_attack",
       "value": "攻击"
     },

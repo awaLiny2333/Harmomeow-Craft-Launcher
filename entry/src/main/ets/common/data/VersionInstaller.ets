@@ -4,9 +4,11 @@ import { zlib } from '@kit.BasicServicesKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DEFAULT_LIBRARY_URL, DOWNLOAD_CONCURRENCY, ENV_OS_ARCH, ENV_OS_BITS, ENV_OS_NAME,
-  FABRIC_MAVEN, HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_NOT_FOUND, LEGACY_INDEX_URL_PREFIX,
-  MOJANG_RESOURCES, NEOFORGE_RELEASES, fabricLaunchMetaCandidates, fabricLoaderListCandidates,
-  fileCandidates, manifestCandidates, neoforgeInstallerCandidates } from '../constants/DownloadContract';
+  FABRIC_MAVEN, FORGE_MAVEN_METADATA_URL, HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_NOT_FOUND,
+  LEGACY_INDEX_URL_PREFIX, MOJANG_RESOURCES, NEOFORGE_RELEASES, SOURCE_OFFICIAL,
+  fabricLaunchMetaCandidates, fabricLoaderListCandidates, fileCandidates, forgeBmclListUrl,
+  forgeInstallerCandidates, manifestCandidates,
+  neoforgeInstallerCandidates } from '../constants/DownloadContract';
 import { ASSET_HASH_PREFIX_LENGTH, assetObjectPath, assetsIndexesDir, librariesDir, NEO_JVM_RESULT,
   versionDir, versionJarPath, versionJsonPath } from '../constants/Paths';
 import { NEO_INSTALL_ABILITY, NEO_INSTALL_PROCESS_SUFFIX } from '../constants/LaunchContract';
@@ -14,6 +16,7 @@ import { buildNeoForgeProcessorPlans, libraryNames, NeoForgeExpandContext, NeoFo
   NeoForgeLaunchJson, NeoForgeMergeModuleEntry, NeoForgeProcessorJob, NeoForgeProcessorPlan,
   NeoForgeProcessorSet, resolveMergeModuleEntries, stringArgs } from './NeoForgeInstaller';
 import { removeTreeBestEffort } from './VersionTools';
+import { compareVersionIds } from './VersionScanner';
 import { downloadFile, fetchText } from './Downloader';
 
 const LOG_DOMAIN = 0x0001;
@@ -1334,4 +1337,524 @@ async function waitProcessorExit(resultPath: string, timeoutMs: number, label: s
     }
   }
   throw new Error(`processor timeout (${label}) after ${timeoutMs} ms`);
+}
+
+// ---- Forge（**零 JVM 面 = MC 1.7–1.12.2**）----
+// 依据：真 installer 实测（工作区根 stuffs/research/forge-support/evidence/**）+ HMCL 做法对照，见
+// notes `20-design/launch/Forge支持-调研.md` §11 与 `Forge支持-改动方案.md` §13（**按 installer 格式事实自研，不搬 HMCL 代码**）。
+//
+// 判别事实：**"安装要不要 JVM" 只看 client 侧 processor 数**，不是 `spec` 有无 ——
+//   · 老形态（`install` + `versionInfo`，无 `spec`；≤1.8.9）：把 installer 内嵌的 universal jar 解到库路径；
+//   · `spec` 形态且 0 个 client processor（1.12.2）：installer 内 `maven/**` 命中项 + 主制品纯拷贝；
+//   · `spec` 形态且有 client processor（1.13+）：**明确拒绝**（需外部 JVM，本轮范围外）。
+// 盘上格式与 Fabric/NeoForge 同款：顶层扁平 + `patches[game,forge]`。
+
+/** Forge `install_profile.json` 的 `install` 段（老形态；只列用到的字段）。 */
+interface ForgeInstallSectionJson {
+  /** 主制品坐标（`net.minecraftforge:forge:<mcver>-<forge 版本号>`）。 */
+  path?: string;
+  /** installer 内嵌 universal jar 的条目名（如 `forge-1.7.10-10.13.4.1614-1.7.10-universal.jar`）。 */
+  filePath?: string;
+  /** 该 installer 期望的 MC 版本。 */
+  minecraft?: string;
+}
+
+/** Forge `install_profile.json`（两形态共形；只列判型与落库用到的字段）。 */
+interface ForgeInstallProfileJson {
+  /** 有 `spec` ⇒ 新形态；无 ⇒ 老形态（`install` + `versionInfo`）。 */
+  spec?: number;
+  install?: ForgeInstallSectionJson;
+  /** 老形态的内嵌启动清单（与版本 json 同形）。 */
+  versionInfo?: VersionJson;
+  /** 新形态内嵌启动清单的相对路径（如 `/version.json`）。 */
+  json?: string;
+  /** 新形态主制品坐标。 */
+  path?: string;
+  /** 新形态的 processor 列表（空 = 纯拷贝；非空 = 需要 JVM）。 */
+  processors?: ForgeProcessorJson[];
+  /** 库表（新形态的 processor 依赖与主制品；老形态没有这一项）。 */
+  libraries?: LibraryJson[];
+}
+
+/** 一条 processor（只判"有没有 client 侧任务"，故只取 `sides`）。 */
+interface ForgeProcessorJson {
+  sides?: string[];
+}
+
+/** BMCLAPI 列表里的一条 Forge 构建。 */
+interface ForgeBmclEntryJson {
+  version?: string;
+  mcversion?: string;
+  /** 目录名后缀（实测 1.7.10/1.8.9/1.9/1.9.4 非空；1.10.2–1.12.2 为 null）。 */
+  branch?: string | null;
+  files?: ForgeBmclFileJson[];
+}
+
+/** BMCLAPI 列表里的一个文件项（只用来判"有没有 installer jar"；其 `hash` 见方案文档 §13.6 未决，暂不用于校验）。 */
+interface ForgeBmclFileJson {
+  category?: string;
+  format?: string;
+}
+
+/** 拉取结果：把「该版本没有 Forge」与「拉取失败」区分开（UI 文案依赖它，与 NeoForge 同形）。 */
+export class ForgeListResult {
+  /** 可用构建号（新版在前）。 */
+  versions: string[] = [];
+  /** 各源的失败摘要（空数组 + 非空摘要 ⇒ 是拉取失败，不是"该版本没有"）。 */
+  errors: string = '';
+}
+
+/** 该条 BMCL 记录是否带 installer jar（只带源码包/changelog 的构建装不了，不入列表）。 */
+function hasForgeInstaller(entry: ForgeBmclEntryJson): boolean {
+  for (const f of entry.files ?? []) {
+    if (f.category === 'installer' && f.format === 'jar') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** 同源结果内排序：新版在前（复用版本 id 的语义化比较，Forge 构建号是点分数字段）。 */
+function sortForgeNewestFirst(list: string[]): void {
+  list.sort((a: string, b: string): number => compareVersionIds(b, a));
+}
+
+/**
+ * 从 Forge 官方 `maven-metadata.xml` 取「本 MC 版本的可安装目录名」。
+ * 目录名形如 `<mc 版本>-<构建号>[-<branch>]`，去掉 `<mc 版本>-` 前缀即 loader 版本号；
+ * 用字符串切分而非正则（该文件里 `<version>` 只出现在 `<versions>` 内，实测 5054 条）。
+ */
+function forgeVersionsOfMavenMetadata(xml: string, mcVersion: string): string[] {
+  const prefix = `${mcVersion}-`;
+  const out: string[] = [];
+  const parts = xml.split('<version>');
+  for (let i = 1; i < parts.length; i++) {
+    const name = parts[i].split('</version>')[0].trim();
+    if (name.startsWith(prefix)) {
+      out.push(name.substring(prefix.length));
+    }
+  }
+  return out;
+}
+
+/**
+ * 拉取某 MC 版本的 Forge 构建列表（loader 版本号 = **installer 的 maven 目录名去掉 `<mc>-` 前缀**）。
+ *
+ * 源顺序：非官方源时 **BMCLAPI → Forge 官方 maven-metadata**；每个源内部：
+ *  - HTTP 4xx ⇒ 由 `fetchText` 判失败（**不解析 body**）→ 继续下一个源；
+ *  - HTTP 200 + **空结果** ⇒ 视为「该源无结果」→ 继续下一个源（**不要**直接断定"无可用版本"）。
+ * 两源形状不同：BMCLAPI 给分层字段（`version` + `branch`，**目录名要两段拼**，且带 installer 文件信息），
+ * 官方元数据直接给目录名（更权威，但无法判"有没有 installer"）。
+ */
+export async function fetchForgeVersions(mcVersion: string, source: string): Promise<ForgeListResult> {
+  const result = new ForgeListResult();
+  if (mcVersion.length === 0) {
+    return result;
+  }
+
+  if (source !== SOURCE_OFFICIAL) {
+    try {
+      const text = await fetchText([forgeBmclListUrl(mcVersion)],
+        [HTTP_STATUS_BAD_REQUEST, HTTP_STATUS_NOT_FOUND]);
+      const parsed = JSON.parse(text) as (ForgeBmclEntryJson | null)[];
+      const out: string[] = [];
+      if (Array.isArray(parsed)) {
+        for (const entry of parsed) {
+          if (entry === null) {
+            continue;
+          }
+          const version = entry.version ?? '';
+          if (version.length === 0) {
+            continue;
+          }
+          // 端点本就按 MC 版本查询；记录自带 mcversion 时再核一次（实测老数据有缺字段的记录，缺则照收）。
+          const mc = entry.mcversion ?? '';
+          if (mc.length > 0 && mc !== mcVersion) {
+            continue;
+          }
+          if (!hasForgeInstaller(entry)) {
+            continue;
+          }
+          // 目录名 = `<mc>-<version>[-<branch>]`：branch 非空时必须带上（否则该目录下没有 installer）。
+          const branch = entry.branch ?? '';
+          out.push(branch.length > 0 ? `${version}-${branch}` : version);
+        }
+      }
+      if (out.length > 0) {
+        sortForgeNewestFirst(out);
+        result.versions = out;
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'forge bmclapi list ok: %{public}d items for %{public}s',
+          out.length, mcVersion);
+        return result;
+      }
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'forge bmclapi list empty for %{public}s, try official', mcVersion);
+    } catch (error) {
+      const err = error as BusinessError;
+      result.errors += `bmclapi: ${err.message ?? ''}; `;
+      hilog.warn(LOG_DOMAIN, LOG_TAG, 'forge bmclapi list failed: %{public}s', err.message ?? '');
+    }
+  }
+
+  try {
+    const text = await fetchText(fileCandidates(FORGE_MAVEN_METADATA_URL, source));
+    const out = forgeVersionsOfMavenMetadata(text, mcVersion);
+    if (out.length > 0) {
+      sortForgeNewestFirst(out);
+      result.versions = out;
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'forge official list ok: %{public}d items for %{public}s',
+        out.length, mcVersion);
+    }
+  } catch (error) {
+    const err = error as BusinessError;
+    result.errors += `official: ${err.message ?? ''}; `;
+    hilog.warn(LOG_DOMAIN, LOG_TAG, 'forge official list failed: %{public}s', err.message ?? '');
+  }
+  return result;
+}
+
+/** Forge installer 形态（零 JVM 面 = 前两种；第三种明确拒绝）。 */
+export const FORGE_FORM_LEGACY: string = 'legacy';
+export const FORGE_FORM_SPEC_NO_PROCESSOR: string = 'spec-no-processor';
+export const FORGE_FORM_UNSUPPORTED: string = 'unsupported';
+
+/** client 侧 processor 数（`sides` 缺省 = 双端；这是「安装要不要 JVM」的唯一依据）。 */
+function forgeClientProcessorCount(profile: ForgeInstallProfileJson): number {
+  let n = 0;
+  for (const p of profile.processors ?? []) {
+    if (p.sides === undefined || p.sides.includes('client')) {
+      n++;
+    }
+  }
+  return n;
+}
+
+/**
+ * 判型（对齐 HMCL `ForgeInstallTask.detectForgeInstallerType` 的**键判据**，但零 JVM 的判据落在 processor 数上）：
+ * 含 `spec` ⇒ 新形态（client processor 为 0 才是零 JVM）；含 `install` 且含 `versionInfo` ⇒ 老形态；两键皆无 ⇒ 拒绝。
+ */
+export function classifyForgeProfile(profile: ForgeInstallProfileJson): string {
+  if (profile.spec !== undefined) {
+    return forgeClientProcessorCount(profile) > 0 ? FORGE_FORM_UNSUPPORTED : FORGE_FORM_SPEC_NO_PROCESSOR;
+  }
+  if (profile.install !== undefined && profile.versionInfo !== undefined) {
+    return FORGE_FORM_LEGACY;
+  }
+  return FORGE_FORM_UNSUPPORTED;
+}
+
+/**
+ * 库的 maven 相对路径：优先用 `downloads.artifact.path`（**必须与 `libraryItem` 的落点一致**，
+ * 否则 `url` 为空的主制品不会被"目标已存在即跳过"接住），否则由坐标算（与 HMCL `Library.getPath()` 同义）。
+ */
+function forgeLibraryRelPath(lib: LibraryJson): string {
+  const declared = lib.downloads?.artifact?.path ?? '';
+  return declared.length > 0 ? declared : mavenPath(lib.name ?? '');
+}
+
+/** 把 installer 的解包产物拷到目标路径（源不存在 ⇒ 抛错；可选件由调用方先判 `exists`）。 */
+function copyFromUnzip(srcPath: string, destPath: string): void {
+  ensureParent(destPath);
+  try {
+    fileIo.copyFileSync(srcPath, destPath);
+  } catch (error) {
+    const err = error as BusinessError;
+    throw new Error(`extract ${srcPath} failed: ${err.message ?? ''}`);
+  }
+}
+
+/**
+ * 库的合并键：主制品取 `group:artifact`；**natives / classifier 件另给一个键** ——
+ * 它们的物理产物（natives jar）与同坐标的主 jar 是两份文件、两种角色，二者并存不算重复，
+ * 不能互相顶掉（HMCL 的 `LaunchManifestNormalizer.uniqueLibraries` 对"同 id 同版本但坐标载荷不同"
+ * 的项（其注释举 `text2speech` jar vs natives）也是两个都留，见 ref/HMCL `LaunchManifestNormalizer.java:270-317`）。
+ * 坐标解析不出时返回空串（不参与去重）。
+ */
+function libraryMergeKey(lib: LibraryJson): string {
+  const core = (lib.name ?? '').split('@')[0];
+  const parts = core.split(':');
+  if (parts.length < 2) {
+    return '';
+  }
+  const coord = `${parts[0]}:${parts[1]}`;
+  const dl = lib.downloads;
+  const isNatives = parts.length >= 4
+    || lib.natives !== undefined
+    || (dl !== undefined && dl.artifact === undefined && dl.classifiers !== undefined);
+  return isNatives ? `${coord}:natives` : coord;
+}
+
+/**
+ * 合并两层补丁的库表（Forge 实例顶层扁平化用）：**按坐标去重，高优先级补丁胜出**。
+ *
+ * 依据（2026-09-29）：HMCL 实例 `stuffs/test-forge/versions/1.7.10-Forge/1.7.10-Forge.json` 的顶层
+ * = 48 条（forge 18 条在前、game 30 条在后）；而 `concatLibs(game, forge)` 直接并出 **51** 条 ——
+ * `com.google.guava:guava`（15.0 vs 17.0）、`org.apache.commons:commons-lang3`（3.1 vs 3.3.2）、
+ * `net.sf.jopt-simple:jopt-simple`（4.5 两遍）三组同坐标各进两份。顶层会被平铺成 `-cp <dir>/*`
+ * 单目录（`ClasspathStager`）⇒ 同坐标两份的类加载随文件系统顺序而定（不确定）。
+ * 我们的 `patches[]` 带 priority（game 0 / forge 30000）⇒ **优先级高的整份在前**，低优先级里与高优先级
+ * 同坐标的项跳过（其余保持并集语义与顺序）。natives/classifier 件另键，不参与同坐标合并。
+ */
+function mergeLibsByCoordinate(highPriority?: LibraryJson[],
+  lowPriority?: LibraryJson[]): LibraryJson[] | undefined {
+  if (highPriority === undefined && lowPriority === undefined) {
+    return undefined;
+  }
+  const out: LibraryJson[] = [];
+  const seen: Set<string> = new Set<string>();
+  for (const lib of highPriority ?? []) {
+    const key = libraryMergeKey(lib);
+    if (key.length > 0 && seen.has(key)) {
+      continue;
+    }
+    if (key.length > 0) {
+      seen.add(key);
+    }
+    out.push(lib);
+  }
+  for (const lib of lowPriority ?? []) {
+    const key = libraryMergeKey(lib);
+    if (key.length > 0 && seen.has(key)) {
+      continue;
+    }
+    if (key.length > 0) {
+      seen.add(key);
+    }
+    out.push(lib);
+  }
+  return out;
+}
+
+/**
+ * 组装 Forge 实例清单（HMCL 形态）：顶层扁平 + `patches[game, forge]`。
+ *
+ * - `game` patch：vanilla 全部字段（priority 0）；
+ * - `forge` patch：启动清单模板（老 = `install.versionInfo`；新 = 内嵌 `version.json`）的字段，
+ *   priority 30000（= HMCL 的 `PRIORITY_LOADER`）；
+ * - 顶层：`mainClass` / `minecraftArguments` 取 Forge（`--tweakClass …FMLTweaker` **原样携带**），
+ *   `libraries` = **forge ++ vanilla，按坐标去重**（`mergeLibsByCoordinate`：高优先级 patch 胜出；
+ *   Java 侧只读顶层 ⇒ 必须并进来，但同坐标只能留一份，理由与证据见该函数注释）；
+ * - 模板自带的 `inheritsFrom`（如 `1.7.10`）**不进顶层**：vanilla 字段已摊平，实例自带 `<名>.jar`。
+ * 注意：gamePatch 必须在改写 vanilla 之前构造（否则会拿到被覆盖后的值）。
+ */
+function composeForgeManifest(vanilla: VersionJson, instanceName: string, gameVersion: string,
+  loaderVersion: string, forge: VersionJson): VersionJson {
+  const gamePatch: PatchJson = {
+    id: 'game',
+    version: gameVersion,
+    priority: 0,
+    mainClass: vanilla.mainClass,
+    minecraftArguments: vanilla.minecraftArguments,
+    arguments: vanilla.arguments,
+    libraries: vanilla.libraries,
+    assets: vanilla.assets,
+    assetIndex: vanilla.assetIndex,
+    downloads: vanilla.downloads,
+    javaVersion: vanilla.javaVersion,
+    type: vanilla.type,
+    time: vanilla.time,
+    releaseTime: vanilla.releaseTime,
+    minimumLauncherVersion: vanilla.minimumLauncherVersion,
+    complianceLevel: vanilla.complianceLevel,
+    compatibilityRules: vanilla.compatibilityRules,
+    logging: vanilla.logging
+  };
+  const forgePatch: PatchJson = {
+    id: 'forge',
+    version: loaderVersion,
+    priority: 30000,
+    mainClass: forge.mainClass,
+    minecraftArguments: forge.minecraftArguments,
+    arguments: forge.arguments,
+    libraries: forge.libraries,
+    type: forge.type,
+    time: forge.time,
+    releaseTime: forge.releaseTime,
+    logging: forge.logging,
+    complianceLevel: forge.complianceLevel
+  };
+  const mainClass = forge.mainClass ?? '';
+  const args = forge.minecraftArguments ?? '';
+  vanilla.id = instanceName;
+  vanilla.jar = instanceName;
+  vanilla.root = true;
+  if (mainClass.length > 0) {
+    vanilla.mainClass = mainClass;
+  }
+  if (args.length > 0) {
+    vanilla.minecraftArguments = args;
+  }
+  vanilla.libraries = mergeLibsByCoordinate(forge.libraries, vanilla.libraries);
+  vanilla.arguments = concatArgs(vanilla.arguments, forge.arguments);
+  vanilla.patches = [gamePatch, forgePatch];
+  return vanilla;
+}
+
+/**
+ * 安装 Forge 实例（**零 JVM 面：MC 1.7–1.12.2**；installer jar 只作数据容器）。
+ *
+ * 步骤：拉 vanilla 清单 → 下 installer jar（镜像 + 官方两候选）→ 解包读
+ * `install_profile.json` 判型 → 按形态把 loader 制品落共享库区 → 下 vanilla 资产（client jar 落
+ * `<名>.jar`）与 Forge 库（老 = 模板库表；新 = profile 库表 + 模板库表）→ 写清单。
+ *
+ * ⚠️ `spec` 形态带 client processor（1.13+，需外部 JVM）⇒ **在写出清单之前明确拒绝**，
+ * 以免留下"能列出但起不来"的残缺实例（本轮范围外，见方案文档 §13.6 第 3 条）。
+ */
+export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVersion,
+  loaderVersion: string, instanceName: string, source: string, cacheDir: string,
+  onPhase: (phase: number) => void,
+  onCount: (done: number, total: number) => void,
+  onCurrent: (label: string) => void,
+  onFileProgress: (received: number, total: number) => void): Promise<void> {
+  if (!isValidInstanceName(instanceName)) {
+    throw new Error('invalid instance name');
+  }
+  if (loaderVersion.length === 0) {
+    throw new Error('forge loader version missing');
+  }
+
+  // 1) vanilla 清单（版本源）
+  onPhase(PHASE_FILES);
+  const vanillaText = await fetchText(fileCandidates(gameRemote.url, source));
+  const vanilla = JSON.parse(vanillaText) as VersionJson;
+  const gameVersion = (vanilla.id ?? '').length > 0 ? (vanilla.id ?? '') : gameRemote.id;
+
+  // 2) installer jar → 解包 → 判型。工作目录按 loader 版本跨实例复用，先清后解（同 NeoForge 的做法）。
+  const workDir = `${cacheDir}/forge-installer/${loaderVersion}`;
+  ensureDir(workDir);
+  const jarPath = `${workDir}/installer.jar`;
+  if (!exists(jarPath)) {
+    // 候选 = [镜像, 官方] 两条（见 `forgeInstallerCandidates`）；**直接走下载原语**以确保官方兜底不丢：
+    // `runDownloads` 只对 `urls[0]` 再做一次前缀展开，而 `urls[0]` 若已是镜像地址就展不出官方了。
+    onCount(0, 1);
+    onCurrent('forge-installer.jar');
+    await downloadFile(forgeInstallerCandidates(gameRemote.id, loaderVersion, source), jarPath, '',
+      onFileProgress);
+    onCount(1, 1);
+  }
+  const unzipDir = `${workDir}/unzipped`;
+  removeTreeBestEffort(unzipDir);
+  ensureDir(unzipDir);
+  onCurrent('installer-profile');
+  await zlib.decompressFile(jarPath, unzipDir);
+  const profile = readJsonFile<ForgeInstallProfileJson>(`${unzipDir}/install_profile.json`);
+  const form = classifyForgeProfile(profile);
+  if (form === FORGE_FORM_UNSUPPORTED) {
+    // 明确拒绝（且不留残缺实例）：1.13+ 需外部 JVM；两键皆无 = 格式不认识。
+    const processors = forgeClientProcessorCount(profile);
+    const reason = processors > 0
+      ? `client processors=${processors}`
+      : 'unknown install_profile.json format';
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'forge install unsupported: %{public}s (loader %{public}s)',
+      reason, loaderVersion);
+    throw new Error(`forge install unsupported (needs a JVM): ${reason}`);
+  }
+
+  // 3) 启动清单模板：老形态 = `install.versionInfo`；新形态 = 内嵌 `profile.json`（如 `/version.json`）。
+  let template: VersionJson;
+  if (form === FORGE_FORM_LEGACY) {
+    const info = profile.versionInfo;
+    if (info === undefined) {
+      throw new Error('forge install profile incomplete');
+    }
+    template = info;
+  } else {
+    const rel = (profile.json ?? '/version.json').replace(/^\//, '');
+    template = readJsonFile<VersionJson>(`${unzipDir}/${rel}`);
+  }
+
+  // 4) loader 制品落共享库区。**必须在库下载之前**：主制品在库表里 `url` 为空（Forge 官方的写法），
+  //    靠"目标已存在即跳过"的语义接住这一步落位，否则会退到缺省库仓找它（必然 404）。
+  if (form === FORGE_FORM_LEGACY) {
+    const rel = mavenPath(profile.install?.path ?? '');
+    const entry = profile.install?.filePath ?? '';
+    if (rel.length === 0 || entry.length === 0) {
+      throw new Error('forge install profile incomplete');
+    }
+    const src = `${unzipDir}/${entry}`;
+    if (!exists(src)) {
+      throw new Error(`forge universal jar missing in installer: ${entry}`);
+    }
+    copyFromUnzip(src, `${librariesDir(gameRoot)}/${rel}`);
+  } else {
+    // 新形态且 0 processor：installer 内 `maven/**` 命中项 + 主制品纯拷贝（只有随包内嵌的才有，其余靠下载）。
+    for (const lib of profile.libraries ?? []) {
+      const rel = forgeLibraryRelPath(lib);
+      if (rel.length === 0) {
+        continue;
+      }
+      const src = `${unzipDir}/maven/${rel}`;
+      if (exists(src)) {
+        copyFromUnzip(src, `${librariesDir(gameRoot)}/${rel}`);
+      }
+    }
+    const mainRel = mavenPath(profile.path ?? '');
+    const mainSrc = mainRel.length > 0 ? `${unzipDir}/maven/${mainRel}` : '';
+    if (mainSrc.length > 0 && exists(mainSrc)) {
+      copyFromUnzip(mainSrc, `${librariesDir(gameRoot)}/${mainRel}`);
+    }
+  }
+
+  // 5) Forge 库表：老形态只有模板库表；新形态 = profile 库表（processor 依赖与主制品）+ 模板库表
+  //    （1.12.2 的绝大部分库在模板里）。
+  const forgeLibs: LibraryJson[] = [];
+  if (form === FORGE_FORM_LEGACY) {
+    for (const l of profile.versionInfo?.libraries ?? []) {
+      forgeLibs.push(l);
+    }
+  } else {
+    for (const l of profile.libraries ?? []) {
+      forgeLibs.push(l);
+    }
+    for (const l of template.libraries ?? []) {
+      forgeLibs.push(l);
+    }
+  }
+
+  // 6) 待下载项：vanilla（client jar 落 `<名>.jar` + 原版库 + 资源索引）+ Forge 库（共享库区）。
+  const files: DownloadItem[] = [];
+  const client = vanilla.downloads?.client;
+  if (client !== undefined) {
+    const url = client.url ?? '';
+    if (url.length > 0) {
+      files.push(newItem(`${instanceName}.jar`, [url], versionJarPath(gameRoot, instanceName),
+        client.sha1 ?? '', client.size ?? 0));
+    }
+  }
+  for (const lib of vanilla.libraries ?? []) {
+    const item = libraryItem(gameRoot, lib);
+    if (item !== null) {
+      files.push(item);
+    }
+  }
+  const indexItem = assetIndexItem(gameRoot, vanilla.assets ?? '', vanilla.assetIndex);
+  if (indexItem !== null) {
+    files.push(indexItem);
+  }
+  for (const lib of forgeLibs) {
+    const item = libraryItem(gameRoot, lib);
+    if (item !== null) {
+      files.push(item);
+    }
+  }
+  await runDownloads(files, source, onCount, onCurrent, onFileProgress);
+
+  // 7) 资源对象（依赖已下好的索引；版本源）
+  const assetId = (vanilla.assetIndex?.id ?? '').length > 0
+    ? (vanilla.assetIndex?.id ?? '')
+    : (vanilla.assets ?? '');
+  if (indexItem !== null && assetId.length > 0) {
+    onPhase(PHASE_ASSETS);
+    let index: AssetIndexJson = {};
+    try {
+      index = JSON.parse(fileIo.readTextSync(`${assetsIndexesDir(gameRoot)}/${assetId}.json`)) as AssetIndexJson;
+    } catch {
+      index = {};
+    }
+    await runDownloads(assetObjectItems(gameRoot, index), source, onCount, onCurrent, onFileProgress);
+  }
+
+  // 8) 写清单：顶层扁平 + patches[game, forge]
+  onPhase(PHASE_WRITE);
+  const composed = composeForgeManifest(vanilla, instanceName, gameVersion, loaderVersion, template);
+  writeText(versionJsonPath(gameRoot, instanceName), JSON.stringify(composed));
 }

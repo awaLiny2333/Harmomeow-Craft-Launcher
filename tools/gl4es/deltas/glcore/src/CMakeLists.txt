@@ -72,6 +72,7 @@ SET(GL_SRC
 	${CMAKE_CURRENT_SOURCE_DIR}/gl/wrap/gles.c
 	${CMAKE_CURRENT_SOURCE_DIR}/gl/wrap/glstub.c
     ${CMAKE_CURRENT_SOURCE_DIR}/gl/meowcore/meowcore.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/gl/meowctx.c
 	${CMAKE_CURRENT_SOURCE_DIR}/gl/math/matheval.c
 )
 
@@ -139,6 +140,7 @@ SET(GL_H
     ${CMAKE_CURRENT_SOURCE_DIR}/gl/wrap/gles.h
     ${CMAKE_CURRENT_SOURCE_DIR}/gl/wrap/stub.h
     ${CMAKE_CURRENT_SOURCE_DIR}/gl/meowcore/meowcore.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/gl/meowctx.h
 )
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Linux" AND NOT NO_LOADER)
