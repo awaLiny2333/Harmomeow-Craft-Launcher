@@ -187,8 +187,10 @@ static void gl4es_getmainfbsize(int *width, int *height) {
  *
  * The bridge and libgl4es.so are SEPARATE shared objects and gl4es is only
  * dlopen()ed at runtime, so this is resolved with dlsym (never a link-time
- * dependency). An older libgl4es.so without the symbol degrades safely: one
- * stable English log, then no-op for the rest of the process.
+ * dependency). The hook's availability is a TRI-STATE (UNKNOWN/ABSENT/PRESENT,
+ * see gl4es_ctx_hook_state): an older libgl4es.so without the symbol (ABSENT)
+ * degrades safely with one stable English log, while "not resolved yet" (UNKNOWN)
+ * must first try to resolve before any hard gate may refuse (M-1 fix, 2026-09-30).
  */
 typedef void *(*meow_gl4es_bind_fn)(void *eglContext);
 typedef void *(*meow_gl4es_unbind_fn)(void);
@@ -197,23 +199,84 @@ typedef void  (*meow_gl4es_forget_fn)(void *eglContext);
 static meow_gl4es_bind_fn   g_gl4esBind;
 static meow_gl4es_unbind_fn g_gl4esUnbind;
 static meow_gl4es_forget_fn g_gl4esForget;
-static int g_gl4esHookLogged;   /* one-shot: resolved / missing */
 
-/* Resolve the optional hook out of the dlopen()ed libgl4es.so. Idempotent. */
+/* Resolved state of the per-EGL-context hook. TRI-STATE on purpose (M-1 fix,
+ * 2026-09-30): the hook can only be resolved out of a dlopen()ed libgl4es.so, and
+ * the bridge may need to KNOW whether it is available BEFORE the first successful
+ * eglMakeCurrent -- meowCreateSharedContext() refuses a shared context when the
+ * hook is missing, and FML 1.7.10's splash can legitimately ask for that context
+ * before the render thread ever made one current. "UNKNOWN" must therefore NEVER
+ * be conflated with "ABSENT": UNKNOWN = "we have not loaded libgl4es.so / not
+ * resolved yet", ABSENT = "the loaded library really has no meow_gl4es_bind"
+ * (a hook-less build). Only ABSENT may refuse; UNKNOWN must first try to resolve,
+ * else a device running the CURRENT build would be refused with a bogus
+ * "old libgl4es.so?" message and FML would fail fatally at SplashProgress.java:199. */
+enum { MEOW_HOOK_UNKNOWN = 0, MEOW_HOOK_ABSENT, MEOW_HOOK_PRESENT };
+static int g_gl4esHookState = MEOW_HOOK_UNKNOWN;
+
+/* dlopen handle of libgl4es.so, retained so the ctx hook can be resolved from any
+ * path (e.g. meowCreateSharedContext / egl_ensure_context) independently of
+ * initialize_gl4es(), which requires a current GLES context. */
+static void *g_gl4esLib;
+
+/* dlopen libgl4es.so once (MEOWCRAFT_NATIVEDIR first, then the plain soname).
+ * Idempotent; a failed attempt is retried by the next caller so a transient load
+ * failure is not sticky. Does NOT call initialize_gl4es() -- that needs a current
+ * GLES context and stays in gl4es_init_once(). Loading the library is safe at any
+ * time: it is built NO_INIT_CONSTRUCTOR and only dlopen()s GLES at runtime. */
+static void *gl4es_dlopen_once(void) {
+    if (g_gl4esLib != NULL) {
+        return g_gl4esLib;
+    }
+    const char *dir = getenv("MEOWCRAFT_NATIVEDIR");
+    char path[512];
+    if (dir != NULL && dir[0] != '\0') {
+        snprintf(path, sizeof(path), "%s/libgl4es.so", dir);
+        g_gl4esLib = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+    }
+    if (g_gl4esLib == NULL) {
+        g_gl4esLib = dlopen("libgl4es.so", RTLD_NOW | RTLD_GLOBAL);
+    }
+    return g_gl4esLib;
+}
+
+/* Resolve the optional hook out of the dlopen()ed libgl4es.so and record the
+ * tri-state. Safe before initialize_gl4es(): it only dlsym()s function pointers,
+ * it never runs gl4es. Idempotent; a NULL lib leaves the state UNKNOWN so a later
+ * call (after a successful dlopen) can still resolve it. */
 static void gl4es_resolve_ctx_hooks(void *lib) {
-    if (lib == NULL || g_gl4esBind != NULL || g_gl4esHookLogged) {
-        return;
+    if (g_gl4esHookState != MEOW_HOOK_UNKNOWN) {
+        return;   /* already decided: PRESENT or ABSENT */
+    }
+    if (lib == NULL) {
+        return;   /* cannot resolve yet: stays UNKNOWN, caller may retry */
     }
     g_gl4esBind   = (meow_gl4es_bind_fn)dlsym(lib, "meow_gl4es_bind");
     g_gl4esUnbind = (meow_gl4es_unbind_fn)dlsym(lib, "meow_gl4es_unbind");
     g_gl4esForget = (meow_gl4es_forget_fn)dlsym(lib, "meow_gl4es_forget");
-    g_gl4esHookLogged = 1;
     if (g_gl4esBind == NULL) {
-        MEOWLOGW("gl4es: meow_gl4es_bind not found (old libgl4es.so?); per-context "
-                 "gl4es state disabled - a shared-context splash is still unsafe");
+        g_gl4esHookState = MEOW_HOOK_ABSENT;
+        MEOWLOGW("gl4es: meow_gl4es_bind ABSENT in the loaded libgl4es.so (hook-less "
+                 "build); per-context gl4es state disabled - a shared-context splash "
+                 "is refused");
     } else {
+        g_gl4esHookState = MEOW_HOOK_PRESENT;
         MEOWLOGI("gl4es: per-context state hook active (meow_gl4es_bind)");
     }
+}
+
+/* Ensure the ctx-hook state is decided (PRESENT/ABSENT), loading libgl4es.so if
+ * needed. Returns the tri-state; still UNKNOWN only when the library could not be
+ * loaded at all. Callable before any eglMakeCurrent / initialize_gl4es(). */
+static int gl4es_ctx_hook_state(void) {
+    if (g_gl4esHookState != MEOW_HOOK_UNKNOWN) {
+        return g_gl4esHookState;
+    }
+    void *lib = gl4es_dlopen_once();
+    if (lib != NULL) {
+        gl4es_resolve_ctx_hooks(lib);
+    }
+    return g_gl4esHookState;
 }
 
 /* Tell gl4es which EGL context is current on THIS thread. EGL_NO_CONTEXT means
@@ -245,17 +308,7 @@ static void gl4es_init_once(void) {
         /* Core backend: the FPE path is bypassed on purpose. We only need the library
          * loaded so LWJGL's -Dorg.lwjgl.opengl.libname resolves and gl4es'
          * glXGetProcAddress can serve the meowcore_* surface (the delta's hook). */
-        const char *dir = getenv("MEOWCRAFT_NATIVEDIR");
-        char path[512];
-        void *lib = NULL;
-        if (dir != NULL && dir[0] != '\0') {
-            snprintf(path, sizeof(path), "%s/libgl4es.so", dir);
-            lib = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
-        }
-        if (lib == NULL) {
-            lib = dlopen("libgl4es.so", RTLD_NOW | RTLD_GLOBAL);
-        }
-        if (lib == NULL) {
+        if (gl4es_dlopen_once() == NULL) {
             MEOWLOGE("gl4es core: dlopen failed: %{public}s", dlerror());
             return;
         }
@@ -264,22 +317,13 @@ static void gl4es_init_once(void) {
         return;
     }
     gl4es_export_backend();
-    const char *dir = getenv("MEOWCRAFT_NATIVEDIR");
-    char path[512];
-    void *lib = NULL;
-    if (dir != NULL && dir[0] != '\0') {
-        snprintf(path, sizeof(path), "%s/libgl4es.so", dir);
-        lib = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
-    }
-    if (lib == NULL) {
-        lib = dlopen("libgl4es.so", RTLD_NOW | RTLD_GLOBAL);
-    }
+    void *lib = gl4es_dlopen_once();
     if (lib == NULL) {
         MEOWLOGE("gl4es: dlopen failed: %{public}s", dlerror());
         return;
     }
-    /* Optional per-EGL-context state hook (see the section above); absent in an
-     * older libgl4es.so and then simply inactive. */
+    /* Optional per-EGL-context state hook (see the section above). May already be
+     * decided by egl_ensure_context()/the shared-context gate; idempotent. */
     gl4es_resolve_ctx_hooks(lib);
     void (*setfb)(void (*)(int *, int *)) =
         (void (*)(void (*)(int *, int *)))dlsym(lib, "set_getmainfbsize");
@@ -472,6 +516,16 @@ static int egl_ensure_context(void) {
      * The desktop-GL/compat path below is skipped entirely. */
     if (renderer_is_gl4es()) {
         g_gl4es = 1;
+        /* M-1 (2026-09-30): decide the per-context-hook state NOW, at context
+         * creation, instead of only after the first successful eglMakeCurrent
+         * (gl4es_init_once). A shared context may legitimately be created before
+         * any makeCurrent -- FML 1.7.10's splash asks for one from the main thread
+         * -- and meowCreateSharedContext() hard-gates on this state. With the old
+         * code the state was still UNKNOWN there, g_gl4esBind stayed NULL and EVERY
+         * shared context was refused with a misleading "old libgl4es.so?" message
+         * even on a current build => fatal FML failure. Resolving here (dlopen +
+         * dlsym only; safe before initialize_gl4es()) removes that order dependency. */
+        gl4es_ctx_hook_state();
 #ifndef EGL_OPENGL_ES3_BIT
 #define EGL_OPENGL_ES3_BIT 0x00000040
 #endif
@@ -966,8 +1020,10 @@ void meowMakeCurrent(void *window) {
  * `… (shared child of root)`、`gl4es: per-context state hook active`，零 `rethrow signo(11)`。
  * ⇒ 默认回到"允许"，把 env 改造成**显式退出开关**（语义见 meow_allow_shared_ctx()）。
  *
- * 另一条**硬门**见 meowCreateSharedContext()：FPE 渲染下若 per-context hook 不可用（旧
- * `libgl4es.so`，dlsym 失败）⇒ **无条件拒绝**，因为那时"允许" = 重新引入上面那条竞争。
+ * 另一条**硬门**见 meowCreateSharedContext()：FPE 渲染下若 per-context hook 经三态判定为
+ * **ABSENT**（加载进来的 `libgl4es.so` 确无 `meow_gl4es_bind`，即旧件）或 **UNKNOWN**（连库都
+ * 加载不出来）⇒ **无条件拒绝**，因为那时"允许" = 重新引入上面那条竞争。判定前会先尝试解析
+ * （M-1：不再依赖"已发生过一次成功 makeCurrent"）。
  *
  * `share == NULL` registers the primary slot and creates nothing eagerly: the primary EGL
  * context stays lazy (first make-current). Returns the handle to pass back to
@@ -1049,18 +1105,34 @@ void *meowCreateSharedContext(void *share) {
     }
 
     /*
-     * 硬门（2026-09-29）：共享上下文**只在** gl4es 的 per-context state hook 可用时才安全。
-     * FPE 渲染下两个上下文各跑一个线程：hook 不可用（旧 `libgl4es.so`，dlsym 失败 ⇒ 只剩一个
-     * 进程级 `glstate`）时允许共享 = 重新引入 2026-09-29 修掉的 SIGSEGV/SIGTRAP。此门与 env 策略
-     * **正交**：env 允许也不够，hook 缺了就无条件拒绝。core 后端（MEOW_GL3）不用 gl4es state
-     * （`gl4es_notify_current` 直接返回），不受此限；非 gl4es（桌面 GL）也没有可竞争的 gl4es 状态。
-     * 该拒绝**必须显眼**：它会让 shim 抛 LWJGLException ⇒ FML 1.7.10 变成致命 RuntimeException
-     * （SplashProgress.java:199）⇒ 解释"为什么接下来会 FML fatal"。
+     * 硬门（2026-09-29；2026-09-30 改三态）：共享上下文**只在** gl4es 的 per-context state
+     * hook 确认**可用（PRESENT）**时才安全。FPE 渲染下两个上下文各跑一个线程：hook 不可用
+     * （旧 `libgl4es.so`，ABSENT ⇒ 只剩一个进程级 `glstate`）时允许共享 = 重新引入 2026-09-29
+     * 修掉的 SIGSEGV/SIGTRAP。此门与 env 策略**正交**：env 允许也不够，hook 缺了就无条件拒绝。
+     * core 后端（MEOW_GL3）不用 gl4es state（`gl4es_notify_current` 直接返回），不受此限；非
+     * gl4es（桌面 GL）也没有可竞争的 gl4es 状态。
+     * ★M-1 修正：判据是**三态**而非"g_gl4esBind == NULL"。g_gl4esBind 为 NULL 有两种可能 ——
+     *   UNKNOWN（还没 dlopen/解析，未必旧件）与 ABSENT（加载进来的库确实无此符号，旧件）。
+     *   旧代码把 UNKNOWN 也当"旧件"拒绝，且打印误导文案；且解析只发生在**首次成功 makeCurrent**
+     *   之后 ⇒ 若共享上下文先于任何 makeCurrent 创建，就无条件误拒（对装了新件的设备也是致命的）。
+     *   这里先 `gl4es_ctx_hook_state()` 强制解析（必要时 dlopen），只有 ABSENT 才拒；UNKNOWN 只在
+     *   连库都加载不出来时出现，也拒（但日志明确区分）。该拒绝**必须显眼**：它会让 shim 抛
+     *   LWJGLException ⇒ FML 1.7.10 变成致命 RuntimeException（SplashProgress.java:199）。
      */
-    if (g_gl4es && !g_gl4esCore && g_gl4esBind == NULL) {
-        MEOWLOGW("shared ctx refused: per-context gl4es state hook unavailable "
-                 "(old libgl4es.so?) - FML 1.7.10 will fail at SplashProgress.java:199");
-        return NULL;
+    if (g_gl4es && !g_gl4esCore) {
+        int hook = gl4es_ctx_hook_state();   /* resolve on first use (M-1) */
+        if (hook != MEOW_HOOK_PRESENT) {
+            if (hook == MEOW_HOOK_ABSENT) {
+                MEOWLOGW("shared ctx refused: per-context gl4es state hook ABSENT from the "
+                         "loaded libgl4es.so (hook-less/foreign build) - FML 1.7.10 will "
+                         "fail at SplashProgress.java:199");
+            } else {
+                MEOWLOGW("shared ctx refused: per-context gl4es state hook UNRESOLVED "
+                         "(libgl4es.so could not be loaded to resolve it) - FML 1.7.10 "
+                         "will fail at SplashProgress.java:199");
+            }
+            return NULL;
+        }
     }
     MeowCtxSlot *parent = meow_slot_find(share);
     if (parent == NULL) {

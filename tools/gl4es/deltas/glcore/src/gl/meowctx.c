@@ -42,6 +42,17 @@
  * Degrades safely: with a single context this behaves exactly like before
  * (one state, all GL calls) apart from the very first bind replacing the
  * post-init default state with a dedicated one (see note in meow_gl4es_bind).
+ *
+ * KNOWN LIMITATION (M-2, 2026-09-30 — documented, NOT fixed here): if the
+ * share-group ROOT (the first-bound context) is forgotten while child states are
+ * still alive, those children keep pointing at the old root but the NEXT bind
+ * calls NewGLState(NULL) and starts a second, independent object-table group ⇒
+ * the EGL share contract is silently split. Trigger = the first-bound context is
+ * destroyed before one of its children. meow_gl4es_forget() now prints a stable
+ * English warn when this happens, but does NOT re-home/refcount the group: doing
+ * so touches the shared khash tables upstream never refcounts, which is a
+ * deliberate out-of-scope change for this build. See the M-2 comment in
+ * meow_gl4es_forget() and notes 00-current/已知限制与待解.md C11.
  */
 #include <pthread.h>
 #include <stdint.h>
@@ -76,10 +87,11 @@ static int               g_ctx_count;
 static glstate_t        *g_ctx_root;   /* first state = group root (owns shared tables) */
 static int               g_ctx_logged;
 static int               g_ctx_warned;
+static int               g_ctx_splitwarned;  /* one-shot: share-group-root forgotten warn */
 
 /* Build tag: printed once so a device log shows WHICH build is running and that
  * the TLS registry is active (bump on every behavioural change). */
-#define MEOW_CTX_BUILD_TAG "2026-09-29-ctxiso-tls2"
+#define MEOW_CTX_BUILD_TAG "2026-09-30-ctxiso-tls3"
 
 static void meow_ctx_log_once(void) {
     if (g_ctx_logged)
@@ -187,8 +199,44 @@ void meow_gl4es_forget(void *eglContext) {
          * PRIMARY itself being forgotten at process exit -- egl_gl.c's meowTerminate DOES
          * destroy the primary EGL context (only the app-level ContextGL.destroy() is
          * ignored), and now calls meow_gl4es_forget for it too. */
-        if (e->state != NULL && e->state == g_ctx_root)
+        if (e->state != NULL && e->state == g_ctx_root) {
+            /* M-2 (2026-09-30, OBSERVABILITY ONLY -- no semantic change): the share-group
+             * ROOT is being forgotten while this registry still holds other contexts that
+             * were created as NewGLState(root) and COPY its shared object tables. Those
+             * children keep using the (never-freed) root state, but any context bound AFTER
+             * this point calls NewGLState(NULL) and starts a SECOND, independent object
+             * table -- i.e. the EGL share contract (all contexts of one share group share
+             * textures/buffers/shaders/display lists) is silently split for that later
+             * context, yielding two groups that are not mutually visible.
+             *
+             * TRIGGER: the FIRST-bound context (== the group root) is destroyed BEFORE one
+             * of its children. The app's destroy order decides; e.g. a splash secondary is
+             * bound first (root) and then destroyed while a later secondary is still live.
+             * At normal process exit this does NOT fire: meowTerminate destroys every
+             * secondary (forgetting them) before it forgets the primary, so `live == 0`.
+             *
+             * NOT fixed this round ON PURPOSE. Re-homing the group (or refcounting the
+             * shared khash tables so the last surviving child promotes itself to root) is a
+             * change to the SHARED-object semantics that upstream never refcounts
+             * (glEndList/glCallList free-vs-iterate, texture/program get-create-delete) and
+             * spreads across a dozen covered files under a 覆盖式 delta -- see this file's
+             * header and notes 00-current/已知限制与待解.md C11. The per-EGL-context
+             * isolation alone is verified to have removed the crash, so we only make the
+             * condition VISIBLE here so a device log can decide whether it ever happens. */
             g_ctx_root = NULL;
+            int live = 0;
+            for (meow_ctx_state_t *c = g_ctx_list; c != NULL; c = c->next)
+                if (c->state != NULL)
+                    ++live;
+            if (live > 0 && !g_ctx_splitwarned) {
+                g_ctx_splitwarned = 1;
+                fprintf(stderr,
+                        "[meow-ctx] WARN: share-group root forgotten while %d child state(s) "
+                        "still alive; the next NewGLState(NULL) starts a NEW object-table "
+                        "group (EGL share group split) - known limitation, see meowctx.c "
+                        "M-2 note\n", live);
+            }
+        }
         /* Deliberately NOT DeleteGLState()/free(state): another thread's TLS
          * `glstate` may still point at it (bind/unbind ordering is the app's), and
          * freeing would be a use-after-free.  Leak = one glstate_t per destroyed

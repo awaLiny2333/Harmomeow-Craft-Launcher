@@ -27,6 +27,9 @@
 #   --toolchain FILE  CMake toolchain wrapper (default: gl4es_ohos.toolchain.cmake here)
 #   --delta DIR       overlay DIR onto a COPY of the source tree before building
 #                     (Meowcraft fork deltas live under tools/gl4es/deltas/)
+#   --expect-digest H assert the built libgl4es.so sha256 == H (catches a stale
+#                     re-package/ledger after a delta edit; also read from
+#                     $MEOW_GL4ES_EXPECT_DIGEST when the flag is omitted)
 #   -h, --help        show this help
 #
 # Requires: cmake (>=3.19; CMake 4.x also needs CMAKE_POLICY_VERSION_MINIMUM),
@@ -36,7 +39,7 @@ set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 usage() {
-  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 SRC=""
@@ -47,6 +50,9 @@ DELTA=""
 TOOLCHAIN="$HERE/gl4es_ohos.toolchain.cmake"
 API=23
 ARCH=arm64-v8a
+# Optional post-build assertion (see usage): a recorded artifact digest that the
+# freshly built libgl4es.so must match. Empty = no assertion.
+EXPECT_DIGEST="${MEOW_GL4ES_EXPECT_DIGEST:-}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -56,6 +62,7 @@ while [ "$#" -gt 0 ]; do
     --build)      BUILD="$2"; shift 2 ;;
     --toolchain)  TOOLCHAIN="$2"; shift 2 ;;
     --delta)      DELTA="$2"; shift 2 ;;
+    --expect-digest) EXPECT_DIGEST="$2"; shift 2 ;;
     --api)        API="$2"; shift 2 ;;
     --arch)       ARCH="$2"; shift 2 ;;
     -h|--help)    usage; exit 0 ;;
@@ -95,6 +102,18 @@ if [ -n "$DELTA" ]; then
   cp -a "$DELTA/." "$SRC_USE/"
   echo "=== delta overlay: $DELTA -> $SRC_USE ==="
 fi
+
+# Delta content summary: a deterministic digest over the delta tree (sorted paths +
+# file bytes). Record it NEXT TO the artifact digest in notes/30-supply-chain so that
+# "I edited the delta but the shipped/ledger libgl4es.so is still the old one" is
+# detectable -- the two digests must always move together. Pair it with
+# --expect-digest in CI so a stale re-package fails loudly instead of silently.
+DELTA_DIGEST="(no delta)"
+if [ -n "$DELTA" ]; then
+  DELTA_DIGEST="$(cd "$DELTA" && find . -type f -print | LC_ALL=C sort | \
+    while IFS= read -r f; do sha256sum "$f"; done | sha256sum | cut -d' ' -f1)"
+fi
+echo "delta-content-sha256: $DELTA_DIGEST ($DELTA)"
 
 echo "=== configure ($ARCH, api $API) ==="
 cmake -G Ninja -S "$SRC_USE" -B "$BUILD" \
@@ -151,3 +170,14 @@ fi
 
 echo "OK -> $LIB ($(wc -c < "$LIB") bytes)"
 sha256sum "$LIB"
+
+# Self-check: emit the delta-content summary and the artifact digest TOGETHER (they
+# must always move together), and enforce --expect-digest when one was recorded.
+ART_DIGEST="$(sha256sum "$LIB" | cut -d' ' -f1)"
+echo "artifact-sha256: $ART_DIGEST"
+echo "delta-content-sha256: $DELTA_DIGEST"
+if [ -n "$EXPECT_DIGEST" ] && [ "$EXPECT_DIGEST" != "$ART_DIGEST" ]; then
+  echo "error: artifact digest $ART_DIGEST != expected $EXPECT_DIGEST" >&2
+  echo "       (stale shared object vs. ledger, or a different delta/SDK/source path)" >&2
+  exit 1
+fi
