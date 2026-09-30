@@ -278,7 +278,7 @@ add a `LWJGL_GEN_TABLE` row).
 ```sh
 python3 tools/lwjgl/pack_extras.py \
   --base-tar entry/src/main/resources/rawfile/meowcraft_extras.tar.gz \
-  --drop-prefix lwjgl-natives- \
+  --drop-prefix lwjgl-natives- --drop-prefix launcher.jar --drop-prefix gson-for-launcher.jar \
   --jar lwjgl-3.4.3.jar=stuffs/research/lwjgl_build-3.4.3-v6/out/lwjgl.jar \
   --require lwjgl-3.4.3.jar \
   --out stuffs/research/meowcraft_extras.tar.gz
@@ -302,7 +302,7 @@ cp stuffs/research/meowcraft_extras.tar.gz entry/src/main/resources/rawfile/
 | `liblwjgl_343.so` / `liblwjgl_343_opengl.so` / `liblwjgl_343_stb.so` (3.4.3; core = **F2** alignment clamp) | `2a6fcf99…` / `e1f1413b…` / `8eb4a1b8…` (pre-F2 core backup `16298280…`) |
 | `liblwjgl_vma.so` (VMA; release = shipped) | `479a619f…` (506,288 B) |
 | `libffi.a` (3.8.0, aarch64-linux-ohos) | `238cadb7bfa70ca5b4f718cc66878f1f3d26107bc6f6b0e272380c3f3f1fda5b` |
-| `meowcraft_extras.tar.gz` (shipped; single modern generation; EXTRAS_VERSION=20260920-focus-autopause) | `9864025bb495e30c5590e8a5dafa0732ada7cc6017d663e469b887d308602124` (12,310,999 B) |
+| `meowcraft_extras.tar.gz` (shipped; single modern generation + bundled ASM 9.9.1 under `asm9/`; no `launcher.jar`/`gson-for-launcher.jar`; EXTRAS_VERSION=20261001-drop-meow-launcher) | `7c8aa39203ed3bf2c81165a8ac6e2a76195468bcd8a11e1b1267fa9ce60dad07` (12,403,320 B) |
 
 **Reproducibility (each measured by running it twice, 2026-09-20)**: two `build_lwjgl_jar.sh`
 builds into the **same `--work`** are byte-identical (`cmp`), and two `pack_extras.py` runs from

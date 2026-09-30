@@ -5,16 +5,15 @@ import { util } from '@kit.ArkTS';
 import { RENDERER_LIB, VULKAN_LIB_SHIM, VULKAN_LIB_DISABLED, WINDOW_DEFAULT_W, WINDOW_DEFAULT_H,
   SPOOF_OS_NAME, SPOOF_OS_VERSION, SPOOF_CPU_NAME,
   LOCALE_LANGUAGE, LOCALE_COUNTRY, LOCALE_TIMEZONE, RULE_OS_NAME, RULE_OS_ARCH,
-  OFFLINE_USERNAME, LAUNCHER_NAME, LAUNCHER_VERSION,
+  OFFLINE_USERNAME, OFFLINE_TOKEN, LAUNCHER_NAME, LAUNCHER_VERSION,
   CLIENT_MOD_NAME, LWJGL_GEN_343, LWJGL_JAR_PREFIX,
-  EXPECTED_EXTRA_JARS, LWJGL_NAME_MAPPER,
+  LWJGL_NAME_MAPPER,
   ASM_BUNDLED_VERSION, ASM_STAGE_SUBDIR, EXPECTED_ASM_JARS } from '../constants/LaunchDefaults';
-import { MEOW_CLASS_LOADER, MEOW_MAIN_CLASS, LAUNCHWRAPPER_MAIN_CLASS,
-  REAL_CLASSPATH_MAIN_CLASSES, LOADER_FAMILY_PATH_SEGMENTS } from '../constants/LaunchContract';
+import { REAL_CLASSPATH_MAIN_CLASSES } from '../constants/LaunchContract';
 import { libraryNames, resolveMergeModuleEntries } from './NeoForgeInstaller';
 import { NATIVES_DIR } from '../constants/Paths';
-import { ResolvedVersion, VersionJson, VersionRule, VersionRuleArg, VERSION_FORM_VANILLA,
-  LOADER_NEO_FORGE, resolveVersion, resolveVersionByPath } from './VersionResolver';
+import { ResolvedVersion, VersionJson, VersionRule, VersionRuleArg,
+  LOADER_NEO_FORGE, LOADER_FORGE, resolveVersion, resolveVersionByPath } from './VersionResolver';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'GameLauncher';
@@ -87,7 +86,7 @@ type LaunchMacros = Map<string, string>;
 export interface LaunchOptions {
   /** .minecraft 根目录（物理路径）。 */
   gameRoot: string;
-  /** 游戏运行目录（= `-Duser.dir` = MeowLauncher 的 `${game_directory}` 宏 = MC 的 `--gameDir`）。
+  /** 游戏运行目录（= `-Duser.dir` = game 参数 `${game_directory}` 宏 = MC 的 `--gameDir`）。
    *  未设/空 = gameRoot（不隔离）；启用版本隔离时传 `<gameRoot>/versions/<id>`。
    *  只切运行目录，assets/libraries 仍由 gameRoot 派生（共享池）——与 HMCL/PCL/HomoLauncher 同构。 */
   gameDir?: string;
@@ -99,11 +98,12 @@ export interface LaunchOptions {
    *  后者是诊断参数、随包默认不设。 */
   logsDir?: string;
   /** 完整 classpath（可选）：平铺后用 "<dir>/*" 通配，规避超长 -cp 失效。
-   *  **仅用于平铺形态**（原版/Fabric/legacy）——`needsRealClasspath` 为真的版本会忽略它并走真库树。 */
+   *  **仅用于平铺形态**（原版/Fabric）——自身走真库树的版本（`needsRealClasspath`）与
+   *  launchwrapper 形态（`isLaunchWrapperMain`）都会**忽略**它、改走显式有序绝对路径。 */
   classpath?: string;
-  /** 平铺目录（可选）：真 maven 树形态的版本（Forge ≥1.13 / NeoForge）**只**从这里取
-   *  随包 LWJGL3 jar（以及走 MeowLauncher 时的 launcher/gson 桩件）——按**绝对路径**取，
-   *  绝不把 `<dir>/*` 通配放进 classpath（见 assembleRealTreeClasspath）。 */
+  /** 平铺目录（可选）：**只在真库树形态**（Forge ≥1.13 / NeoForge）用作**随包 LWJGL3 jar** 的取件处
+   *  （按**绝对路径**取，绝不把 `<dir>/*` 通配放进 classpath——见 assembleRealTreeClasspath）；
+   *  launchwrapper 形态还从这里取 **oshi 补丁件**（同样按绝对路径，不用通配）。 */
   classpathDir?: string;
   /** 沙箱可写运行目录（tmpdir/natives 解压；鸿蒙无 /tmp）。 */
   runDir?: string;
@@ -112,20 +112,19 @@ export interface LaunchOptions {
   /** 自研桥 so 所在目录（当前与 nativeLibsDir 同：meowjre HSP libs）——JVM 侧
    *  System.loadLibrary 也需能在该目录找到 libmeowcraftbridge.so。 */
   craftLibsDir?: string;
-  /** 自研启动路径开关（配合 clean-room lwjgl.jar）：开启自研桥固定参数段；并允许**需要 MeowClassLoader
-   *  的形态**（vanilla / launchwrapper 系）经 `MeowLauncher` 入口。非该形态（Forge ≥1.13 / NeoForge /
-   *  Fabric）即便为 true 也**直启**其加载器主类（见 buildLaunchArgv 的 `viaMeowLauncher`）。 */
+  /** 自研启动路径开关（配合 clean-room lwjgl.jar）：开启自研桥固定参数段。
+   *  **不再**影响主类选择（2026-10-01：MeowLauncher 退役后，所有形态一律直启 `json.mainClass`）。 */
   meowcraftLaunch?: boolean;
   /** 窗口尺寸（glfwstub 用）。 */
   width?: number;
   height?: number;
-  /** 启动器 home 目录（meow-home）：账户/运行数据所在。默认 gameRoot 父目录；
-   *  建议传 filesDir 下沙箱目录，避免外部目录写权限问题（账户自立门户）。
-   *  注：目录已 meow 化（原 launcher-home）；Java 属性键（MEOWCRAFT_HOME / meowcraft.path.*）
-   *  为 launcher.jar 读取的固定契约，不可改名。 */
   /** 实例身份（versions 目录名，见 VersionScanner.GameVersion.id）；空 = 退回 json 的 id。
-   *  MeowLauncher 的 <version> 参数与 ${version_name} 用它，保证与目录名一致。 */
+   *  `${version_name}` 用它，保证与目录名一致。 */
   versionId?: string;
+  /** 启动器 home 目录（meow-home）：运行数据所在。默认 gameRoot 父目录；
+   *  建议传 filesDir 下沙箱目录，避免外部目录写权限问题（账户自立门户）。
+   *  注：目录已 meow 化（原 launcher-home）；`-DMEOWCRAFT_HOME` 属性同步它（历史 launcher 的键名，
+   *  保留以不改动手册/夹具）。 */
   meowHomeDir?: string;
   /** CPU 线程数覆盖（-XX:ActiveProcessorCount）；0/未设 = 自动（不传，JVM 探测）。 */
   activeProcessorCount?: number;
@@ -133,7 +132,7 @@ export interface LaunchOptions {
   maxHeapMb?: number;
   /** 离线玩家名；空 = 用 LaunchDefaults.OFFLINE_USERNAME。 */
   playerName?: string;
-  /** 账户 UUID（NeoForge 由 ArkTS 直接组 game 参数 ⇒ 必须传真值；原版/Fabric 走 Java 侧可留空）。 */
+  /** 账户 UUID（game 参数由 ArkTS 组 ⇒ 必须传真值）。 */
   authUuid?: string;
   /** 账户 accessToken（同上）。 */
   authAccessToken?: string;
@@ -162,10 +161,14 @@ export interface LaunchOptions {
 
 /**
  * 组装启动 argv（不含 argv[0]）。
- * classpath 有两种形态（由 needsRealClasspath 按启动形态分流）：
+ * classpath 三种形态（按**主类/启动形态**分流，判据见 needsRealClasspath / isLaunchWrapperMain）：
  * ① **真 maven 树**（Forge ≥1.13 / NeoForge）：逐条绝对路径 + 实例 jar —— 必需，见
  *    REAL_CLASSPATH_MAIN_CLASSES（FML 按 ASM jar 的祖先目录反推 maven 根）；
- * ② **平铺 `<dir>/*`**（原版/Fabric/legacy）：超长 -cp 在本 JLI 移植会失效，故 jar 平铺后用通配传入。
+ * ② **有序绝对路径**（launchwrapper 形态：≤1.12.2 Forge / LiteLoader / 独立 OptiFine）：同样是
+ *    「清单顺序逐条绝对路径 + 实例 jar」，但**不含**随包 LWJGL3（改用 MC 的 LWJGL2），并按 HMCL 口径
+ *    把 OptiFine 排到最后、丢掉它的 launchwrapper fork —— 见 assembleRealTreeClasspath /
+ *    launchWrapperOptifineOrder。**为什么不用通配**见那条注释（它就是本次 TRSRTransformation 事故的根因）；
+ * ③ **平铺 `<dir>/*`**（原版/Fabric）：超长 -cp 在本 JLI 移植会失效，故 jar 平铺后用通配传入。
  */
 export function buildLaunchArgv(opts: LaunchOptions): string[] {
   // 归一版本清单：展开 inheritsFrom 继承链 / HMCL patches[]（见 VersionResolver）。
@@ -189,6 +192,14 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   // 「该有效版本要不要**真 maven 树** classpath」的**单一判据**（按启动形态判，不按 loader 名 /
   // 版本号；见 needsRealClasspath 与 REAL_CLASSPATH_MAIN_CLASSES 的机制说明）。
   const realTreeClasspath = needsRealClasspath(resolved);
+  // 「要不要给 launchwrapper 形态也走**显式有序绝对路径**」的判据（**按主类形态**，不写死版本号）：
+  // ≤1.12.2 的 Forge / LiteLoader / 独立 OptiFine 主类都是 `net.minecraft.launchwrapper.Launch`。
+  // 为什么必须（2026-10-01 事故定案）：平铺 `<dir>/*` 的展开顺序 = 文件系统 `readdir`（JDK 8 的
+  // `FileList_expandWildcards` 逐条目原地插入，**无排序语义**）⇒ OptiFine jar 里那份 920 B 的
+  // `TRSRTransformation` 空壳可能先于 Forge 本体命中 ⇒ `IModel.getDefaultState()` 调 `identity()`
+  // 抛 `NoSuchMethodError`（取证见 stuffs/research/launchwrapper-study/TRSR-crash-forensics.md）。
+  // 换回"清单顺序"后 `net.minecraftforge:forge` 恒在 OptiFine 之前（HMCL 同口径），同名类归属**确定**。
+  const launchWrapperClasspath = isLaunchWrapperMain(json.mainClass);
   // ── 随包 ASM 覆盖（方案 A「随包」）──
   // 判定见 needsAsmOverride（ModLauncher ≥10 且声明 ASM 读不懂当前 JRE 的 class 文件）；
   // 落位 = 实例 staging 平铺目录下的**子目录**（ASM_STAGE_SUBDIR，**不平铺**，避免混进
@@ -204,43 +215,39 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
       + ' "Unsupported class file major version %{public}d" on this JRE)',
       asmDir.length > 0 ? asmDir : '(no staged dir)', jreMajor + CLASS_MAJOR_OFFSET);
   }
-  // **主类分叉 = 桩件判据 = system CL 判据（一个变量驱动三处，同源，不再各写一遍）**：
-  // 只有**需要自研 system classloader（MeowClassLoader）的形态**才经 `MeowLauncher` 反射入口 ——
-  // 即 vanilla 与 launchwrapper 系（legacy ≤1.12.2）。该集合由两个**形态**子判据合取得出：
-  //  • `!realTreeClasspath`（= `needsRealClasspath` 取反）：排除 Forge ≥1.13 / NeoForge 这类**加载器
-  //    直启形态**（它们必须直启其 `mainClass`，且 classpath 是真库树、不补 launcher/gson 桩件）。
-  //  • `form === vanilla || isLaunchWrapperMain(主类)`：vanilla 需要它在运行期 **addURL** 往 classpath
-  //    追加 jar；launchwrapper 的 `Launch.<init>` 有 `(URLClassLoader) getClassLoader()` 强转，也必须
-  //    有 `MeowClassLoader`（两者都不满足的 Fabric —— form=inherits、主类=KnotClient —— 因而是直启）。
-  //
-  // **为什么 Forge ≥1.13 必须直启、不能经 MeowLauncher 反射**（2026-09-30 真机取证：1.17.1 / 1.18.2）：
-  // Java 9+ 模块系统下，从**无名模块**（我们的 launcher.jar，随 app classpath 进 unnamed module）反射调用
-  // **有模块**的主类，会因目标 module 的 `module-info` 未 `exports`/`opens` 自己的包而被拒 —— 报
-  // `IllegalAccessException: class meow.launcher.MeowLauncher cannot access class
-  //  cpw.mods.bootstraplauncher.BootstrapLauncher (in module cpw.mods.bootstraplauncher) because module
-  //  cpw.mods.bootstraplauncher does not export cpw.mods.bootstraplauncher to unnamed module`。
-  // 旧 `bootstraplauncher`（0.1.17 / 1.0.0）的 `module-info` 无任何 exports/opens ⇒ **只有老版本暴露**；
-  // 1.1.2 起 `exports cpw.mods.bootstraplauncher` 才放行（故 1.19.4/1.20.1 的反射能过）。NeoForge 一直
-  // 直启主类、从未踩过此坑 ⇒ 让 Forge ≥1.13 与它同口径。直启后 game 参数照样齐（`arguments.game`
-  // 自带 `--launchTarget`/`--fml.*`，见下方 else 分支的 collectGameArgs）。
-  // ⚠️ 直启形态**必须**同时不设 `-Djava.system.class.loader`：launcher.jar 已不在其 classpath 上，
-  //    仍设会让 JVM 启动期 `Class.forName("meow.launcher.MeowClassLoader")` 直接 ClassNotFound。
-  const viaMeowLauncher = opts.meowcraftLaunch === true && !realTreeClasspath
-    && (resolved.form === VERSION_FORM_VANILLA || isLaunchWrapperMain(json.mainClass));
+  // **主类分叉已取消（2026-10-01 方案 A：MeowLauncher 退役）**：所有形态一律直启 `json.mainClass`，
+  // 且**不设** `-Djava.system.class.loader`。这里保留"为什么"的定案，防止将来又把它请回来：
+  //  · **launchwrapper 系（legacy ≤1.12.2 的 Forge / LiteLoader / OptiFine）**：`net.minecraft.launchwrapper.Launch`
+  //    的私有构造里有 `(URLClassLoader) getClassLoader()` 强转。我们只在 **Java 8 档**跑这类实例
+  //    （见 JavaPolicy），而 JDK 8 的 app classloader（`sun.misc.Launcher$AppClassLoader`）**本身就是
+  //    `URLClassLoader` 子类** ⇒ 强转原生成立，**不需要**换系统 CL。历史上"换系统 CL（MeowClassLoader）
+  //    + 把启动器族摘出平铺"这一对**只是为现代 JRE（JDK 9+ 的 `AppClassLoader extends BuiltinClassLoader`）
+  //    **服务；既然已定口径"老 Forge 只走 Java 8 档"，整套机制不再需要
+  //    （研究档 `stuffs/research/launchwrapper-study/REPORT.md` §2/§2.4）。
+  //  · `LaunchClassLoader` 的委派父指向"定义 `Launch` 的那个 CL"（= app CL）⇒ tweaker 实现类与
+  //    `net.minecraft.launchwrapper.ITweaker` 同源 ⇒ **单一平铺 CL 下无 CCE / 无 CNFE**（同报告 §2.2）。
+  //  · **vanilla**：历史上走 MeowLauncher 只为运行期 `addURL`；`ClasspathStager` 已把全部 jar 平铺 ⇒
+  //    平铺 classpath 自足、该职责空转 ⇒ 直启 `net.minecraft.client.main.Main`（2026-10-01 摘除）。
+  //  · **Forge ≥1.13 / NeoForge**（加载器直启形态，真 maven 树 classpath）：必须直启其 `mainClass`
+  //    （Java 9+ 模块系统下从无名模块反射调"有模块"的主类会被 `IllegalAccessException` 拒；2026-09-30 取证）
+  //    ⇒ 与"一律直启"同口径。
+  // ⇒ 主类恒 = `json.mainClass`；game 参数恒由本函数 `collectGameArgs`（launchwrapper 系另加 tweak
+  //    顺序修复，见 reorderLaunchWrapperTweaks）拼出。
   // classpath：
   // - 真 maven 树（`realTreeClasspath`）：**必须**是「真库树逐条绝对路径 + 实例 jar」——Forge ≥1.13 的 FML
   //   用 ASM jar 的祖先目录反推 maven 根，平铺通配必然把路径基算错 ⇒ `Missing forge!`
   //   （机制见 REAL_CLASSPATH_MAIN_CLASSES）；NeoForge 的 `-p` / `-DignoreList` / `-DmergeModules`
-  //   同样依赖真实布局。随包 LWJGL3 jar（以及走 MeowLauncher 时的 launcher/gson 桩件）另从平铺目录
-  //   按**绝对路径**补进来——**绝不用** `<dir>/*`（否则 ASM 可能先命中平铺那份，病根照旧）。
-  // - 原版/Fabric/legacy：维持平铺 `<dir>/*`（规避超长 -cp）。**legacy 有一处例外**：它的
-  //   「启动器族」（launchwrapper / FML 本体 / OptiFine，见 LOADER_FAMILY_PATH_SEGMENTS）必须
-  //   **摘出**平铺，改由 `MeowClassLoader` 从真 maven 树加载——留在平铺里会让 app classloader
-  //   先命中（父优先委托）⇒ `Launch.<init>` 的 `(URLClassLoader) getClassLoader()` 强转崩。
-  //   机理与真机取证见 `collectJarSources`（2026-09-30 更正：本行原先写反了）。
-  const rawClasspath = realTreeClasspath
+  //   同样依赖真实布局。随包 LWJGL3 jar 另从平铺目录按**绝对路径**补进来——**绝不用** `<dir>/*`
+  //   （否则 ASM 可能先命中平铺那份，病根照旧）。
+  // - launchwrapper 形态（≤1.12.2 Forge / LiteLoader / 独立 OptiFine）：**同样不用通配**，走
+  //   「清单顺序逐条绝对路径 + 实例 jar」（与旧 `MeowClassLoader` / HMCL 的 `${classpath}` 同口径）。
+  //   不复用平铺的原因 = 通配没有顺序语义（TRSRTransformation 事故根因）；OptiFine 排位见
+  //   launchWrapperOptifineOrder。注意它**不含**随包 LWJGL3（用 MC 的 LWJGL2）。
+  // - 原版/Fabric：平铺 `<dir>/*`（规避超长 -cp），沿用既有行为。
+  const rawClasspath = (realTreeClasspath || launchWrapperClasspath)
     ? assembleRealTreeClasspath(opts.gameRoot, resolved, id,
-        opts.classpathDir !== undefined ? opts.classpathDir : '', opts.jsonPath, viaMeowLauncher)
+        opts.classpathDir !== undefined ? opts.classpathDir : '', opts.jsonPath,
+        realTreeClasspath, launchWrapperClasspath)
     : ((opts.classpath !== undefined && opts.classpath.length > 0)
       ? opts.classpath
       : assembleClasspath(opts.gameRoot, json, id));
@@ -248,14 +255,22 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   // `-cp` 里的 ASM 条目（=`collectFromJson` 收的真树件）换成随包件的**绝对路径**，其余 `org/ow2/asm/*` 剔除。
   const classpath = asmOverride ? rewriteAsmList(rawClasspath, asmDir) : rawClasspath;
   // classpath 形态自证（稳定英文诊断串）：排查"这类实例为什么起不来"时先看这一行。
-  // flat = 平铺目录通配（原版/Fabric/legacy）；real-tree = 真 maven 树逐条绝对路径。
+  // real-tree = 真库树逐条绝对路径（Forge ≥1.13 / NeoForge）；ordered = launchwrapper 形态的
+  // **显式有序绝对路径**（≤1.12.2 Forge；本次 TRSRTransformation 事故的修法，**不再是通配**）；
+  // flat = 平铺目录通配（原版/Fabric）。entries = `:` 分隔的条目数。
   // bytes = classpath 串的 **UTF-8 字节数**（对齐 argv 长度上限口径；用 util.TextEncoder 精确取，
   // 非 UTF-16 字符数 —— 游戏根路径可能含非 ASCII 中文目录名）。
+  const cpEntries = classpath.length === 0 ? 0 : classpath.split(':').length;
+  const cpBytes = classpath.length === 0 ? 0 : new util.TextEncoder().encodeInto(classpath).byteLength;
   if (realTreeClasspath) {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath mode=real-tree (entries=%{public}d, bytes=%{public}d)',
-      classpath.length === 0 ? 0 : classpath.split(':').length,
-      classpath.length === 0 ? 0 : new util.TextEncoder().encodeInto(classpath).byteLength);
+      cpEntries, cpBytes);
     logAsmProvider(classpath, opts.gameRoot, asmOverride);
+  } else if (launchWrapperClasspath) {
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath mode=ordered (entries=%{public}d, bytes=%{public}d)',
+      cpEntries, cpBytes);
+    // 同名类多提供者体检（F3）：本次事故"下次一眼可见"的保障，只对已知敏感类做定点检查。
+    logDuplicateClassProviders(classpath, DUPLICATE_CLASS_WATCHLIST);
   } else {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath mode=flat');
   }
@@ -286,7 +301,7 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     : nativesDir;
   const player = (opts.playerName !== undefined && opts.playerName.length > 0)
     ? opts.playerName : OFFLINE_USERNAME;
-  const macros = makeMacros(gameDir, opts.gameRoot, id, json.assetIndex?.id ?? '', classpath,
+  const macros = makeMacros(gameDir, opts.gameRoot, id, json, classpath,
     nativeMacroDir, player,
     opts.authUuid !== undefined ? opts.authUuid : '',
     opts.authAccessToken !== undefined ? opts.authAccessToken : '',
@@ -311,8 +326,8 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   if (opts.maxHeapMb !== undefined && opts.maxHeapMb > 0) {
     argv.push(`-Xmx${opts.maxHeapMb}m`);
   }
-  // user.dir = 运行目录：MeowLauncher 的 GameDirs.profile 取它，派生 ${game_directory} 宏 →
-  // MC 的 --gameDir（存档/选项/日志/资源包落点），log4j 相对路径也随它。
+  // user.dir = 运行目录：game 参数 `${game_directory}` 宏由它派生 → MC 的 --gameDir
+  // （存档/选项/日志/资源包落点），log4j 相对路径也随它。
   // "版本隔离"开关的唯一作用点就是这里；user.home 保持 .minecraft 根（不参与隔离）。
   argv.push('-Duser.dir=' + gameDir);
   argv.push('-Duser.home=' + opts.gameRoot);
@@ -337,24 +352,12 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     // freetype 由随包 libfreetype.so 提供（自编，来自 meowlwjgls HAR；libfontmanager 硬依赖，勿改名覆盖）。
   }
 
-  // 自研桥模式固定参数（与历史启动器 JVMLauncher overridableArguments 全量对齐——LWJGL 桥与 MeowClassLoader 需要）。
-  // **加载器直启形态**（Forge ≥1.13 / NeoForge）同样需要（LWJGL/随包 native/平台伪装都在这一段），
-  // 只是它们**不设** MeowClassLoader、主类也不走 MeowLauncher（见下方 `viaMeowLauncher` 分支）。
+  // 自研桥模式固定参数（与历史启动器 JVMLauncher overridableArguments 全量对齐——LWJGL 桥需要）。
+  // **加载器直启形态**（Forge ≥1.13 / NeoForge）同样需要（LWJGL/随包 native/平台伪装都在这一段）。
+  // 注：这一段**不再设** `-Djava.system.class.loader`（MeowLauncher/MeowClassLoader 已退役，2026-10-01）：
+  //  各形态一律直启其 `mainClass`、classpath 平铺/真树自足 ⇒ 设它只会让 JVM 启动期
+  //  `Class.forName` 直接 ClassNotFound。Fabric 同理（Knot 要求 loader 类由父加载器持有）。
   if (opts.meowcraftLaunch === true || neoForge) {
-    // 自研 system classloader 只服务"经 MeowLauncher 反射入口"的两类实例（= 上方 `viaMeowLauncher`，
-    // 同一判据，不另设布尔）：
-    // ① vanilla —— 让我们在运行期往 classpath 追加 jar（MeowLauncher 的 addURL 路径）；
-    // ② **launchwrapper 系**（≤1.12.2 的 Forge 等）—— `net.minecraft.launchwrapper.Launch.<init>` 的
-    //    `(URLClassLoader) getClassLoader()` 强转在 JDK 9+ 的 `AppClassLoader` 上必崩 ⇒ 系统 CL 必须是
-    //    `MeowClassLoader`（URLClassLoader 子类），否则启动即 `ClassCastException`
-    //    （2026-09-28 真机取证，见 notes `Forge支持-改动方案.md` §10 R1）。
-    // **加载器直启形态（Forge ≥1.13 / NeoForge）与 Fabric 一律不得设**：前者主类由我们直启、launcher.jar
-    // 已从 classpath 摘除 ⇒ 仍设会在 JVM 启动期 `Class.forName` 直接 ClassNotFound（且其 module layer
-    // 依赖默认 app CL）；Fabric Knot 要求 loader 类由父加载器持有，自设 system CL 会破坏该契约。
-    // （判据含 `!realTreeClasspath` 而非只看 form：Forge ≥1.13 的自包含清单会被判成 `vanilla`。）
-    if (viaMeowLauncher) {
-      argv.push(`-Djava.system.class.loader=${MEOW_CLASS_LOADER}`);
-    }
     // 渲染后端按 MC 版本选（见 RendererPolicy）：≥1.17 → 桌面 GL libGLv4.so(Zink)；
     // ≤1.16 → gl4es(libgl4es.so，GLES 上的固定管线翻译)。必须与 startJvm 传的 rendererLib 一致；
     // glfwstub 不自建 EGL，交给渲染后端（桥按 MEOWCRAFT_RENDERER 决定 GL/GLES）。
@@ -389,13 +392,12 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     const h = opts.height ?? WINDOW_DEFAULT_H;
     argv.push(`-Dglfwstub.windowWidth=${w}`);
     argv.push(`-Dglfwstub.windowHeight=${h}`);
-    // launcher.jar 的 MeowLauncher.launchMinecraft 会读取该属性并转写为
-    // glfw.windowSize（缺它则 getProperty 返回 null → System.setProperty NPE，同款）。
+    // 窗口尺寸的 cacio 键（历史 launcher 的 MeowLauncher.launchMinecraft 曾读它转写为
+    // glfw.windowSize）。**现无消费者**，保留以不改动手册/夹具；桥的窗口尺寸由 glfwstub.window* 承载。
     argv.push(`-Dcacio.managed.screensize=${w}x${h}`);
     argv.push(`-Dmeowcraft.path.minecraft=${opts.gameRoot}`);
-    // 目录模型：MEOWCRAFT_HOME=homeDir（账户所在，dir=<home>+"/accounts"），
-    // MEOWCRAFT_GAME_DIR=.minecraft。账户目录自立门户：传 filesDir 下沙箱目录最稳（外部目录可能不可写）。
-    // 账户 home：正常由 GameLauncher 恒传可写沙箱目录；缺省时退回游戏根（不再假设 .minecraft 父目录）。
+    // 目录模型：MEOWCRAFT_HOME=homeDir（运行数据 home），MEOWCRAFT_GAME_DIR=.minecraft。
+    // 传 filesDir 下沙箱目录最稳（外部目录可能不可写）；缺省时退回游戏根。
     const homeDir = opts.meowHomeDir !== undefined && opts.meowHomeDir.length > 0
       ? opts.meowHomeDir
       : opts.gameRoot;
@@ -459,7 +461,7 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
 
   // JVM 参数（规则过滤 + 宏替换；含 -cp ${classpath} → 真实 cp）。
   // legacy（≤1.12.2）用 minecraftArguments、没有 arguments.jvm，所以这里不会带出 -cp —— 必须补上，
-  // 否则 `-Djava.system.class.loader=MeowClassLoader` 找不到类 → VM 初始化即败（表现=秒崩）。
+  // 否则 classpath 缺失 → 主类/库加载失败（表现=秒崩）。
   let hasClasspathArg = false;
   // `-p` 的**下一项**是 module path 串：ASM 覆盖时把它一并改写（见 rewriteAsmList —— ②代 ASM 正是
   // 经 `-p` + `--add-modules ALL-MODULE-PATH` 加载，只改 `-cp` 会留旧件、甚至造成同模块两份）。
@@ -499,32 +501,30 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     argv.push(`-Dorg.lwjgl.system.SharedLibraryExtractPath=${nativesDir}`);
     argv.push(`-Dio.netty.native.workdir=${nativesDir}`);
   }
-  // 主类与后续参数（判据 = 上方 `viaMeowLauncher`，与 classpath 形态 / 桩件 / system CL **同源**）：
-  // - vanilla/legacy：MeowLauncher <username> <version>（其内部反射真正 mainClass、补 game 参数）；
-  // - **加载器直启形态**（Forge ≥1.13 / NeoForge）**与 Fabric**：直接以各自主类启动
-  //   （modlauncher.Launcher / BootstrapLauncher / ForgeBootstrap / fml.startup.Client / KnotClient），
-  //   并由本函数补齐 game 参数（`--launchTarget`/`--fml.*`/账户等）——**不设** `-Djava.system.class.loader`
-  //   （这族自带模块层/类加载体系；且 launcher.jar 已不在此形态的 classpath 上）。
-  if (viaMeowLauncher) {
-    argv.push(MEOW_MAIN_CLASS);
-    argv.push(player);
-    argv.push(id);
-  } else {
-    const mainClass = json.mainClass ?? '';
-    if (mainClass.length > 0) {
-      argv.push(mainClass);
-    }
-    // 游戏参数
-    for (const raw of collectGameArgs(json)) {
-      const v = expand(raw, macros);
-      if (v.length > 0) {
-        argv.push(v);
-      }
+  // 主类与后续参数（**统一路径**，2026-10-01 起不再分叉）：
+  // 直接以 `json.mainClass` 启动（`net.minecraft.client.main.Main` / KnotClient / launchwrapper 的
+  // `net.minecraft.launchwrapper.Launch` / modlauncher.Launcher / BootstrapLauncher / ForgeBootstrap /
+  // fml.startup.Client …），并由本函数补齐 game 参数（账户 / `--launchTarget` / `--fml.*` 等）。
+  // launchwrapper 系另做一遍 tweak 顺序修复（照抄 HMCL 的确定性规则，见 reorderLaunchWrapperTweaks）。
+  const mainClass = json.mainClass ?? '';
+  if (mainClass.length > 0) {
+    argv.push(mainClass);
+  }
+  // 游戏参数：`collectGameArgs` 出原始 token（可能同时来自 minecraftArguments 与 arguments.game），
+  // launchwrapper 系先按 HMCL 规则重排 tweak，再统一做宏替换后追加。
+  let gameArgs = collectGameArgs(json);
+  if (isLaunchWrapperMain(mainClass)) {
+    gameArgs = reorderLaunchWrapperTweaks(gameArgs, resolved, json);
+  }
+  for (const raw of gameArgs) {
+    const v = expand(raw, macros);
+    if (v.length > 0) {
+      argv.push(v);
     }
   }
   // MC 的 `--graphicsBackend` 是**游戏参数**，必须在主类之后（之前误放进 JVM 的 -D 区，JVM 会当作自己的
-  // 选项而拒绝启动）。两条路径都在这里追加：vanilla/legacy 由我们的 launcher 把 `args[2..]` 原样转给 MC，
-  // 直启形态（Forge ≥1.13 / NeoForge / Fabric）直接由本函数补齐 game 参数。MC 默认 GL 优先（见方案文 §5.5），只有它才会去试 Vulkan；
+  // 选项而拒绝启动）。所有形态的 game 参数都由本函数补齐（2026-10-01 起无 Java 侧转发）。
+  // MC 默认 GL 优先（见方案文 §5.5），只有它才会去试 Vulkan；
   // 候选列表是 {VulkanBackend, GlBackend}，Vulkan 失败仍回退 GL（安全垫）。回退阶梯见 §7.5。
   if (opts.graphicsBackend !== undefined && opts.graphicsBackend.length > 0) {
     argv.push('--graphicsBackend', opts.graphicsBackend);
@@ -544,18 +544,36 @@ export function readVersionId(jsonPath: string): string {
 
 /** 宏表：值由 json + 离线约定决定。gameDir = 运行目录（隔离时 = versions/<id>），
  *  gameRoot = .minecraft 根（只有 assets 从它派生，保证资源池始终共享）。 */
-function makeMacros(gameDir: string, gameRoot: string, id: string, assetIndexId: string,
+function makeMacros(gameDir: string, gameRoot: string, id: string, json: VersionJson,
   classpath: string, nativesDir: string, player: string, authUuid: string,
   authAccessToken: string, authXuid: string): LaunchMacros {
   const m: LaunchMacros = new Map<string, string>();
   m.set('auth_player_name', player);
   m.set('version_name', id);
-  m.set('version_type', 'release');
+  // `version_type` 取清单声明的 `type`（旧 Java `ArgBuilder` 同源；缺省 release）。纯装饰性：
+  // MC 不据此做分支，仅进 F3/日志。
+  m.set('version_type', (json.type !== undefined && json.type.length > 0) ? json.type : 'release');
   m.set('game_directory', gameDir);
   m.set('assets_root', `${gameRoot}/assets`);
-  m.set('assets_index_name', assetIndexId);
-  m.set('auth_uuid', authUuid);
+  // `assets_index_name` 优先取清单的 `assets` 字段、再退 `assetIndex.id`（旧 Java `ArgBuilder` 同序；
+  // 1.6.x 及更早只用 `assets`）。
+  m.set('assets_index_name', assetIndexName(json));
+  // `auth_uuid` **去横线**（32 位紧凑形式）——旧 Java `ArgBuilder.stripDashes` 与 HMCL 的
+  // `UUIDs.toCompactString` 都如此，且 HMCL 对**所有**版本（含 1.20.x）都发紧凑形式 ⇒ 统一去横线。
+  m.set('auth_uuid', authUuid.split('-').join(''));
   m.set('auth_access_token', authAccessToken);
+  // legacy（≤1.12.2）清单要用的三个宏 —— 旧 Java 侧 `ArgBuilder` 有、ArkTS 侧原先缺（本函数原先只服务
+  // 直启形态：Fabric / Forge ≥1.13 / NeoForge，它们的现代清单不用这三个）。legacy 也从本函数走后
+  // **必须补齐**，否则会把 `${...}` 字面量原样发给 MC：
+  //  - `1.6.4`：`--username ${auth_player_name} --session ${auth_session} --version … --gameDir …
+  //    --assetsDir ${game_assets}`（用 `auth_session` / `game_assets`）；
+  //  - `1.7.10` / `1.8.9`：`… --userProperties ${user_properties} --userType ${user_type}`
+  //    （MC 把 `--userProperties` 的值当 JSON 解析 ⇒ 必须给 `{}`）。
+  //  取值与旧 `ArgBuilder.build` 同义：`auth_session` = accessToken（离线无 token 时退回 `OFFLINE_TOKEN`）；
+  //  `game_assets` = `<gameRoot>/assets`（与 `assets_root` 同源）；`user_properties` = `{}`。
+  m.set('auth_session', authAccessToken.length > 0 ? authAccessToken : OFFLINE_TOKEN);
+  m.set('game_assets', `${gameRoot}/assets`);
+  m.set('user_properties', '{}');
   m.set('classpath', classpath);
   m.set('natives_directory', nativesDir);
   // NeoForge（FML）清单里的占位符：模块路径 / 库目录 / 主 jar（`-DignoreList` 要用）。
@@ -591,13 +609,164 @@ function collectArgs(args?: Array<string | VersionRuleArg>): string[] {
   return out;
 }
 
-/** 游戏参数：新版 arguments.game 或旧版 minecraftArguments（按空格拆分）。 */
-function collectGameArgs(json: VersionJson): string[] {
-  if (json.arguments?.game !== undefined) {
-    return collectArgs(json.arguments.game);
+/** 清单的 asset index 名：优先 `assets` 字段、再退 `assetIndex.id`（旧 Java `ArgBuilder` 同序）。 */
+function assetIndexName(json: VersionJson): string {
+  const a = json.assets;
+  if (a !== undefined && a.length > 0) {
+    return a;
   }
+  return json.assetIndex?.id ?? '';
+}
+
+/**
+ * 游戏参数原始 token（宏替换前）。
+ *
+ * 形态对齐 HMCL `GameInstanceLibraryBuilder`：
+ * - `minecraftArguments`（单串，按**空白**切）与 `arguments.game`（数组）**各存一份**；
+ * - 若存在 `minecraftArguments`，官方启动器会**忽略** `arguments`，HMCL 于是把 `game` 追加进 mcArgs
+ *   （`build()` 的实现）⇒ 本函数同样返回 `mcArgs + game`。**必需**：HMCL 补丁式（patches[]）的
+ *   Forge+OptiFine 实例里，`--tweakClass FMLTweaker` 在 `minecraftArguments`、`--tweakClass
+ *   optifine.OptiFineTweaker` 在 `arguments.game`，只取其一都会丢 tweak。
+ * - 只有 `arguments.game`（现代清单）⇒ 直接用 game 数组。
+ */
+function collectGameArgs(json: VersionJson): string[] {
   const legacy = json.minecraftArguments ?? '';
-  return legacy.length > 0 ? legacy.split(' ') : [];
+  const mcArgs: string[] = legacy.length > 0
+    ? legacy.split(/\s+/).filter((s: string) => s.length > 0)
+    : [];
+  const game: string[] = json.arguments?.game !== undefined ? collectArgs(json.arguments.game) : [];
+  if (mcArgs.length > 0) {
+    return mcArgs.concat(game);
+  }
+  return game;
+}
+
+// ───────────────────── launchwrapper tweak 顺序修复（照抄 HMCL 的确定性规则） ─────────────────────
+// 为什么需要：装上 Forge 常会**整段替换**游戏的参数表（如 Forge 安装器/补丁写自己的
+// `minecraftArguments`），把 LiteLoader / OptiFine 的 `--tweakClass` 挤掉或打乱顺序。launchwrapper 对
+// tweak 的**加载顺序敏感**（后者可覆盖前者的 transformer 注册），故必须在启动前把顺序修成确定性形式。
+//
+// 规则来源（逐条照抄 `ref/HMCL`，勿凭理解改写）：
+//  · `org.jackhuang.hmcl.game.LaunchManifestNormalizer.repairLaunchWrapper()`（三段：LiteLoader → OptiFine
+//    → Forge，每段以"先删净、再前插"处理，故**净效果头部 = Forge → OptiFine → LiteLoader**）；
+//  · `org.jackhuang.hmcl.game.GameInstanceLibraryBuilder.replaceTweakClass(target, replacement, false, true)`
+//    （`reorderTweakClass=true` ⇒ `inPlace=false, reserve=true`：删掉**所有** `--tweakClass <target>` 相邻
+//    对；若 replacement 非空则把 `--tweakClass <replacement>` 前插到**最前**）；
+//  · `org.jackhuang.hmcl.game.GameComponentAnalyzer`（组件识别：补丁 id 优先、其次库坐标）；
+//  · 主类常量 `GameComponentAnalyzer.{LAUNCH_WRAPPER_MAIN, MOD_LAUNCHER_MAIN}`。
+//
+// 触发面：仅 **launchwrapper 主类**（`net.minecraft.launchwrapper.Launch`，≤1.12.2 的 Forge/LiteLoader/
+// OptiFine）。**Forge 的 tweaker 缺失时不补**（HMCL 只对已存在的 Forge tweaker 重排；LiteLoader/OptiFine
+// 才在组件存在时"补一份"）。
+/** launchwrapper 主类（tweak 顺序修复 + 显式有序 classpath 的触发判据）。 */
+const LAUNCHWRAPPER_MAIN: string = 'net.minecraft.launchwrapper.Launch';
+
+/**
+ * 主类是否 launchwrapper 形态（≤1.12.2 的 Forge / LiteLoader / 独立 OptiFine）。
+ * 判据按**主类（形态）**而非 MC 版本号 / loader 名：薄 `inheritsFrom`、被人工改写的清单、
+ * 独立 OptiFine 等都能稳定命中。用于挑「显式有序 classpath」与 tweak 顺序修复。
+ */
+function isLaunchWrapperMain(main: string | undefined): boolean {
+  return main === LAUNCHWRAPPER_MAIN;
+}
+/** Forge 的 tweaker（1.5.2 的 LibraryFixer / 1.7.10 的 cpw.mods / 1.8+ 的 net.minecraftforge）。
+ *  迭代顺序同 HMCL；每命中即"删净 + 前插"，只有**已存在**的那个会被重排（缺失不补）。 */
+const FORGE_TWEAKERS: string[] = [
+  'net.minecraftforge.legacy._1_5_2.LibraryFixerTweaker',
+  'cpw.mods.fml.common.launcher.FMLTweaker',
+  'net.minecraftforge.fml.common.launcher.FMLTweaker',
+];
+/** OptiFine 的两种 tweaker：`[0]` = 独立版，`[1]` = 与 Forge 同用版。 */
+const OPTIFINE_TWEAKER_PLAIN: string = 'optifine.OptiFineTweaker';
+const OPTIFINE_TWEAKER_FORGE: string = 'optifine.OptiFineForgeTweaker';
+/** LiteLoader 的 tweaker。 */
+const LITELOADER_TWEAKER: string = 'com.mumfrey.liteloader.launch.LiteLoaderTweaker';
+
+/** 参数表里是否存在 `--tweakClass <t>` 相邻对（等价 HMCL `hasTweakClass`）。 */
+function hasTweak(args: string[], t: string): boolean {
+  for (let i = 0; i + 1 < args.length; i++) {
+    if (args[i] === '--tweakClass' && args[i + 1] === t) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * HMCL `replaceTweakClass(target, replacement, inPlace=false, reserve=true)` 的等价实现：
+ * 删净**所有** `--tweakClass <target>` 相邻对；`replacement` 非空则把 `--tweakClass <replacement>`
+ * **前插到最前**（`replacement=null` 即 HMCL 的 `removeTweakClass`）。
+ */
+function reorderTweak(args: string[], target: string, replacement: string | null): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (i + 1 < args.length && args[i] === '--tweakClass' && args[i + 1] === target) {
+      i++;   // 丢掉这一对
+      continue;
+    }
+    out.push(args[i]);
+  }
+  if (replacement !== null) {
+    out.unshift(replacement);
+    out.unshift('--tweakClass');
+  }
+  return out;
+}
+
+/** 库表里是否存在某 `group:artifact` 前缀的条目（组件识别用；对齐 HMCL GameComponentAnalyzer）。 */
+function hasLibraryPrefix(json: VersionJson, prefix: string): boolean {
+  for (const lib of json.libraries ?? []) {
+    if ((lib.name ?? '').startsWith(prefix)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 按 HMCL `repairLaunchWrapper` 的三段规则重排 launchwrapper 系的 `--tweakClass`，净效果头部 =
+ * **Forge → OptiFine → LiteLoader**。`resolved` 用于 Forge 组件识别（= `detectLoader` 的结论；
+ * 解析后的有效清单里 `patches[]` 已折叠掉，故组件识别只能用**库表 + loader**）。
+ *
+ * HMCL 里 `hasForgeModLauncher()` 的两个分支（把主类提升为 ModLauncher / 删 OptiFine tweaker）**不会**
+ * 到达：本函数只在主类 = launchwrapper `Launch` 时被调用，而 Forge-ModLauncher 形态的主类是
+ * `cpw.mods.modlauncher.Launcher`（见 needsRealClasspath / REAL_CLASSPATH_MAIN_CLASSES）⇒ 已排除。
+ */
+function reorderLaunchWrapperTweaks(args: string[], resolved: ResolvedVersion,
+  json: VersionJson): string[] {
+  const hasLiteLoader = hasLibraryPrefix(json, 'com.mumfrey:liteloader');
+  const hasOptiFine = hasLibraryPrefix(json, 'optifine:OptiFine');
+  const hasForge = resolved.loader === LOADER_FORGE;
+  let out = args;
+  // ① LiteLoader：有组件则"删净 + 前插一份"，否则清掉不该有的。
+  if (hasLiteLoader) {
+    out = reorderTweak(out, LITELOADER_TWEAKER, LITELOADER_TWEAKER);
+  } else {
+    out = reorderTweak(out, LITELOADER_TWEAKER, null);
+  }
+  // ② OptiFine：独立版用 OptiFineTweaker；与 Forge（或 LiteLoader）同用时换成 OptiFineForgeTweaker。
+  if (hasOptiFine) {
+    if (!hasLiteLoader && !hasForge) {
+      // 独立 OptiFine：若误带 Forge 版 tweaker，换回独立版。
+      if (hasTweak(out, OPTIFINE_TWEAKER_FORGE)) {
+        out = reorderTweak(out, OPTIFINE_TWEAKER_FORGE, OPTIFINE_TWEAKER_PLAIN);
+      }
+    } else if (hasTweak(out, OPTIFINE_TWEAKER_PLAIN)) {
+      out = reorderTweak(out, OPTIFINE_TWEAKER_PLAIN, OPTIFINE_TWEAKER_FORGE);
+    }
+  } else {
+    out = reorderTweak(out, OPTIFINE_TWEAKER_PLAIN, null);
+    out = reorderTweak(out, OPTIFINE_TWEAKER_FORGE, null);
+  }
+  // ③ Forge：无组件则清掉；有组件且该 tweaker **已存在**才重排（缺失不补，这是 HMCL 的刻意行为）。
+  for (const t of FORGE_TWEAKERS) {
+    if (!hasForge) {
+      out = reorderTweak(out, t, null);
+    } else if (hasTweak(out, t)) {
+      out = reorderTweak(out, t, t);
+    }
+  }
+  return out;
 }
 
 /** 宏替换：仅 ${name} 形式。 */
@@ -962,19 +1131,262 @@ function logAsmProvider(classpath: string, gameRoot: string, asmOverridden: bool
   }
 }
 
+// ───────────── launchwrapper 形态的 OptiFine 排位（照抄 HMCL DefaultLauncher.getClasspath） ─────────────
 /**
- * 真 maven 树 classpath：**按清单顺序**逐条绝对路径 + 实例 jar（对齐 HMCL 的 `${classpath}`）。
+ * 把 launchwrapper 形态的**清单顺序**整理成"同名类赢家确定"的形态（对齐 HMCL
+ * `DefaultLauncher.getClasspath()` 的 `processOptiFine` 分支）：
  *
- * 用于「需要真库树」的版本（`needsRealClasspath`：Forge ≥1.13 / NeoForge）。它们**必须**能从
- * classpath 条目上看出真实 maven 布局（FML 按 ASM jar 的祖先目录反推 `libraries` 根，见
- * `REAL_CLASSPATH_MAIN_CLASSES`）⇒ **平铺目录绝不能出现在这里**：只要平铺在，ASM 就可能先命中
- * 平铺那份，路径基又算错（`Missing forge!`）。是**替换**，不是追加。
+ * HMCL 在「OptiFine 与 Forge 或 LiteLoader 共存」时做两件事：
+ *  1. `optifine:launchwrapper-of` **整条丢掉**（原文 "Drop OptiFine's private launchwrapper;
+ *     Forge/LiteLoader supply their own."）——它定义与 `net.minecraft:launchwrapper:1.12` **完全同名**
+ *     的一组 `net.minecraft.launchwrapper.*`；留着会让"谁定义 `Launch` / `LaunchClassLoader`"不确定
+ *     （本次事故的第二个冲突面：真正生效的 `Launch` 竟来自 `launchwrapper-of-2.2`，见
+ *     `stuffs/research/launchwrapper-study/TRSR-crash-forensics.md` §3.3）。
+ *  2. `optifine:OptiFine` 从原位**移到最末**（原文 "Re-append the installer last so OptiFine follows
+ *     Forge"）——OptiFine 1.12.2 的 jar 里带着 10 个 `net.minecraftforge.**` 残件（含 920 B 的
+ *     `TRSRTransformation` 空壳）；只有让 Forge 本体**先命中**，`IModel.getDefaultState()` 的
+ *     `identity()` 才能解析到真身（22976 B / 65 方法）。
+ *
+ * ⇒ 顺序来源仍是**清单顺序**（与旧 `MeowClassLoader` / HMCL 同口径），只在两类件上做上述整理；
+ *    **不是**改回通配，故不依赖任何文件系统枚举顺序。就地改写 `parts`（保序去重由调用方紧随其后）。
+ */
+function launchWrapperOptifineOrder(parts: string[], gameRoot: string, json: VersionJson): void {
+  const libRoot = `${gameRoot}/libraries/`;
+  const dropPaths = new Set<string>();   // optifine:launchwrapper-of*（整条丢）
+  const lastPaths = new Set<string>();   // optifine:OptiFine*（移到最末）
+  for (const lib of json.libraries ?? []) {
+    if (!ruleAllows(lib.rules)) {
+      continue;
+    }
+    const name = lib.name ?? '';
+    const isLaunchWrapperOf = name === 'optifine:launchwrapper-of'
+      || name.startsWith('optifine:launchwrapper-of:');
+    const isOptiFine = name === 'optifine:OptiFine' || name.startsWith('optifine:OptiFine:');
+    if (!isLaunchWrapperOf && !isOptiFine) {
+      continue;
+    }
+    // 与 collectFromJson 同口径推路径（maven 相对路径 → 绝对路径），保证命中的正是 classpath 里那条。
+    let rel = lib.downloads?.artifact?.path ?? '';
+    if (rel.length === 0) {
+      rel = mavenPathFromName(name);
+    }
+    if (rel.length === 0) {
+      continue;
+    }
+    if (isLaunchWrapperOf) {
+      dropPaths.add(`${libRoot}${rel}`);
+    } else {
+      lastPaths.add(`${libRoot}${rel}`);
+    }
+  }
+  if (dropPaths.size === 0 && lastPaths.size === 0) {
+    return;
+  }
+  const head: string[] = [];
+  const tail: string[] = [];
+  let dropped = 0;
+  for (const one of parts) {
+    if (dropPaths.has(one)) {
+      dropped++;
+      continue;
+    }
+    if (lastPaths.has(one)) {
+      tail.push(one);
+    } else {
+      head.push(one);
+    }
+  }
+  parts.length = 0;
+  for (const one of head) {
+    parts.push(one);
+  }
+  for (const one of tail) {
+    parts.push(one);
+  }
+  if (dropped > 0 || tail.length > 0) {
+    hilog.info(LOG_DOMAIN, LOG_TAG,
+      'classpath ordered: optifine last (moved=%{public}d), dropped launchwrapper-of=%{public}d'
+      + ' (HMCL getClasspath parity: keeps forge before optifine, Launch single-sourced)',
+      tail.length, dropped);
+  }
+}
+
+// ─────────────── 同名类多提供者体检（F3；launchwrapper 形态启动期一次，log-only） ───────────────
+/** 体检的「已知敏感类」监视表（本次事故的两类；需要时可在此扩展）。 */
+const DUPLICATE_CLASS_WATCHLIST: string[] = [
+  'net/minecraftforge/common/model/TRSRTransformation.class',   // OptiFine 1.12.2 空壳 vs Forge 真身
+  'net/minecraft/launchwrapper/Launch.class',                   // launchwrapper-1.12 vs launchwrapper-of
+];
+/** EOCD 搜索窗口 = 最大注释 64 KiB + 22 字节 EOCD（标准 ZIP）。 */
+const ZIP_EOCD_SEARCH_BYTES: number = 65557;
+/** 中央目录读取上限（防御损坏 / 异常大的 jar；超过则跳过该 jar）。 */
+const ZIP_CENTRAL_DIR_MAX_BYTES: number = 4 * 1024 * 1024;
+
+/** ZIP 小端 u16。 */
+function leU16(b: Uint8Array, i: number): number {
+  return b[i] | (b[i + 1] << 8);
+}
+
+/** ZIP 小端 u32（`>>> 0` 归一为非负）。 */
+function leU32(b: Uint8Array, i: number): number {
+  return (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24)) >>> 0;
+}
+
+/**
+ * 读出一个 jar 的**中央目录条目名**（只读中央目录，不解压、不读载荷）——仅供体检判断"谁提供这个类"。
+ * 认不出（非标准 ZIP / zip64 / 读取失败）即返回空数组：best-effort，绝不抛、绝不影响启动。
+ */
+function jarEntryNames(path: string): string[] {
+  const names: string[] = [];
+  try {
+    const size = fileIo.statSync(path).size;
+    if (size <= 22) {
+      return names;
+    }
+    const tailLen = Math.min(size, ZIP_EOCD_SEARCH_BYTES);
+    const tail = new Uint8Array(tailLen);
+    let count = 0;
+    let cdSize = 0;
+    let cdOff = 0;
+    const f = fileIo.openSync(path, fileIo.OpenMode.READ_ONLY);
+    try {
+      const n = fileIo.readSync(f.fd, tail.buffer, { offset: size - tailLen, length: tailLen });
+      let eocd = -1;
+      // 从后往前找 EOCD 签名 PK\x05\x06。
+      for (let i = n - 22; i >= 0; i--) {
+        if (tail[i] === 0x50 && tail[i + 1] === 0x4b && tail[i + 2] === 0x05 && tail[i + 3] === 0x06) {
+          eocd = i;
+          break;
+        }
+      }
+      if (eocd < 0) {
+        return names;
+      }
+      count = leU16(tail, eocd + 10);
+      cdSize = leU32(tail, eocd + 12);
+      cdOff = leU32(tail, eocd + 16);
+    } finally {
+      fileIo.closeSync(f);
+    }
+    if (count <= 0 || cdSize <= 0 || cdOff <= 0 || cdSize > ZIP_CENTRAL_DIR_MAX_BYTES) {
+      return names;
+    }
+    const cd = new Uint8Array(cdSize);
+    // **单次**读中央目录（每个 fd 只读一次：ReadOptions.offset 相对当前 filePointer，新开的 fd
+    // filePointer=0 ⇒ offset 即绝对位置；不循环读以免语义歧义）。读不满则以实读长度收窄边界。
+    const g = fileIo.openSync(path, fileIo.OpenMode.READ_ONLY);
+    let got = 0;
+    try {
+      got = fileIo.readSync(g.fd, cd.buffer, { offset: cdOff, length: cdSize });
+    } finally {
+      fileIo.closeSync(g);
+    }
+    if (got < cdSize) {
+      cdSize = got;
+    }
+    let p = 0;
+    for (let k = 0; k < count; k++) {
+      if (p + 46 > cdSize) {
+        break;
+      }
+      // 中央目录条目签名 PK\x01\x02。
+      if (!(cd[p] === 0x50 && cd[p + 1] === 0x4b && cd[p + 2] === 0x01 && cd[p + 3] === 0x02)) {
+        break;
+      }
+      const nameLen = leU16(cd, p + 28);
+      const extraLen = leU16(cd, p + 30);
+      const commentLen = leU16(cd, p + 32);
+      const start = p + 46;
+      if (start + nameLen > cdSize) {
+        break;
+      }
+      let s = '';
+      for (let j = 0; j < nameLen; j++) {
+        s += String.fromCharCode(cd[start + j]);
+      }
+      names.push(s);
+      p = start + nameLen + extraLen + commentLen;
+    }
+  } catch (e) {
+    // best-effort：任何异常都当"没读到"（纯诊断，绝不因它影响启动）。
+  }
+  return names;
+}
+
+/**
+ * 同名类多提供者体检（F3）：扫一遍本次 classpath 各 jar 的中央目录，若某种**已知敏感类**被 ≥2 个
+ * jar 提供就记一条稳定英文 warn（点名类名 + 各 jar 基名）。这是本次 `TRSRTransformation` / `Launch`
+ * 事故"下次一眼可见"的保障 —— 若早有这行日志，现场直接就是
+ * "TRSRTransformation provided by forge-….jar + OptiFine-….jar"。
+ *
+ * 取舍（成本/收益）：只做**定点**检查（DUPLICATE_CLASS_WATCHLIST）而非"全类名多提供者"扫描，
+ * 以免逐 jar 建全量类名集合（内存 + 启动耗时）；逐 jar 也只读中央目录、不解压。**log-only**：
+ * 从不改 classpath、从不中止启动，任何异常都被吞掉。
+ *
+ * 注意：Forge + OptiFine 实例**必然会**命中一条（两 jar 都提供 `TRSRTransformation`）——这是
+ * "顺序决定胜负"的事实陈述，不是错误；与 `classpath mode=ordered` / `optifine last` 两行合看即可判位。
+ */
+function logDuplicateClassProviders(classpath: string, watch: string[]): void {
+  if (classpath.length === 0 || watch.length === 0) {
+    return;
+  }
+  const providers: Map<string, string[]> = new Map<string, string[]>();
+  for (const one of classpath.split(':')) {
+    if (one.length === 0 || !one.endsWith('.jar')) {
+      continue;
+    }
+    const names = jarEntryNames(one);
+    if (names.length === 0) {
+      continue;
+    }
+    const base = one.substring(one.lastIndexOf('/') + 1);
+    for (const cls of watch) {
+      if (names.includes(cls)) {
+        const arr = providers.get(cls);
+        if (arr === undefined) {
+          providers.set(cls, [base]);
+        } else {
+          arr.push(base);
+        }
+      }
+    }
+  }
+  providers.forEach((arr: string[], cls: string) => {
+    if (arr.length >= 2) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG,
+        'classpath duplicate class: %{public}s provided by %{public}s (first in classpath wins)',
+        cls, arr.join(' + '));
+    }
+  });
+}
+
+/**
+ * 「按清单顺序」组装显式 classpath：逐条绝对路径 + 实例 jar（对齐 HMCL 的 `${classpath}`）。
+ *
+ * **两个形态共用**：
+ * - 真 maven 树（`needsRealClasspath`：Forge ≥1.13 / NeoForge）：它们**必须**能从 classpath 条目上
+ *   看出真实 maven 布局（FML 按 ASM jar 的祖先目录反推 `libraries` 根，见 `REAL_CLASSPATH_MAIN_CLASSES`）
+ *   ⇒ **平铺目录绝不能出现在这里**：只要平铺在，ASM 就可能先命中平铺那份，路径基又算错（`Missing forge!`）。
+ *   是**替换**，不是追加。
+ * - launchwrapper（`isLaunchWrapperMain`：≤1.12.2 Forge / LiteLoader / 独立 OptiFine）：这里**代替**
+ *   平铺 `<dir>/*` 通配 —— 通配**没有顺序语义**（展开顺序 = 文件系统 `readdir`），本次事故里 OptiFine
+ *   的空壳 `TRSRTransformation` 就是靠它抢在 Forge 本体之前命中，使 Forge 的 `IModel.getDefaultState()`
+ *   调 `identity()` 抛 `NoSuchMethodError`。按清单顺序后同名类归属**确定**。
  *
  * `collectFromJson` 已按声明顺序收集「规则允许且本地存在」的库，并**跳过 MC 声明的 LWJGL3**
- * （`org/lwjgl/…`，由随包 clean-room 合并 jar 替代）——这正是真树版本要的形态；另外四类补充见函数体。
+ * （`org/lwjgl/…`，由随包 clean-room 合并 jar 替代）——现代形态要的正是这个；launchwrapper 形态
+ * 需要的是 MC 的 LWJGL2（`org/lwjgl/lwjgl/lwjgl|_util/<ver>/…`，`collectFromJson` 的 `isLwjgl2Core`
+ * 已保留）⇒ 两形态在 LWJGL 上互不干扰。另外几类补充见函数体。
+ *
+ * @param includeBundledLwjgl3 是否从平铺目录按**绝对路径**补随包 LWJGL3（真树形态 = true；
+ *   launchwrapper = false —— 它用 MC 的 LWJGL2，混入 LWJGL3 会因两者都定义 `org.lwjgl` 包而
+ *   `sealing violation`）。
+ * @param optifineLastForLaunchWrapper 是否按 HMCL `DefaultLauncher.getClasspath()` 把 OptiFine 排到最后
+ *   并丢掉它的 launchwrapper fork（见 launchWrapperOptifineOrder）。
  */
 function assembleRealTreeClasspath(gameRoot: string, resolved: ResolvedVersion, versionId: string,
-  stagedDir: string, jsonPath: string, includeLauncherStubs: boolean): string {
+  stagedDir: string, jsonPath: string, includeBundledLwjgl3: boolean,
+  optifineLastForLaunchWrapper: boolean): string {
   const json = resolved.json;
   const parts = collectFromJson(gameRoot, json, versionId);
   // 继承式实例（官方 Forge 安装器布局）的客户端 jar 在**基座版本目录**，叶子目录常无 `<id>.jar`
@@ -1008,6 +1420,9 @@ function assembleRealTreeClasspath(gameRoot: string, resolved: ResolvedVersion, 
     // (1) oshi 补丁版**前置**：真 maven 树里的 oshi 是上游原版，会去初始化 JNA（JNA 在 OHOS 上
     //     dlopen 自己解出来的 native 必失败 → NoClassDefFoundError，F3/SystemReport 报错）。
     //     平铺目录里那份是 ClasspathStager 覆盖过的补丁件（认 -Dmeow.cpu.chip），前置即可遮蔽。
+    //     **launchwrapper 形态也走这一段**：legacy 的 oshi 是 `oshi-project:oshi-core`（经
+    //     `OSH_CORE_PREFIXES` 命中，见 oshi-overrides/manifest.txt 的 `oshi-core-1.1.jar`），
+    //     故 legacy 用的同样是**被替换后的补丁件**，不会退回上游版。
     const oshiBase = oshiJarBaseName(json);
     if (oshiBase.length > 0) {
       const patched = `${stagedDir}/${oshiBase}`;
@@ -1031,35 +1446,28 @@ function assembleRealTreeClasspath(gameRoot: string, resolved: ResolvedVersion, 
         }
       }
     }
-    // (2) 随包 LWJGL3 jar（collectFromJson 会跳过树里的 org.lwjgl3，由它提供）。
-    const genJar = `${LWJGL_JAR_PREFIX}${lwjglGeneration(jsonPath)}.jar`;
-    const genPath = `${stagedDir}/${genJar}`;
-    if (fileExists(genPath)) {
-      parts.push(genPath);
-    }
-    // (3) launcher/gson 桩件：**仅当实例主类就是 `meow.launcher.MeowLauncher` 时**才需要（该主类只
-    //     存在于平铺目录的 launcher.jar 里，**不在** maven 树）。自 2026-09-30 起**没有任何真树形态走
-    //     MeowLauncher**：Forge ≥1.13 已改为直启加载器主类（与 NeoForge 同口径）⇒ `viaMeowLauncher`
-    //     在真树形态恒为 false，本分支恒不触发（保留为由**同一判据**驱动的防御性代码）。平铺模式下这
-    //     两个桩件由 `<dir>/*` 顺带提供；将来若真有真树实例走 MeowLauncher，按**绝对路径**补件即可
-    //     （函数头：平铺目录不得以通配进 classpath）。
-    if (includeLauncherStubs) {
-      for (const n of EXPECTED_EXTRA_JARS) {
-        const p = `${stagedDir}/${n}`;
-        if (fileExists(p)) {
-          parts.push(p);
-        }
+    // (2) 随包 LWJGL3 jar（collectFromJson 会跳过树里的 org.lwjgl3，由它提供）。**只在真树形态补**：
+    //     launchwrapper 形态用 MC 自带的 LWJGL2（collectFromJson 已保留其 core/util），再混入 LWJGL3
+    //     会因两者都定义 `org.lwjgl` 包而 `sealing violation`。
+    if (includeBundledLwjgl3) {
+      const genJar = `${LWJGL_JAR_PREFIX}${lwjglGeneration(jsonPath)}.jar`;
+      const genPath = `${stagedDir}/${genJar}`;
+      if (fileExists(genPath)) {
+        parts.push(genPath);
       }
     }
-  } else {
-    // 真树形态（Forge ≥1.13 / NeoForge）本应从平铺目录取随包 LWJGL3 jar（走 MeowLauncher 时还要
-    // launcher/gson 桩件）。stagedDir 为空 = 调用方没给平铺目录 ⇒ 这些按**绝对路径**补的件一个都进不了
-    // classpath：LWJGL3 缺失 ⇒ 加载器/游戏 `NoClassDefFoundError`；走 MeowLauncher 时主类
-    // `meow.launcher.MeowLauncher` 只在 launcher.jar 里 ⇒ `Could not find or load main class`。
+  } else if (includeBundledLwjgl3) {
+    // 真树形态（Forge ≥1.13 / NeoForge）本应从平铺目录取随包 LWJGL3 jar。stagedDir 为空 = 调用方没给
+    // 平铺目录 ⇒ 该件按**绝对路径**补不进来：LWJGL3 缺失 ⇒ 加载器/游戏 `NoClassDefFoundError`。
     // 导出 API 的防御性可观测化（纯日志，不改行为）。
     hilog.warn(LOG_DOMAIN, LOG_TAG,
-      'real-tree classpath: stagedDir empty -> bundled LWJGL3 jar (and launcher/gson stubs when used)'
-      + ' will NOT be added (expect NoClassDefFoundError or main class not found)');
+      'real-tree classpath: stagedDir empty -> bundled LWJGL3 jar will NOT be added'
+      + ' (expect NoClassDefFoundError)');
+  }
+  // launchwrapper 形态：按 HMCL `DefaultLauncher.getClasspath()` 重排 —— 把 OptiFine 排到最后、
+  // 丢掉它的 launchwrapper fork（否则 Forge 本体会被 OptiFine 的同名空壳遮蔽 / `Launch` 来源不定）。
+  if (optifineLastForLaunchWrapper) {
+    launchWrapperOptifineOrder(parts, gameRoot, json);
   }
   // **按绝对路径去重**（保序）：NeoForge 清单与 vanilla 清单会声明**同一个库**
   // （guava/failureaccess、gson 等 FML 依赖与 MC 依赖重合）⇒ 同路径出现两次会让
@@ -1167,29 +1575,32 @@ export function lwjglGeneration(jsonPath: string): string {
 
 /**
  * 收集该版本运行所需的全部 jar 源路径（规则过滤后本地存在的库 + 版本 jar）。
- * 供启动器把它们平铺拷贝到沙箱目录后以 "<dir>/*" 通配作为 classpath——
- * 直接拼长 -cp（可达上万字符）在本 JLI 移植中会导致类加载失效。
+ * 供 `ClasspathStager` 把它们平铺拷贝到沙箱目录 `<cache>/mc-cp/<id>/`。
+ *
+ * 谁还在用平铺目录（2026-10-01 方案 A 之后的现状）：
+ *  - **原版 / Fabric**：`-cp "<dir>/*"` 通配（平铺 classpath 自足）；
+ *  - **launchwrapper（≤1.12.2 Forge / LiteLoader / 独立 OptiFine）**：**不再**用通配 —— `-cp` 改走
+ *    `assembleRealTreeClasspath` 的**显式有序绝对路径**（见 buildLaunchArgv / launchWrapperOptifineOrder）。
+ *    根因 = 通配没有顺序语义（展开序 = 文件系统 `readdir`），本次 `TRSRTransformation` 事故即由此。
+ *    此时平铺目录仍被启动路径消费的只剩**随包/补丁件**：oshi 补丁件（`assembleRealTreeClasspath` 按
+ *    绝对路径前置）、`asm9/*` 子目录（ASM 覆盖）。整份平铺集合**保留**是保守做法（去留/清理留待
+ *    下一轮，勿在此顺手删）。
+ *  - 注：**不再**把「启动器族」（launchwrapper / FML 本体 / OptiFine）摘出平铺目录 —— Java 8 档下
+ *    JDK 8 的 app classloader 本身就是 `URLClassLoader`，`Launch.<init>` 的强转原生成立、族内类同源
+ *    ⇒ 无需换系统 CL、无需摘族（见 buildLaunchArgv 顶部定案与研究档
+ *    `stuffs/research/launchwrapper-study/REPORT.md` §2）。
+ * 继承/补丁实例的客户端 jar 在基座版本目录（叶子目录常无 <id>.jar）——补进列表，
+ * 这样平铺目录对 Fabric 也自带 MC jar（平铺 classpath 自足，无需任何运行期追加）。
  */
 export function collectJarSources(gameRoot: string, jsonPath: string, versionId: string): string[] {
   const resolved = resolveVersion(gameRoot, jsonPath);
   if (resolved === null) {
     return [];
   }
-  let parts = collectFromJson(gameRoot, resolved.json, versionId);
-  // launchwrapper 系（≤1.12.2 的 Forge 等）：**必须把「启动器族」整体摘出平铺目录**。
-  // 机理（2026-09-28 真机两次取证）：
-  //  ① `Launch.<init>` 里 `(URLClassLoader) getClassLoader()` 的强转要求「加载 Launch 的 CL 是
-  //     URLClassLoader」；平铺 `-cp "<dir>/*"` 会让 **app classloader 先命中**（父优先委托）⇒
-  //     即使 -Djava.system.class.loader 已换成 MeowClassLoader，仍崩 `ClassCastException`
-  //     （CCE 的运行时类名即 AppClassLoader）。⇒ 摘出 `Launch` ⇒ 改由 MeowClassLoader 从真 maven 树加载。
-  //  ② 只摘 launchwrapper 还不够：FML 本体（`FMLTweaker` implements `ITweaker`）若仍留在平铺目录，
-  //     app classloader 定义它时解析不到同族的 `ITweaker` ⇒ `NoClassDefFoundError: ITweaker`。
-  //     ⇒ 两个族必须一起摘（静态核对：53 个在册 jar 里只有这两个族引用 launchwrapper）。
-  if (isLaunchWrapperMain(resolved.json.mainClass)) {
-    parts = parts.filter((p: string) => !isLoaderFamilyJar(p));
-  }
+  const parts = collectFromJson(gameRoot, resolved.json, versionId);
   // 继承/补丁实例的客户端 jar 在基座版本目录（叶子目录常无 <id>.jar）——补进 classpath，
-  // 这样平铺目录对 Fabric 也自带 MC jar（不依赖自研 classloader 的运行期追加）。
+  // 这样平铺目录对 Fabric 也自带 MC jar（平铺 classpath 自足，无需任何运行期追加）。
+  // （「启动器族不再摘出」「launchwrapper 形态不再用通配」等口径见本函数头注释。）
   const baseId = resolved.clientJarId;
   if (baseId.length > 0 && baseId !== versionId) {
     const baseJar = `${gameRoot}/versions/${baseId}/${baseId}.jar`;
@@ -1198,28 +1609,6 @@ export function collectJarSources(gameRoot: string, jsonPath: string, versionId:
     }
   }
   return parts;
-}
-
-/**
- * 该版本的主类是否是 launchwrapper（`net.minecraft.launchwrapper.Launch`，≤1.12.2 的 Forge 等）。
- * 用于决定是否把自研 system classloader 补给这类实例（见 `buildLaunchArgv` 里的注释）：
- * launchwrapper 的 `Launch.<init>` 会把 `getClassLoader()` 强转成 `URLClassLoader`，
- * 而 JDK 9+ 的 app classloader 不是它 ⇒ 不换系统 CL 就启动即崩。
- * 判据取**主类（形态）**而不是 loader 名：老 Forge 的实例 json 是薄 `inheritsFrom`，
- * 我们的 loader 识别（`detectLoader`）认不出它，但主类是稳定的。
- */
-export function isLaunchWrapperMain(mainClass: string | undefined): boolean {
-  return mainClass === LAUNCHWRAPPER_MAIN_CLASS;
-}
-
-/** 该 jar 源路径是否属于「启动器族」（launchwrapper / FML 本体，见 LOADER_FAMILY_PATH_SEGMENTS）。 */
-function isLoaderFamilyJar(srcPath: string): boolean {
-  for (const seg of LOADER_FAMILY_PATH_SEGMENTS) {
-    if (srcPath.includes(seg)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 /**
@@ -1254,5 +1643,3 @@ function fileExists(path: string): boolean {
     return false;
   }
 }
-
-// 账户档案由 AccountsTools.writeAccountFile 生成（见 data/AccountsTools.ets）。

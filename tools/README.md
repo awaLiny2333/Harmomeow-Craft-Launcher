@@ -22,7 +22,7 @@
 | `ref/{shaderc,glslang,SPIRV-Tools,SPIRV-Headers,spirv-cross}` | google/shaderc、KhronosGroup/* | 按官方 LWJGL natives 的 `.git` 标记钉修订 | `tools/shaderc/rebuild_for_meowcraft.sh` **自动 clone**（见 `tools/shaderc/README.md`） |
 
 **其它外部输入**（按需下载，见各 README）：libffi 源码 tarball（`https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz`）、
-LWJGL/gson/jspecify 走 Maven Central（脚本自动下载 + `.sha1` 校验）、OHOS SDK（`$HOME/devecow/deveco_tools/sdk/default/openharmony/native`，可用 `$OHOS_SDK_NATIVE` 覆盖）。
+LWJGL/jspecify 走 Maven Central（脚本自动下载 + `.sha1` 校验）、OHOS SDK（`$HOME/devecow/deveco_tools/sdk/default/openharmony/native`，可用 `$OHOS_SDK_NATIVE` 覆盖）。
 
 **JRE 收编输入**（见 `tools/jre26/`）：官方 OpenJDK **26.0.2.1**（aarch64 Linux，**glibc**，来自 `https://jdk.java.net/archive/`）
 tar（`openjdk-26.0.2.1_linux-aarch64_bin.tar.gz`，sha256 `b96b265a4a1a36c02454148891aa58ca63303cbc2d1b7979c33b4fe99e09117b`）
@@ -54,10 +54,10 @@ tar（`OpenJDK8U-jdk_aarch64_linux_hotspot_8u504b01.tar.gz`，sha256 `57b7ed8af9
 | `sdl/` | `libSDL3.so` | 自编 OHOS **SDL3**（fork tag `release-3.4.14`）+ 自研 **`ohos` 驱动**（窗口/EGL/输入/grab/**Vulkan WSI**）；**MC 26.3** 的平台绑定 |
 | `shaderc/` | `libshaderc.so`、`libspirv-cross.so` | 自编（glslang/SPIRV-Tools 静态并入；按官方 natives `.git` 钉修订）；**MC 26.3 `renderpearl`** 用 |
 | `oshi/` | `oshi-core-<v>-meow.jar` ×10 | CPU 拓扑合成补丁；**现代 9 项 + legacy `oshi-core-1.1`（MC 1.16.x）** |
-| `meow-launcher/` | `launcher.jar` | 净室自研 `meow.launcher`（无 GPL/Pojav/HMCL） |
-| `relocate_gson.py` | `gson-for-launcher.jar` | `com.google.gson` → `meow.gson`（launcher 专用） |
+| ~~`meow-launcher/`~~ | ~~`launcher.jar`~~ | **已删除 2026-10-01**（净室 `meow.launcher`/`MeowClassLoader` 退役：老 Forge 只走 Java 8 档、主类一律直启；见 `notes/20-design/launch/` 与 `stuffs/research/launchwrapper-study/REPORT.md`） |
+| ~~`relocate_gson.py`~~ | ~~`gson-for-launcher.jar`~~ | **已删除 2026-10-01**（只服务 launcher.jar 的 gson shade，随其退役） |
 | ~~`slim_jre_data.py`~~ | ~~`meow_jre*.tar.gz`~~ | **已删除 2026-09-18**（旧 JRE 时代工具，代码卫生清理时随废弃项移除）。现用 `tools/jre26/linux_slim_jre.sh`（jlink 裁 modules）+ `tools/jre26/pack_jre_data.py`（确定性打包） |
-| `oshi/pack_jar.py` | — | **确定性** jar 打包器（launcher/lwjgl/oshi 共用） |
+| `oshi/pack_jar.py` | — | **确定性** jar 打包器（lwjgl/oshi 共用） |
 | `lwjgl/build_lwjgl_core_aligned_alloc_fix.sh` | `liblwjgl_343.so`（F2 对齐修复） | 单件重编 core：把 `posix_memalign` 前的 `alignment` clamp 到 `>= sizeof(void*)`（OHOS musl 对 `alignment < 8` 返 EINVAL）。详见下方「单件脚本」 |
 | `lwjgl/build_lwjgl_vma.sh` | `liblwjgl_vma.so`（`--release` 默认 / `--diagnostic`） | 参数化自编 VMA：release = 随包纯净件（逐字节一致）；diagnostic = 带 `[vma]` 诊断串、**不随包**。详见下方「单件脚本」 |
 
@@ -96,10 +96,11 @@ sh tools/lwjgl/build_lwjgl_vma.sh --src "$WS/ref/lwjgl3" --sdk-native "$SDK/nati
 #   sh tools/lwjgl/build_lwjgl_vma.sh --src "$WS/ref/lwjgl3" --sdk-native "$SDK/native" --diagnostic   # 诊断版（带 [vma] 串；勿随包）
 
 python3 tools/lwjgl/pack_extras.py --base-tar entry/.../rawfile/meowcraft_extras.tar.gz \
-    --jar lwjgl-3.4.3.jar=… --drop-prefix asm9 \
+    --drop-prefix launcher.jar --drop-prefix gson-for-launcher.jar --drop-prefix asm9 \
+    --jar lwjgl-3.4.3.jar=… \
     --jar asm9/asm-9.9.1.jar=… --jar asm9/asm-analysis-9.9.1.jar=… --jar asm9/asm-commons-9.9.1.jar=… \
     --jar asm9/asm-tree-9.9.1.jar=… --jar asm9/asm-util-9.9.1.jar=… \
-    --out entry/.../rawfile/meowcraft_extras.tar.gz   # ⑤ 组包（含随包 ASM 9.9.1 ×5，落 `asm9/` 子目录）
+    --out entry/.../rawfile/meowcraft_extras.tar.gz   # ⑤ 组包（含随包 ASM 9.9.1 ×5，落 `asm9/` 子目录；不再含 launcher/gson）
 
 # A2. legacy 随包件（MC 1.6.x–1.16.x）
 #   LWJGL2 native：**MC 1.6.x–1.12.2 由 tools/lwjgl2/ 的 liblwjgl.so 支持**（见 tools/lwjgl2/README.md）
@@ -121,7 +122,6 @@ sh tools/lwjgl/install_natives.sh --sdl stuffs/research/sdl/out/libSDL3.so
 sh tools/lwjgl/install_natives.sh --native libshaderc.so=stuffs/research/shaderc/out/libshaderc.so
 sh tools/lwjgl/install_natives.sh --native libspirv-cross.so=stuffs/research/shaderc/out/libspirv-cross.so
 sh tools/oshi/build_oshi_meow.sh …                       # oshi-overrides 现代 ×9（+ legacy 1.1，见 tools/oshi/README.md）
-sh tools/meow-launcher/build_meow_launcher.sh            # launcher.jar（人跑 javac）
 # JRE 集（魔改官方 glibc 件跑 OHOS，零黑箱；完整步骤见 tools/jre26/README.md 的「复现」）
 #   0) 输入：解官方 tar 到 stuffs/research/jdk26/_inspect；clone **更新仓** openjdk/jdk26u → ref/jdk26u，
 #      再 worktree jdk26u-src @ `jdk-26.0.2.1-ga`（26.0.x 不在主线 openjdk/jdk）
@@ -173,10 +173,12 @@ python3 tools/jre8/pack_jre_data.py --home stuffs/research/jdk8/out/home \
 - **jar 的 MANIFEST 必须自洽（2026-09-16 事故）**：凡**剥掉 `META-INF/**`** 的打包（我们全部打包器都这么做），
   **必须同时去掉 MANIFEST 的 `Multi-Release: true`** —— 否则产出「声称多版本 jar 却没有 `META-INF/versions/**`」
   的坏件；bootstraplauncher 1.1.2（NeoForge 1.20.2 用）会因此在 `SecureJar.from` 里 `Files.walk` 该目录抛异常、启动即崩。
-  已在三处根治：`tools/lwjgl/build_lwjgl_jar.sh`、`tools/relocate_gson.py`、**共用打包器 `tools/oshi/pack_jar.py`（统一守卫 + 告警）**。
-- **extras tar 组包配方（可复现，逐字节已验证）**：基座 tar 需含 `launcher.jar` + **未 shade 的** `gson-<v>.jar`（可另含 lwjgl jar，`pack_extras.py` 会丢弃同名 `lwjgl*`），然后
-  `python3 tools/relocate_gson.py <base.tar.gz>` → `python3 tools/lwjgl/pack_extras.py --base-tar <base.tar.gz> --jar lwjgl-3.4.3.jar=<built> --require lwjgl-3.4.3.jar --out <final>`
+  已在两处根治：`tools/lwjgl/build_lwjgl_jar.sh`、**共用打包器 `tools/oshi/pack_jar.py`（统一守卫 + 告警）**。
+- **extras tar 组包配方（可复现，逐字节已验证）**：基座 tar 只需含上一版 tar 的成员（`pack_extras.py` 会先丢弃同名 `lwjgl*`），然后
+  `python3 tools/lwjgl/pack_extras.py --base-tar <base.tar.gz> --jar lwjgl-3.4.3.jar=<built> --require lwjgl-3.4.3.jar --out <final>`
   → 覆盖 `entry/.../rawfile/meowcraft_extras.tar.gz` 并**升 `EXTRAS_VERSION`**。
+  **2026-10-01**：`launcher.jar` / `gson-for-launcher.jar` 已从 tar 摘除（同时 `--drop-prefix launcher.jar --drop-prefix gson-for-launcher.jar`），
+  当前成员 = `lwjgl-3.4.3.jar`（平铺）+ `asm9/*.jar`（子目录）；最新 tar = **12,403,320 B**，sha256 `7c8aa392…`，`EXTRAS_VERSION = 20261001-drop-meow-launcher`。
 - **随包 ASM 9.9.1（5 件，`asm9/` 子目录；v45 2026-09-30）**：`asm9/<artifact>-9.9.1.jar` 从 Maven Central 官方取
   （`https://repo1.maven.org/maven2/org/ow2/asm/<artifact>/9.9.1/<artifact>-9.9.1.jar`，**逐件下 `.sha1` 校验**），
   经 `pack_extras.py --jar asm9/<name>=<path> --drop-prefix asm9` 组进 tar（**必须子目录**：平铺形态的 `-cp "<dir>/*"` 通配**不递归**，

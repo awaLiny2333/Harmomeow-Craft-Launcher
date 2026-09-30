@@ -79,8 +79,8 @@ export function checkLaunchJre(filesDir: string, gameRoot: string, versionId: st
  * 账户为必需前置：无选中账户直接拒绝（绝不静默造号），UI 层已按此门控启动按钮。
  */
 /**
- * 日志前**打码凭据**：argv 里会带 `--accessToken <微软 access token>`（NeoForge 由 ArkTS 直接组
- * game 参数；原版/Fabric 则由 Java 侧读账户文件），整条打进 hilog 就等于把令牌写进日志。
+ * 日志前**打码凭据**：argv 里会带 `--accessToken <微软 access token>`（账户由 ArkTS 直接组进
+ * game 参数），整条打进 hilog 就等于把令牌写进日志。
  * 这里只保留前 4 位，其余以 `(masked)` 代替（保留长度可读性不做，避免泄露长度）。
  */
 function maskCredentials(cmd: string): string {
@@ -138,7 +138,6 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
       return;
     }
   }
-  accounts.writeAccountFile(meowHome, launchAccount);
   // 逐版本设置（隔离 / 渲染后端 / 线程化渲染）从**实例目录内**的 .hmmcraft 文件读
   // （不是 Preferences）：随实例目录跨机迁移，且按"目录 + 实例名"区分，同名实例不串。
   const instance = readInstanceSettings(gameRoot, versionId);
@@ -211,7 +210,7 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     nativeLibsDir: jre.runtime.libsDir(ctx.bundleCodeDir), // 选中那套 JRE 的 el1（隔离命名空间）
     craftLibsDir: jre.runtime.libsDir(ctx.bundleCodeDir), // 桥已并入同一个 HSP
     meowcraftLaunch: true,
-    // NeoForge 由 ArkTS 直接组 game 参数（不经 launcher.jar）⇒ 账户三件套必须传真值。
+    // 账户信息由 ArkTS 直接组进 game 参数 ⇒ 三件套必须传真值。
     authUuid: launchAccount.uuid,
     authAccessToken: launchAccount.accessToken !== undefined ? launchAccount.accessToken : '',
     authXuid: launchAccount.xuid !== undefined ? launchAccount.xuid : '',

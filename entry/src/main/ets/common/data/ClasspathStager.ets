@@ -4,7 +4,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
 import { MC_CP_DIR, RAWFILE_MEOWCRAFT_EXTRAS, MEOWCRAFT_EXTRAS_DONE, RAWFILE_OSHI_DIR,
   RAWFILE_OSHI_MANIFEST } from '../constants/Paths';
-import { EXTRAS_VERSION, EXPECTED_EXTRA_JARS, LWJGL_JAR_PREFIX,
+import { EXTRAS_VERSION, LWJGL_JAR_PREFIX,
   LWJGL_GEN_JARS, ASM_STAGE_SUBDIR, EXPECTED_ASM_JARS } from '../constants/LaunchDefaults';
 import { collectJarSources, lwjglGeneration, isLegacyLwjgl } from './MinecraftLauncher';
 
@@ -41,7 +41,7 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
       // 已存在则忽略
     }
   }
-  // 桥 jar（lwjgl 合并/launcher 等）随包分发。done 文件内容 = **令牌 + 随包 tar 的字节数**：
+  // 随包件（lwjgl 合并 jar + asm9/ 子目录）随包分发。done 文件内容 = **令牌 + 随包 tar 的字节数**：
   //  - 令牌由人显式升（内容语义变化时）；
   //  - 字节数让"换了 tar 却忘升令牌"也自动重抽 —— 2026-09-15 踩过：native 改名后重打了 tar
   //    但令牌没动 → done 命中 → 缓存的**旧 lwjgl jar**（旧 nameMapper）继续被用 → 找旧 so 名 →
@@ -188,12 +188,9 @@ function jarBytes(path: string): number {
 
 /** 抽取标记命中时确认"该有的件都在"（防 cacheDir 被系统部分清理：标记还在、文件没了）。 */
 function stagedBundleComplete(dir: string, keepGenJar: string): boolean {
-  const need = keepGenJar.length > 0
-    ? EXPECTED_EXTRA_JARS.concat([keepGenJar])
-    : EXPECTED_EXTRA_JARS;
-  for (const n of need) {
+  if (keepGenJar.length > 0) {
     try {
-      fileIo.accessSync(`${dir}/${n}`);
+      fileIo.accessSync(`${dir}/${keepGenJar}`);
     } catch (e) {
       return false;
     }
@@ -308,14 +305,13 @@ function overrideStagedJar(ctx: common.UIAbilityContext, dir: string,
   }
 }
 
-/** 清理平铺目录中不属于当前期望集合的残留 jar（官方 LWJGL / 未选中世代等，防类冲突）。 */
+/** 清理平铺目录中不属于当前期望集合的残留 jar（官方 LWJGL / 未选中世代 / 已退役的旧随包件等，
+ *  防类冲突）。期望集合 = 本版本声明的库 jar + 保留的 LWJGL 世代 jar；其余 .jar 一律删除
+ *  （旧 cacheDir 里遗留的 `launcher.jar` / `gson-for-launcher.jar` 由此被清掉）。 */
 function pruneStaleJars(dir: string, sources: string[], keepJar: string): void {
   const keep = new Set<string>();
   for (const src of sources) {
     keep.add(src.substring(src.lastIndexOf('/') + 1));
-  }
-  for (const n of EXPECTED_EXTRA_JARS) {
-    keep.add(n);
   }
   if (keepJar.length > 0) {
     keep.add(keepJar);

@@ -102,12 +102,12 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
         │  dlsym / input ring / meow_environ shared block
  liblwjgl*.so / libSDL3.so              platform bindings (GLFW semantics / SDL3 ohos driver)
         ▼
- JVM (bundled JRE) → meow.launcher (clean-room) → Minecraft
+ JVM (bundled JRE) → version mainClass (vanilla / Fabric / Forge / NeoForge) → Minecraft
 ```
 
 - **Java side**: official LWJGL modules + our own **clean-room overlay** (GLFW / CallbackBridge / GLCapabilities / RendererInit).
 - **Native side**: clean-room `libmeowcraftbridge.so` (provides all `glfw*` semantics), `libmeowjrebridge.so` (NAPI / `JLI_Launch`), `libmeowassets.so` (JRE extraction).
-- **Launch chain**: `meow.launcher` handles classpath staging, accounts, argv, `JLI_Launch`.
+- **Launch chain**: ArkTS stages the classpath (flat `<dir>/*` or a real maven tree), builds the argv and game arguments, then `JLI_Launch`es the JVM directly on the version's `mainClass`.
 
 ## Platform & toolchain
 
@@ -136,7 +136,7 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
 | gl4es | v1.1.7 | MIT | ✅ | fixed-pipeline translation layer for ≤ 1.16 / legacy |
 | libffi | 3.8.0 | MIT | (linked into lwjgl) | LWJGL ≥ 3.4 dependency |
 | oshi | 5.7–6.9 + 1.1 | MIT | ✅ | CPU-info patch |
-| gson | 2.13.1 | Apache-2.0 | ✅ | launcher-only (shaded to `meow.gson`) |
+| gson | 2.13.1 | Apache-2.0 | ✅ | dependency declared by the MC / Fabric / Forge manifests |
 
 > Full third-party attributions: [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md); full license texts: [`LICENSES/`](LICENSES/); source offer: [`SOURCE-OFFER.md`](SOURCE-OFFER.md).
 
@@ -150,7 +150,7 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
 |---|---|
 | [`tools/lwjgl/`](tools/lwjgl/) | LWJGL single modern generation jar (3.4.3) + 3 natives + `libffi` + extras packing |
 | [`tools/lwjgl2/`](tools/lwjgl2/) | legacy LWJGL2 `liblwjgl.so` (MC 1.6–1.12) |
-| [`tools/openal/`](tools/openal/) [`tools/freetype/`](tools/freetype/) [`tools/gl4es/`](tools/gl4es/) [`tools/sdl/`](tools/sdl/) [`tools/shaderc/`](tools/shaderc/) [`tools/oshi/`](tools/oshi/) [`tools/meow-launcher/`](tools/meow-launcher/) | OpenAL / FreeType / gl4es / SDL3 / shaderc / oshi / clean-room launcher |
+| [`tools/openal/`](tools/openal/) [`tools/freetype/`](tools/freetype/) [`tools/gl4es/`](tools/gl4es/) [`tools/sdl/`](tools/sdl/) [`tools/shaderc/`](tools/shaderc/) [`tools/oshi/`](tools/oshi/) | OpenAL / FreeType / gl4es / SDL3 / shaderc / oshi |
 
 - Index: [`tools/README.md`](tools/README.md)
 - Convention: **`javac` must be run by a human in a JDK-equipped shell** (DevEco Code in the hiShell cannot use a JVM on HarmonyOS 7.0.0.105 yet); native (CMake / cross-compilation) and python packaging are scriptable.

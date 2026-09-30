@@ -44,7 +44,7 @@
 #
 # NB: `lwjgl-lwjglx` (LWJGL2 compat, NOT on Maven Central) is DROPPED by default:
 # MC >= 1.17 does not reference any of its 163 unique classes (verified by scanning
-# MC 1.21.10 + all MC libs + launcher.jar/gson). Use --with-lwjglx to include it.
+# MC 1.21.10 + all MC libs). Use --with-lwjglx to include it.
 #
 # NOTE: javac needs a working JVM, which the agent shell does NOT have. Run this
 # script yourself; the merge/pack steps are pure python/shell and reproducible.
@@ -112,7 +112,7 @@ rm -rf "$WORK/overlay" "$WORK/classes" "$WORK/merge"
 mkdir -p "$WORK/overlay" "$WORK/classes" "$WORK/merge"
 
 # 8 Maven-published modules (LWJGL $VERSION). Dropped as proven dead for MC <= 1.21.x
-# (verified by scanning MC 1.21.10 + all MC libs + launcher.jar/gson = 259 jars):
+# (verified by scanning MC 1.21.10 + all MC libs = 259 jars):
 #   - lwjgl-lwjglx       (LWJGL2 compat, 163 unique classes, 0 refs; --with-lwjglx re-adds)
 #   - nanovg/vma/shaderc/spvc (Vulkan/2D helpers, 0 refs for MC <= 1.21.x)
 # MC >= 26.3's new `renderpearl` frontend DOES use vma/spvc/shaderc (shader compile /

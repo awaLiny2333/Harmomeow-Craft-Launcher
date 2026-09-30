@@ -19,6 +19,9 @@ Microsoft's public OAuth services, under the user's own Microsoft account, using
 the OAuth **device-code** flow (no client secret is bundled; the user supplies
 their own Azure public client id).
 
-Some source files reference Mojang class/package names (e.g.
-`com.mojang.text2speech`) purely for **interoperability** with the Minecraft
-client; no Mojang code is included.
+This project distributes no Mojang code. The clean-room narrator stub
+(`com.mojang.text2speech`, previously bundled inside our own `launcher.jar`)
+was removed on 2026-10-01 together with the clean-room `meow.launcher`; the
+game now uses the real `text2speech` library declared by the version manifest
+(if any). Any remaining source references to Mojang class/package names are
+purely for **interoperability** with the Minecraft client.

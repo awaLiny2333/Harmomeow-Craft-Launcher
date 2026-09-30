@@ -102,10 +102,11 @@ are copied from OpenJDK and are under the same GPL-2.0+Classpath-Exception terms
 * **oshi** 5.7.4 / 5.7.5 / 5.8.2 / 5.8.5 / 6.2.2 / 6.4.5 / 6.4.10 / 6.6.5 /
   6.9.0 and legacy 1.1 (`4047d5be65`) — **MIT**; patched
   (`oshi-overrides/oshi-core-*-meow.jar`, `tools/oshi/`).
-* **gson** 2.13.1 — **Apache-2.0**; bundled as
-  `gson-for-launcher.jar`, **relocated (`com.google.gson` → `meow.gson`)** =
-  modified; Apache-2.0 requires preserving the license/notice and stating the
-  change.
+* **gson** 2.13.1 — **Apache-2.0**; used by MC/Fabric/Forge libraries already
+  declared in the instance manifests (no longer shipped inside
+  `meowcraft_extras.tar.gz`). The previously bundled, relocated
+  `gson-for-launcher.jar` (`com.google.gson` → `meow.gson`) was removed on
+  2026-10-01 together with the clean-room `meow.launcher`.
 
 ## 8. Build-time / toolchain (not redistributed as separate files)
 

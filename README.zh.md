@@ -102,12 +102,12 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
         │  dlsym / 输入环 / meow_environ 共享块
  liblwjgl*.so / libSDL3.so              平台绑定（GLFW 语义 / SDL3 ohos 驱动）
         ▼
- JVM（内置 JRE）→ meow.launcher（净室）→ Minecraft
+ JVM（内置 JRE）→ 版本 mainClass（vanilla / Fabric / Forge / NeoForge）→ Minecraft
 ```
 
 - **Java 侧**：官方 LWJGL 模块 + 自研**净室 overlay**（GLFW / CallbackBridge / GLCapabilities / RendererInit）。
 - **native 侧**：净室 `libmeowcraftbridge.so`（提供全部 `glfw*` 语义）、`libmeowjrebridge.so`（NAPI / `JLI_Launch`）、`libmeowassets.so`（JRE 解压）。
-- **启动链路**：`meow.launcher` 负责 classpath staging、账户、argv、`JLI_Launch`。
+- **启动链路**：ArkTS 负责 classpath staging（平铺 `<dir>/*` 或真 maven 树）、组装 argv 与 game 参数，再由 `JLI_Launch` **直启版本 `mainClass`**。
 
 ## 平台与工具链
 
@@ -136,7 +136,7 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 | gl4es | v1.1.7 | MIT | ✅ | ≤ 1.16 / legacy 固定管线翻译层 |
 | libffi | 3.8.0 | MIT | （链接进 lwjgl） | LWJGL ≥ 3.4 依赖 |
 | oshi | 5.7–6.9 + 1.1 | MIT | ✅ | CPU 信息补丁 |
-| gson | 2.13.1 | Apache-2.0 | ✅ | launcher 专用（shade 到 `meow.gson`） |
+| gson | 2.13.1 | Apache-2.0 | ✅ | MC / Fabric / Forge 清单声明的依赖 |
 
 > 完整第三方声明： [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)；许可全文： [`LICENSES/`](LICENSES/)；源码要约： [`SOURCE-OFFER.md`](SOURCE-OFFER.md)。
 
@@ -150,7 +150,7 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 |---|---|
 | [`tools/lwjgl/`](tools/lwjgl/) | LWJGL 现代单代 jar（3.4.3）+ 3 native + `libffi` + extras 组包 |
 | [`tools/lwjgl2/`](tools/lwjgl2/) | legacy LWJGL2 `liblwjgl.so`（MC 1.6–1.12） |
-| [`tools/openal/`](tools/openal/) [`tools/freetype/`](tools/freetype/) [`tools/gl4es/`](tools/gl4es/) [`tools/sdl/`](tools/sdl/) [`tools/shaderc/`](tools/shaderc/) [`tools/oshi/`](tools/oshi/) [`tools/meow-launcher/`](tools/meow-launcher/) | OpenAL / FreeType / gl4es / SDL3 / shaderc / oshi / 净室 launcher |
+| [`tools/openal/`](tools/openal/) [`tools/freetype/`](tools/freetype/) [`tools/gl4es/`](tools/gl4es/) [`tools/sdl/`](tools/sdl/) [`tools/shaderc/`](tools/shaderc/) [`tools/oshi/`](tools/oshi/) | OpenAL / FreeType / gl4es / SDL3 / shaderc / oshi |
 
 - 总索引：[`tools/README.md`](tools/README.md)
 - 约定：**`javac` 必须由人在有 JDK 的 shell 执行**（hiShell 中的 DevEco Code 在 HarmonyOS 7.0.0.105 上尚不能正常使用 JVM）；native（CMake / 交叉编译）与 python 打包可脚本化。

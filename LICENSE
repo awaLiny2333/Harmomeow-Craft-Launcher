@@ -24,7 +24,7 @@ SOFTWARE.
 SCOPE / 适用范围
 
 The MIT license above covers only the ORIGINAL work of this project: the ArkTS
-application code, the clean-room `meow.launcher`, the self-written native
+application code, the self-written native
 bridges (`libmeowcraftbridge.so` / `libmeowjrebridge.so` / `libmeowassets.so`),
 the build tooling under `tools/`, and other files that carry no third-party
 copyright notice.
@@ -40,7 +40,7 @@ limited to:
   * SDL3 (fork)                        — Zlib
   * shaderc / SPIRV-Cross / SPIRV-Tools / SPIRV-Headers / glslang — Apache-2.0 (…)
   * gl4es, oshi, libffi                — MIT
-  * gson (shaded)                      — Apache-2.0
+  * gson                              — Apache-2.0
   * stb, tinyfiledialogs               — Public Domain / MIT / Zlib
 
 Several of our files are DERIVATIVES of third-party works (the LWJGL GLFW

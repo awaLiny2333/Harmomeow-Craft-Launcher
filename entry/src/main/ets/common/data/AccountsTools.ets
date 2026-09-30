@@ -1,11 +1,9 @@
 import { common } from '@kit.AbilityKit';
-import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { util } from '@kit.ArkTS';
 import { loadAppSettings, loadAppSettingsOrDefault, loadAccounts, writeAccounts,
   writeAppSettings, tryReadAccounts, accountsFileExists } from './AppSettings';
-import { ACCOUNTS_DIR, OFFLINE_TOKEN } from '../constants/LaunchDefaults';
 import { MicrosoftResult, MsAuthError, MsAuthErrorCode, refreshMicrosoft, validateMcToken } from './MicrosoftAuth';
 import { SettingsTools } from './SettingsTools';
 
@@ -34,7 +32,7 @@ export interface Account {
   type: string;
   /** 玩家名 / profile 名（也是账户文件名）。 */
   name: string;
-  /** profileId（带横线 UUID）。离线留空 → 由 launcher 按名派生；微软为真实 UUID。 */
+  /** profileId（带横线 UUID）。离线按名派生；微软为真实 UUID。 */
   uuid: string;
   // ---- 仅 microsoft（token 按用户决策存应用沙箱 accounts.json）----
   accessToken?: string;
@@ -75,7 +73,7 @@ export function isValidPlayerName(name: string): boolean {
 
 /**
  * 规范的离线玩家 UUID（Java type-3）：md5("OfflinePlayer:" + name)，再置版本位=3 / RFC4122 变体位。
- * 与 launcher.jar 的 `Account.offlineUuid` 及原版客户端**完全一致**（如 `Player → a01e3843-e521-3998-958a-f459800e4d11`）。
+ * 与原版客户端**完全一致**（如 `Player → a01e3843-e521-3998-958a-f459800e4d11`）。
  */
 export function offlineUuid(name: string): string {
   try {
@@ -93,7 +91,7 @@ export function offlineUuid(name: string): string {
     return `${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-` +
       `${hex.substring(16, 20)}-${hex.substring(20)}`;
   } catch {
-    // 计算失败 → 返回空串，由 launcher.jar 启动时按名派生兜底。
+    // 计算失败 → 返回空串（调用方按空值处理）。
     return '';
   }
 }
@@ -115,8 +113,8 @@ function newAccountId(): string {
  * 账户管理数据层（纯逻辑，不碰 UI）。
  * - 账户列表持久化在应用沙箱 `<filesDir>/meow-settings/accounts.json`；选中项指针
  *   `selectedAccount` 与目录共用 `app-settings.json`（见 `AppSettings.ets`）；Preferences 已彻底移除。
- * - `writeAccountFile` 生成 launcher.jar 读取的账户档案 `<meow-home>/accounts/<name>.json`
- *   （JSON 键 accessToken/clientToken/profileId/username/xuid 是硬契约，勿改名）。
+ * - 账户 UUID 在**创建时**即为规范值（离线按名派生 / 微软取真实 UUID），启动参数直取本对象
+ *   （`GameLauncher` → `buildLaunchArgv` 的 `authUuid`）。2026-10-01 起不再写"启动用账户档案"。
  */
 export class AccountsTools {
   /** 宿主上下文（解析应用沙箱路径，读全局设置里的 ms client_id）。 */
@@ -313,45 +311,5 @@ export class AccountsTools {
       }
     }
     return null;
-  }
-
-  /**
-   * 生成启动用账户档案 `<homeDir>/accounts/<name>.json`（launcher.jar 按文件名=玩家名加载）。
-   * 离线：token 用离线常量、profileId 留空（launcher 派生 UUID）、xuid 空。
-   * 微软：token 取自 Account 对象（随 accounts.json 落盘）、profileId 真实、xuid=uhs；
-   * Asset Store（@ohos.security.asset）为可选的更安全替代（见 `Account` 注释），当前未用。
-   */
-  writeAccountFile(homeDir: string, account: Account): void {
-    const accountsDir = `${homeDir}/${ACCOUNTS_DIR}`;
-    const file = `${accountsDir}/${account.name}.json`;
-    try {
-      for (const d of [homeDir, accountsDir]) {
-        try {
-          fileIo.mkdirSync(d);
-        } catch (e) {
-          // 已存在则忽略
-        }
-      }
-      const body = JSON.stringify({
-        accessToken: account.type === ACCOUNT_TYPE_MICROSOFT
-          ? (account.accessToken ?? OFFLINE_TOKEN) : OFFLINE_TOKEN,
-        clientToken: '',
-        profileId: account.uuid,
-        username: account.name,
-        xuid: account.type === ACCOUNT_TYPE_MICROSOFT ? (account.xuid ?? '') : ''
-      });
-      const f = fileIo.openSync(file, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE |
-        fileIo.OpenMode.TRUNC);
-      // try/finally：即便写入抛出也要释放 fd。外层 catch 只记日志、不关描述符，
-      // 故这里必须兜底（HarmonyOS 应用 fd 数有限，反复写账号文件泄漏会最终导致 open 失败）。
-      try {
-        fileIo.writeSync(f.fd, body);
-      } finally {
-        fileIo.closeSync(f);
-      }
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'account file written: %{public}s', file);
-    } catch (e) {
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'write account file fail: %{public}s', JSON.stringify(e));
-    }
   }
 }

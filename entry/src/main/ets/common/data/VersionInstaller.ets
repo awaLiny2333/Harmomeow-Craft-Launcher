@@ -1305,7 +1305,7 @@ async function runNeoForgeProcessors(ctx: common.UIAbilityContext, set: NeoForge
   for (let i = 0; i < total; i++) {
     const plan: NeoForgeProcessorPlan = set.plans[i];
     onCurrent(plan.label);
-    // job：完整 java 参数（不经 meow.launcher；headless 由 rendererLib='' 触发）
+    // job：完整 java 参数（启动器直并 JVM，无中间 Java 入口；headless 由 rendererLib='' 触发）
     const job = new NeoForgeProcessorJob();
     job.rootUri = gameRootUri;
     // 工具 JVM 用哪套 JRE：与启动路径同源解析出的 id（`:neoinstall` 据此取 runtime）。
@@ -2636,7 +2636,7 @@ async function runForgeProcessors(ctx: common.UIAbilityContext, set: ForgeProces
     }
     // 未全命中：先删掉与声明不符/为空的陈旧产物，交给工具重建（工具多为"先删后写"）。
     await forgeRemoveStaleOutputs(plan);
-    // job：完整 java 参数（不经 meow.launcher；headless 由 rendererLib='' 触发）
+    // job：完整 java 参数（启动器直并 JVM，无中间 Java 入口；headless 由 rendererLib='' 触发）
     const job = new ForgeProcessorJob();
     job.rootUri = gameRootUri;
     job.jreId = jreId;

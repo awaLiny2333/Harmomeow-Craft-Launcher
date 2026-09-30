@@ -13,14 +13,15 @@ instances' classpath. Nested member names are supported because `--jar NAME=PATH
 the member verbatim (`./` + NAME) and the native untar makes parent dirs for regular files.
 Layout:
 
-    ./launcher.jar                 (kept from --base-tar)
-    ./gson-for-launcher.jar        (kept from --base-tar)
     ./lwjgl-3.4.3.jar              (from --jar)
     ./asm9/asm-9.9.1.jar           (from --jar asm9/<name>=<path>)
     ./asm9/asm-analysis-9.9.1.jar
     ./asm9/asm-commons-9.9.1.jar
     ./asm9/asm-tree-9.9.1.jar
     ./asm9/asm-util-9.9.1.jar
+
+Since 2026-10-01 the bundle no longer carries `launcher.jar` /
+`gson-for-launcher.jar` (the clean-room meow.launcher was retired).
 
 Every `lwjgl*.jar` the base tar carried is dropped first, so a retired generation cannot
 linger (pass `--drop-prefix asm9` to retire the bundled ASM the same way).

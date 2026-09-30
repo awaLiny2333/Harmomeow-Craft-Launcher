@@ -39,13 +39,11 @@ export const TOOL_JVM_PLATFORM_SPOOF_ARGS: string[] = [
   `-Dos.version=${SPOOF_OS_VERSION}`,
 ];
 
-// ---- 账户（对齐 launcher.jar Account 的账户文件字段；JSON 键名为契约，勿改名） ----
+// ---- 账户（离线玩家名的兜底与占位 token；账户记录本身见 data/AccountsTools.ets） ----
 /** 默认离线账户名（无任何账户时的兜底）。 */
 export const OFFLINE_USERNAME: string = 'Player';
-/** 离线 access token：原版只要求非空、不校验值（UUID 由 launcher 按名派生）。 */
+/** 离线 access token：原版只要求非空、不校验值（UUID 由启动器按名派生）。 */
 export const OFFLINE_TOKEN: string = '0';
-/** 账户文件目录名（<meow-home>/accounts/<name>.json）。 */
-export const ACCOUNTS_DIR: string = 'accounts';
 
 // ---- 渲染后端（与 native meowjrebridge.cpp / egl_gl.c 的 env 取值同源） ----
 // 现代版（≥1.17）：**GL guard**（`libmeowglguard.so`，B1 纯透传）→ 内部转发到系统桌面 GL
@@ -95,10 +93,9 @@ export const LAUNCHER_VERSION: string = '1.0.0';
 export const CLIENT_MOD_NAME: string = 'Harmomeow Craft';
 
 // ---- staging（启动支持 jar 载体）----
-/** 内容令牌：meowcraft_extras.tar.gz 内容变更（换 jar / 打补丁）时递增，强制重抽缓存。 */
-export const EXTRAS_VERSION: string = '20260930-bundled-asm-9.9.1';
-/** 平铺目录必须保留的公共 jar（其余 .jar 视为残留删除；lwjgl 世代 jar 按版本另行保留）。 */
-export const EXPECTED_EXTRA_JARS: string[] = ['launcher.jar', 'gson-for-launcher.jar'];
+/** 内容令牌：meowcraft_extras.tar.gz 内容变更（换 jar / 打补丁）时递增，强制重抽缓存。
+ *  2026-10-01：tar 摘除 `launcher.jar` 与 `gson-for-launcher.jar`（MeowLauncher 退役）⇒ 升令牌。 */
+export const EXTRAS_VERSION: string = '20261001-drop-meow-launcher';
 // ---- 随包 ASM（方案 A「随包」）----
 // Forge 1.19.4 声明的 ASM 9.7.1 读不懂 JDK 26 的类文件（major 70）⇒ modlauncher 10.0.8 的
 // `ClassTransformer.transform → computeHierarchyFromFile` 抛 `Unsupported class file major version 70`。
