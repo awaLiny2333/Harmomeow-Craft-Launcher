@@ -1,18 +1,19 @@
 import { fileIo } from '@kit.CoreFileKit';
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { util } from '@kit.ArkTS';
 import { RENDERER_LIB, VULKAN_LIB_SHIM, VULKAN_LIB_DISABLED, WINDOW_DEFAULT_W, WINDOW_DEFAULT_H,
   SPOOF_OS_NAME, SPOOF_OS_VERSION, SPOOF_CPU_NAME,
   LOCALE_LANGUAGE, LOCALE_COUNTRY, LOCALE_TIMEZONE, RULE_OS_NAME, RULE_OS_ARCH,
   OFFLINE_USERNAME, LAUNCHER_NAME, LAUNCHER_VERSION,
   CLIENT_MOD_NAME, LWJGL_GEN_343, LWJGL_JAR_PREFIX,
-  LWJGL_NAME_MAPPER } from '../constants/LaunchDefaults';
+  EXPECTED_EXTRA_JARS, LWJGL_NAME_MAPPER } from '../constants/LaunchDefaults';
 import { MEOW_CLASS_LOADER, MEOW_MAIN_CLASS, LAUNCHWRAPPER_MAIN_CLASS,
-  LOADER_FAMILY_PATH_SEGMENTS } from '../constants/LaunchContract';
+  REAL_CLASSPATH_MAIN_CLASSES, LOADER_FAMILY_PATH_SEGMENTS } from '../constants/LaunchContract';
 import { libraryNames, resolveMergeModuleEntries } from './NeoForgeInstaller';
 import { NATIVES_DIR } from '../constants/Paths';
-import { VersionJson, VersionRule, VersionRuleArg, VERSION_FORM_VANILLA, LOADER_NEO_FORGE,
-  resolveVersion, resolveVersionByPath } from './VersionResolver';
+import { ResolvedVersion, VersionJson, VersionRule, VersionRuleArg, VERSION_FORM_VANILLA,
+  LOADER_NEO_FORGE, resolveVersion, resolveVersionByPath } from './VersionResolver';
 
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'GameLauncher';
@@ -96,9 +97,12 @@ export interface LaunchOptions {
    *  注意：`meowbt` 转储与 `-XX:+Log*` 输出**不**走这里——前者默认只打 stderr（要落盘须显式 `MEOW_BT_FILE`），
    *  后者是诊断参数、随包默认不设。 */
   logsDir?: string;
-  /** 完整 classpath（可选）：通常平铺后用 "<dir>/*" 通配，规避超长 -cp 失效。 */
+  /** 完整 classpath（可选）：平铺后用 "<dir>/*" 通配，规避超长 -cp 失效。
+   *  **仅用于平铺形态**（原版/Fabric/legacy）——`needsRealClasspath` 为真的版本会忽略它并走真库树。 */
   classpath?: string;
-  /** 平铺目录（可选）：NeoForge 走真 maven 树 classpath，但随包 LWJGL3 jar 只能从这里取。 */
+  /** 平铺目录（可选）：真 maven 树形态的版本（Forge ≥1.13 / NeoForge）**只**从这里取
+   *  随包 LWJGL3 jar（以及走 MeowLauncher 时的 launcher/gson 桩件）——按**绝对路径**取，
+   *  绝不把 `<dir>/*` 通配放进 classpath（见 assembleRealTreeClasspath）。 */
   classpathDir?: string;
   /** 沙箱可写运行目录（tmpdir/natives 解压；鸿蒙无 /tmp）。 */
   runDir?: string;
@@ -151,7 +155,10 @@ export interface LaunchOptions {
 
 /**
  * 组装启动 argv（不含 argv[0]）。
- * 超长 -cp 在本 JLI 移植会失效，调用方应把 jar 平铺后用 "<dir>/*" 通配传入 classpath。
+ * classpath 有两种形态（由 needsRealClasspath 按启动形态分流）：
+ * ① **真 maven 树**（Forge ≥1.13 / NeoForge）：逐条绝对路径 + 实例 jar —— 必需，见
+ *    REAL_CLASSPATH_MAIN_CLASSES（FML 按 ASM jar 的祖先目录反推 maven 根）；
+ * ② **平铺 `<dir>/*`**（原版/Fabric/legacy）：超长 -cp 在本 JLI 移植会失效，故 jar 平铺后用通配传入。
  */
 export function buildLaunchArgv(opts: LaunchOptions): string[] {
   // 归一版本清单：展开 inheritsFrom 继承链 / HMCL patches[]（见 VersionResolver）。
@@ -172,16 +179,42 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   const gameDir = (opts.gameDir !== undefined && opts.gameDir.length > 0)
     ? opts.gameDir
     : opts.gameRoot;
+  // 「该有效版本要不要**真 maven 树** classpath」的**单一判据**（按启动形态判，不按 loader 名 /
+  // 版本号；见 needsRealClasspath 与 REAL_CLASSPATH_MAIN_CLASSES 的机制说明）。
+  const realTreeClasspath = needsRealClasspath(resolved);
+  // 主类分叉：只有**非加载器直启形态**（当前 = 非 NeoForge）才经 MeowLauncher 反射入口。
+  // 只算一次，供 classpath 组装（要走 MeowLauncher 就必须补 launcher/gson 桩件）与下方主类分支共用，
+  // 避免同一判据在两处各写一遍而漂移。
+  const viaMeowLauncher = opts.meowcraftLaunch === true && !neoForge;
   // classpath：
-  // - NeoForge：**必须走真 maven 树**（`-p` 模块路径与 `-DignoreList` 都依赖真实布局，
-  //   且平铺的 `<dir>/*` 顺序不定、会与树形成双份库）；随包 LWJGL3 jar 另从平铺目录补进来。
-  // - 原版/Fabric：维持平铺 `<dir>/*`（规避超长 -cp）。
-  const classpath = neoForge
-    ? assembleNeoForgeClasspath(opts.gameRoot, json, id,
-        opts.classpathDir !== undefined ? opts.classpathDir : '', opts.jsonPath)
+  // - 真 maven 树（`realTreeClasspath`）：**必须**是「真库树逐条绝对路径 + 实例 jar」——Forge ≥1.13 的 FML
+  //   用 ASM jar 的祖先目录反推 maven 根，平铺通配必然把路径基算错 ⇒ `Missing forge!`
+  //   （机制见 REAL_CLASSPATH_MAIN_CLASSES）；NeoForge 的 `-p` / `-DignoreList` / `-DmergeModules`
+  //   同样依赖真实布局。随包 LWJGL3 jar（以及走 MeowLauncher 时的 launcher/gson 桩件）另从平铺目录
+  //   按**绝对路径**补进来——**绝不用** `<dir>/*`（否则 ASM 可能先命中平铺那份，病根照旧）。
+  // - 原版/Fabric/legacy：维持平铺 `<dir>/*`（规避超长 -cp）。**legacy 有一处例外**：它的
+  //   「启动器族」（launchwrapper / FML 本体 / OptiFine，见 LOADER_FAMILY_PATH_SEGMENTS）必须
+  //   **摘出**平铺，改由 `MeowClassLoader` 从真 maven 树加载——留在平铺里会让 app classloader
+  //   先命中（父优先委托）⇒ `Launch.<init>` 的 `(URLClassLoader) getClassLoader()` 强转崩。
+  //   机理与真机取证见 `collectJarSources`（2026-09-30 更正：本行原先写反了）。
+  const classpath = realTreeClasspath
+    ? assembleRealTreeClasspath(opts.gameRoot, resolved, id,
+        opts.classpathDir !== undefined ? opts.classpathDir : '', opts.jsonPath, viaMeowLauncher)
     : ((opts.classpath !== undefined && opts.classpath.length > 0)
       ? opts.classpath
       : assembleClasspath(opts.gameRoot, json, id));
+  // classpath 形态自证（稳定英文诊断串）：排查"这类实例为什么起不来"时先看这一行。
+  // flat = 平铺目录通配（原版/Fabric/legacy）；real-tree = 真 maven 树逐条绝对路径。
+  // bytes = classpath 串的 **UTF-8 字节数**（对齐 argv 长度上限口径；用 util.TextEncoder 精确取，
+  // 非 UTF-16 字符数 —— 游戏根路径可能含非 ASCII 中文目录名）。
+  if (realTreeClasspath) {
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath mode=real-tree (entries=%{public}d, bytes=%{public}d)',
+      classpath.length === 0 ? 0 : classpath.split(':').length,
+      classpath.length === 0 ? 0 : new util.TextEncoder().encodeInto(classpath).byteLength);
+    logAsmProvider(classpath, opts.gameRoot);
+  } else {
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath mode=flat');
+  }
   // natives 目录：JNA/LWJGL native 解压目标（runDir 沙箱内可写优先）。
   const nativesDir = (opts.runDir !== undefined && opts.runDir.length > 0)
     ? `${opts.runDir}/${NATIVES_DIR}`
@@ -401,7 +434,7 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   // - **NeoForge**：直接以加载器的 mainClass（BootstrapLauncher / fml.startup.Client）为主类，
   //   并由本函数补齐 game 参数（`--fml.*` 等）——**不设** `-Djava.system.class.loader`
   //   （NeoForge 自带模块层与类加载体系，自设 system CL 会冲突）。
-  if (opts.meowcraftLaunch === true && !neoForge) {
+  if (viaMeowLauncher) {
     argv.push(MEOW_MAIN_CLASS);
     argv.push(player);
     argv.push(id);
@@ -563,15 +596,96 @@ function collectFromJson(gameRoot: string, json: VersionJson, versionId: string)
 }
 
 /**
- * NeoForge 的 classpath：**真 maven 树的按序路径** + 随包 LWJGL3 jar + 实例 jar。
+ * 该有效版本是否需要**真 maven 树 classpath**（逐条绝对路径 + 实例 jar），而不是平铺 `<dir>/*`。
+ *
+ * 判据按**启动形态（主类）**优先，不按 loader 名 / MC 版本号字符串比较（机制与取证见
+ * [`REAL_CLASSPATH_MAIN_CLASSES`](../constants/LaunchContract.ets)）：
+ * - Forge ≥1.13 三代主类命中 → 真；其中 `BootstrapLauncher` 同时覆盖 NeoForge（现状）。
+ * - 兜底再认 `loader === neoforge`：NeoForge 的 classpath 形态属"现状不得改动"，将来它若换主类名
+ *   （NeoForge 版本演进很快）也必须仍走真树，不能掉回平铺。
+ * - legacy（launchwrapper）/ Fabric / vanilla → 假：既有平铺路径与自补 `-cp` 一律不动。
+ */
+function needsRealClasspath(resolved: ResolvedVersion): boolean {
+  const main = resolved.json.mainClass ?? '';
+  for (const c of REAL_CLASSPATH_MAIN_CLASSES) {
+    if (main === c) {
+      return true;
+    }
+  }
+  return resolved.loader === LOADER_NEO_FORGE;
+}
+
+/**
+ * 类路径条目名是否为 **ASM 核心 jar**（`asm-<版本>.jar`；`asm-9.6.jar` / `asm-9.9.1.jar`）。
+ *
+ * 必须与同前缀的 `asm-commons` / `asm-tree` / `asm-util` / `asm-analysis` 区分开：FML 找的是
+ * `org/objectweb/asm/Opcodes.class` 的**提供者**，只有核心 jar 里有它；那几个兄弟 jar 同在前缀、
+ * 文件名也以 `asm-` 开头，用 `startsWith('asm-')` 之类的判据会误判。故用**全名**锚定
+ * `asm-` + 数字开头 + 只含数字与点 + `.jar`。
+ */
+function isAsmCoreJarFileName(name: string): boolean {
+  return /^asm-\d[\d.]*\.jar$/.test(name);
+}
+
+/**
+ * 真树 classpath 的 **ASM 自证**（只打日志、不改任何行为）。
+ *
+ * 验收所依赖的唯一不变量：Forge ≤1.16.x 的 FML 用 `getResource("org/objectweb/asm/Opcodes.class")`
+ * 取到的那个 jar 的路径**上溯 6 级**当 `libraries` 根（见 `REAL_CLASSPATH_MAIN_CLASSES`）⇒ classpath
+ * 里**第一个**能提供 `Opcodes.class` 的条目（= `getResource` 的首命中，按 classpath 顺序）必须是真树里的
+ * `<gameRoot>/libraries/org/ow2/asm/<artifact>/<ver>/`。这条不变量以前没有可观测落点（只打了条目数），
+ * 一旦将来被平铺具名件或新加条目破坏，现象又是 `Missing forge!` 而看不出原因 —— 故在这里落成一行日志。
+ */
+function logAsmProvider(classpath: string, gameRoot: string): void {
+  const libPrefix = `${gameRoot}/libraries/org/ow2/asm/`;
+  let first = '';
+  for (const one of classpath.split(':')) {
+    if (one.length > 0 && isAsmCoreJarFileName(one.substring(one.lastIndexOf('/') + 1))) {
+      first = one;
+      break;   // 只认第一个：`getResource` 就是按 classpath 顺序取首命中
+    }
+  }
+  if (first.length === 0) {
+    hilog.warn(LOG_DOMAIN, LOG_TAG,
+      'classpath real-tree: asm=(none) (in-libraries=no) -> Forge <=1.16.x cannot locate its'
+      + ' libraries root (Missing forge!)');
+    return;
+  }
+  const inLibs = first.startsWith(libPrefix);
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath real-tree: asm=%{public}s (in-libraries=%{public}s)',
+    first, inLibs ? 'yes' : 'no');
+  if (!inLibs) {
+    hilog.warn(LOG_DOMAIN, LOG_TAG,
+      'classpath real-tree: asm provider is NOT under %{public}s -> Forge <=1.16.x derives a wrong'
+      + ' maven root (Missing forge!)', libPrefix);
+  }
+}
+
+/**
+ * 真 maven 树 classpath：**按清单顺序**逐条绝对路径 + 实例 jar（对齐 HMCL 的 `${classpath}`）。
+ *
+ * 用于「需要真库树」的版本（`needsRealClasspath`：Forge ≥1.13 / NeoForge）。它们**必须**能从
+ * classpath 条目上看出真实 maven 布局（FML 按 ASM jar 的祖先目录反推 `libraries` 根，见
+ * `REAL_CLASSPATH_MAIN_CLASSES`）⇒ **平铺目录绝不能出现在这里**：只要平铺在，ASM 就可能先命中
+ * 平铺那份，路径基又算错（`Missing forge!`）。是**替换**，不是追加。
  *
  * `collectFromJson` 已按声明顺序收集「规则允许且本地存在」的库，并**跳过 MC 声明的 LWJGL3**
- * （`org/lwjgl/…`，由随包 clean-room jar 替代）——这正是 NeoForge 需要的形态；
- * 唯一要补的是那个随包 jar（它在平铺目录里，不在 maven 树里）。
+ * （`org/lwjgl/…`，由随包 clean-room 合并 jar 替代）——这正是真树版本要的形态；另外四类补充见函数体。
  */
-function assembleNeoForgeClasspath(gameRoot: string, json: VersionJson, versionId: string,
-  stagedDir: string, jsonPath: string): string {
+function assembleRealTreeClasspath(gameRoot: string, resolved: ResolvedVersion, versionId: string,
+  stagedDir: string, jsonPath: string, includeLauncherStubs: boolean): string {
+  const json = resolved.json;
   const parts = collectFromJson(gameRoot, json, versionId);
+  // 继承式实例（官方 Forge 安装器布局）的客户端 jar 在**基座版本目录**，叶子目录常无 `<id>.jar`
+  // ⇒ 按 `resolved.clientJarId` 补进 classpath（与 `collectJarSources` 同口径；HMCL 的 `${classpath}`
+  // 同样含 client jar）。补丁式（HMCL）时 clientJarId == 实例 id ⇒ 已由 collectFromJson 加入，不重复。
+  const baseId = resolved.clientJarId;
+  if (baseId.length > 0 && baseId !== versionId) {
+    const baseJar = `${gameRoot}/versions/${baseId}/${baseId}.jar`;
+    if (fileExists(baseJar) && !parts.includes(baseJar)) {
+      parts.push(baseJar);
+    }
+  }
   // 加载器 `-DmergeModules=` 点名的 jar 必须出现在 `java.class.path` 里（它按**文件名**查表做合并）；
   // 这些 jar（如 jna-5.10.0.jar）不在清单中，由安装期补下到 maven 树 → 这里按名解析后补进 classpath。
   const jvmArgs = collectArgs(json.arguments?.jvm);
@@ -580,6 +694,13 @@ function assembleNeoForgeClasspath(gameRoot: string, json: VersionJson, versionI
     const p = `${gameRoot}/libraries/${e.relPath}`;
     if (fileExists(p)) {
       parts.push(p);
+    } else {
+      // 加载器 `-DmergeModules=` 点名的 jar 在真树里**不存在**（声明的版本与树里的不一致，如
+      // 清单声明 jna-5.12.1 而加载器点名 jna-5.10.0.jar）。加载器按**文件名**查表合并，查不到就
+      // 拿空集去 union → 启动期 `NoSuchFileException`/`Duplicate key` 之类难查的失败。必须告警别静默。
+      hilog.warn(LOG_DOMAIN, LOG_TAG,
+        'mergeModules: %{public}s declared by loader but absent from real tree (%{public}s);'
+        + ' declared-vs-tree mismatch -> name lookup will fail', e.fileName, e.relPath);
     }
   }
   if (stagedDir.length > 0) {
@@ -615,6 +736,28 @@ function assembleNeoForgeClasspath(gameRoot: string, json: VersionJson, versionI
     if (fileExists(genPath)) {
       parts.push(genPath);
     }
+    // (3) 走 MeowLauncher 的实例（当前 = Forge ≥1.13）主类就是 `meow.launcher.MeowLauncher`，它只存在于
+    //     平铺目录的 launcher.jar 里（**不在** maven 树）⇒ 必须按**绝对路径**把这两个随包桩件加进来，
+    //     否则 JVM 直接 `Could not find or load main class meow.launcher.MeowLauncher`。
+    //     平铺模式下它们由 `<dir>/*` 顺带提供；这里不能再用通配（函数头：平铺目录不得进 classpath）。
+    //     注：NeoForge 走加载器主类、不需要它们 ⇒ 不加（其 classpath 现状保持不变）。
+    if (includeLauncherStubs) {
+      for (const n of EXPECTED_EXTRA_JARS) {
+        const p = `${stagedDir}/${n}`;
+        if (fileExists(p)) {
+          parts.push(p);
+        }
+      }
+    }
+  } else {
+    // 真树形态（Forge ≥1.13 / NeoForge）本应从平铺目录取随包 LWJGL3 jar（走 MeowLauncher 时还要
+    // launcher/gson 桩件）。stagedDir 为空 = 调用方没给平铺目录 ⇒ 这些按**绝对路径**补的件一个都进不了
+    // classpath：LWJGL3 缺失 ⇒ 加载器/游戏 `NoClassDefFoundError`；走 MeowLauncher 时主类
+    // `meow.launcher.MeowLauncher` 只在 launcher.jar 里 ⇒ `Could not find or load main class`。
+    // 导出 API 的防御性可观测化（纯日志，不改行为）。
+    hilog.warn(LOG_DOMAIN, LOG_TAG,
+      'real-tree classpath: stagedDir empty -> bundled LWJGL3 jar (and launcher/gson stubs when used)'
+      + ' will NOT be added (expect NoClassDefFoundError or main class not found)');
   }
   // **按绝对路径去重**（保序）：NeoForge 清单与 vanilla 清单会声明**同一个库**
   // （guava/failureaccess、gson 等 FML 依赖与 MC 依赖重合）⇒ 同路径出现两次会让
@@ -632,12 +775,27 @@ function assembleNeoForgeClasspath(gameRoot: string, json: VersionJson, versionI
   return unique.join(':');
 }
 
-/** 声明里的 oshi jar 文件名（如 `oshi-core-6.4.10.jar`）；无则空串。 */
+/** 声明里的 oshi **核心** jar 文件名（如 `oshi-core-6.4.10.jar`）；无则空串。
+ *  两个制品组都要认：`com.github.oshi:oshi-core`（MC ≥1.17）与 `oshi-project:oshi-core`（MC ≤1.16.x）。
+ *  后者漏认会让 Forge 1.16.x 用上真树里那份**未打补丁**的 oshi（平铺模式下它是被覆盖过的）。 */
+const OSHI_CORE_PREFIXES: string[] = ['com.github.oshi:oshi-core:', 'oshi-project:oshi-core:'];
+
 function oshiJarBaseName(json: VersionJson): string {
-  const prefix = 'com.github.oshi:oshi-core:';
   for (const lib of json.libraries ?? []) {
+    // 与 `collectFromJson` 同口径：**规则不允许的条目必须跳过**。否则可能取到被规则排除的
+    // 那条 `oshi-core`（如 Windows-only 条目）⇒ 覆盖件名与真树里实际会进 classpath 的那条不一致，
+    // 覆盖逻辑（ClasspathStager 按名覆盖）就会错位。
+    if (!ruleAllows(lib.rules)) {
+      continue;
+    }
     const name = lib.name ?? '';
-    if (!name.startsWith(prefix)) {
+    let hit = false;
+    for (const pfx of OSHI_CORE_PREFIXES) {
+      if (name.startsWith(pfx)) {
+        hit = true;
+      }
+    }
+    if (!hit) {
       continue;
     }
     const rel = lib.downloads?.artifact?.path ?? mavenPathFromName(name);
