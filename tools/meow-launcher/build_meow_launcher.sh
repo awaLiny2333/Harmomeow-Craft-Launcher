@@ -13,8 +13,9 @@
 #   改这一行会改 launcher.jar 的字节 ⇒ 须**重打 extras tar 并升 EXTRAS_VERSION**（见 notes 铁律），
 #   随之更新 tools/meow-launcher/README.md 与 notes 30-supply-chain 的 digest。
 # Contents: `meow.launcher.*` (own implementation) + clean-room `com.mojang.text2speech`
-# narrator stub + vendored Apache-2.0 `android/util/*` (needed by our lwjgl.jar GLFW).
-# NO third-party/GPL code, no `net.kdt`, no native loadLibrary.
+# narrator stub. NO third-party/GPL code, no `net.kdt`, no vendored `android/*` (our lwjgl.jar
+# GLFW stub uses java.util instead; this script asserts the jar carries no android/ entries),
+# no native loadLibrary.
 #
 # gson is a COMPILE-ONLY dependency: this jar keeps `com.google.gson` references; the
 # shade to `meow.gson` happens in finalize (tools/relocate_gson.py). gson is fetched

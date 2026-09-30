@@ -1,14 +1,17 @@
 # tools/meow-launcher — clean-room `meow.launcher`
 
 Builds the shipped `launcher.jar` from **our own** Java sources — no third-party
-launcher, **no GPL code**. Replaces the earlier derived launcher built by `tools/launcher/`.
+launcher, **no GPL code**. Replaces the earlier PojavLauncher-derived launcher
+(its old build chain under `tools/launcher/` has since been removed).
 
 ## What's in the jar
 | package | what | license |
 |---|---|---|
 | `meow.launcher.*` | launcher (entry, class loader, dirs, account, version json, args, classpath, options) | ours |
 | `com.mojang.text2speech.*` | clean-room narrator stub (`Narrator` + `NarratorDummy`) — MC calls `getNarrator()` | ours (API dictated by MC) |
-| `android/util/*` | vendored AOSP (`ArrayMap` etc.) — needed by `lwjgl.jar`'s GLFW | Apache-2.0 |
+
+No `android/util/*` (vendored AOSP) is shipped: the `lwjgl.jar` GLFW stub uses `java.util`
+instead, and `build_meow_launcher.sh` asserts the jar carries **no** `android/` entries.
 
 Compile-only dep: **gson 2.13.1** (Apache-2.0). Kept as `com.google.gson` in the built jar and
 **shaded to `meow.gson` in finalize** (`tools/relocate_gson.py`) so it never shadows MC's gson.
@@ -26,8 +29,9 @@ Compile-only dep: **gson 2.13.1** (Apache-2.0). Kept as `com.google.gson` in the
 # 1) compile + pack (javac must be run by you; the agent shell has no JVM)
 sh tools/meow-launcher/build_meow_launcher.sh --work <workspace>/stuffs/research/meow_launcher_build
 # -> <work>/out/launcher.jar (still references com.google.gson).
-#    build_meow_launcher.sh's --work default is ${TMPDIR:-/tmp}/meow_launcher_build; finalize_for_meowcraft.sh
-#    expects the jar at <workspace>/stuffs/research/meow_launcher_build/out/launcher.jar by default.
+#    build_meow_launcher.sh's --work default is ${TMPDIR:-/tmp}/meow_launcher_build; likewise
+#    finalize_for_meowcraft.sh defaults to ${TMPDIR:-/tmp}/meow_launcher_build/out/launcher.jar
+#    (it falls back to <workspace>/stuffs/research/meow_launcher_build/out/launcher.jar if absent).
 
 # 2) swap into the shipped tar + shade gson (pure python; agent can run)
 #    layout-aware: replaces ONLY launcher.jar (re-shading its gson refs to meow.gson),
