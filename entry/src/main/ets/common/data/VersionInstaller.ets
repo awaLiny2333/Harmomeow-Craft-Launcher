@@ -481,19 +481,19 @@ function writeText(path: string, text: string): void {
   if (file === null) {
     return;
   }
-  let writeOk = true;
+  // try/finally：无论写入成功、还是写入中途抛出，都必须释放 fd。
+  // HarmonyOS 应用可用 fd 数有限且进程长期驻留，安装期会反复写 version json / job 文件；
+  // 一旦在异常路径漏关，描述符会逐渐累积直至耗尽，之后所有 open 都失败（表现为莫名的写盘失败）。
   try {
     fileIo.writeSync(file.fd, text);
-  } catch (error) {
-    writeOk = false;
-  }
-  try {
-    fileIo.closeSync(file);
-  } catch (error) {
-    // 忽略关闭异常
-  }
-  if (!writeOk) {
+  } catch {
     throw new Error('write failed');
+  } finally {
+    try {
+      fileIo.closeSync(file);
+    } catch {
+      // 忽略关闭异常
+    }
   }
 }
 

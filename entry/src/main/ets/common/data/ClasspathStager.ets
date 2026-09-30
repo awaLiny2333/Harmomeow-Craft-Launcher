@@ -65,8 +65,12 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
       if (native.extractRawTar(ctx.resourceManager, RAWFILE_MEOWCRAFT_EXTRAS, dir) as boolean) {
         const f = fileIo.openSync(doneMark, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE |
           fileIo.OpenMode.TRUNC);
-        fileIo.writeSync(f.fd, stamp);
-        fileIo.closeSync(f);
+        // try/finally：写入抛出也要释放 fd（外层 catch 只记日志、不关描述符）。
+        try {
+          fileIo.writeSync(f.fd, stamp);
+        } finally {
+          fileIo.closeSync(f);
+        }
       }
     }
   } catch (e) {
@@ -281,8 +285,12 @@ function overrideStagedJar(ctx: common.UIAbilityContext, dir: string,
     const f = fileIo.openSync(dest, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE |
       fileIo.OpenMode.TRUNC);
     // 只写 Uint8Array 有效区间（.buffer 可能比内容大 → 否则 jar 损坏）。
-    fileIo.writeSync(f.fd, data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-    fileIo.closeSync(f);
+    // try/finally：写入抛出也要释放 fd（外层 catch 只记日志、不关描述符）。
+    try {
+      fileIo.writeSync(f.fd, data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+    } finally {
+      fileIo.closeSync(f);
+    }
     hilog.info(LOG_DOMAIN, LOG_TAG, 'override %{public}s <- %{public}s (mem=%{public}d staged=%{public}d)',
       jarName, rawName, data.byteLength, fileIo.statSync(dest).size);
   } catch (e) {

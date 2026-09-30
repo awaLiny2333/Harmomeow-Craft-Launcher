@@ -215,11 +215,23 @@ export async function readToolMainClassAsync(jarPath: string, cacheDir: string):
   if (mainClass.length === 0) {
     throw new Error(`Main-Class missing in ${base}`);
   }
+  let file: fileIo.File | null = null;
   try {
-    fileIo.writeSync(fileIo.openSync(cacheFile,
-      fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC).fd, mainClass);
+    file = fileIo.openSync(cacheFile,
+      fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
+    fileIo.writeSync(file.fd, mainClass);
   } catch {
     // 缓存写失败不影响本次结果。
+  } finally {
+    // 无论写入成功、失败还是中途抛出，都必须释放 fd：HarmonyOS 应用可用 fd 数有限且进程长期驻留，
+    // 每次解包工具 jar 都漏一个描述符会在反复安装后耗尽，之后所有 open 都会失败。
+    if (file !== null) {
+      try {
+        fileIo.closeSync(file);
+      } catch {
+        // 忽略关闭异常
+      }
+    }
   }
   hilog.info(LOG_DOMAIN, LOG_TAG, 'tool %{public}s main=%{public}s', base, mainClass);
   return mainClass;

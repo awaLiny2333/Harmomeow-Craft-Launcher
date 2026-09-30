@@ -342,8 +342,13 @@ export class AccountsTools {
       });
       const f = fileIo.openSync(file, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE |
         fileIo.OpenMode.TRUNC);
-      fileIo.writeSync(f.fd, body);
-      fileIo.closeSync(f);
+      // try/finally：即便写入抛出也要释放 fd。外层 catch 只记日志、不关描述符，
+      // 故这里必须兜底（HarmonyOS 应用 fd 数有限，反复写账号文件泄漏会最终导致 open 失败）。
+      try {
+        fileIo.writeSync(f.fd, body);
+      } finally {
+        fileIo.closeSync(f);
+      }
       hilog.info(LOG_DOMAIN, LOG_TAG, 'account file written: %{public}s', file);
     } catch (e) {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'write account file fail: %{public}s', JSON.stringify(e));
