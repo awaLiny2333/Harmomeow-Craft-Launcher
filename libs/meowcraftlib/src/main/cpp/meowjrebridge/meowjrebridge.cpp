@@ -445,8 +445,30 @@ napi_value LaunchJvm(napi_env env, napi_callback_info info) {
             };
             const size_t kChunk = 1024;        // 远低于 hilog 的单条上限（4096 字节）
             const size_t kMaxPending = 65536;  // 无换行时的缓冲上界（见 pump 内的冲刷）
-            auto emit = [sanitize](const char* tag, const std::string& raw) {
+            // [headless 诊断] 工具 stdio **落盘**（与 hilog 同源同内容，多写一个文件）。
+            // 为什么：上游工具（installertools / jarsplitter / SpecialSource / binarypatcher）的异常
+            // 只出现在 stdout/stderr（`Error: Could not find or load main class …` /
+            // `Input does not exist …` / `UnsupportedClassVersionError` …），而 hilog 会滚动覆盖、
+            // 现场抓取又常按 tag 过滤 ⇒ 「工具为何退 1」取证不到（2026-09-30 实机事故：只拿到
+            // `handshake returned code=1` 一行，看不到工具自己的异常）。
+            // 固定路径 <filesDir>/meow-neo-jvm-tool.log（与 ArkTS 侧 constants/Paths.ets 的
+            // NEO_JVM_TOOL_LOG 同名）；调用方每轮先清空、跑完归档到 <workDir>/logs/<label>.log。
+            // 追加 + 每行 fopen/fclose：两条 pump 线程并发写也安全（O_APPEND 的小写原子），
+            // 且 JVM `_exit` 前不会丢掉已写内容（无用户态缓冲残留）。
+            auto appendToolLog = [headless, filesDir](const std::string& line) {
+                if (!headless || filesDir.empty()) {
+                    return;
+                }
+                FILE* f = fopen((filesDir + "/meow-neo-jvm-tool.log").c_str(), "a");
+                if (f == nullptr) {
+                    return;
+                }
+                fprintf(f, "%s\n", line.c_str());
+                fclose(f);
+            };
+            auto emit = [sanitize, appendToolLog](const char* tag, const std::string& raw) {
                 std::string line = sanitize(raw);
+                appendToolLog(std::string("[") + tag + "] " + line);
                 if (line.empty()) {
                     OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG, "[%{public}s]", tag);
                     return;

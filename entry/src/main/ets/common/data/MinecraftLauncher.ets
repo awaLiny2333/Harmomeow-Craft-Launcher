@@ -7,7 +7,8 @@ import { RENDERER_LIB, VULKAN_LIB_SHIM, VULKAN_LIB_DISABLED, WINDOW_DEFAULT_W, W
   LOCALE_LANGUAGE, LOCALE_COUNTRY, LOCALE_TIMEZONE, RULE_OS_NAME, RULE_OS_ARCH,
   OFFLINE_USERNAME, LAUNCHER_NAME, LAUNCHER_VERSION,
   CLIENT_MOD_NAME, LWJGL_GEN_343, LWJGL_JAR_PREFIX,
-  EXPECTED_EXTRA_JARS, LWJGL_NAME_MAPPER } from '../constants/LaunchDefaults';
+  EXPECTED_EXTRA_JARS, LWJGL_NAME_MAPPER,
+  ASM_BUNDLED_VERSION, ASM_STAGE_SUBDIR, EXPECTED_ASM_JARS } from '../constants/LaunchDefaults';
 import { MEOW_CLASS_LOADER, MEOW_MAIN_CLASS, LAUNCHWRAPPER_MAIN_CLASS,
   REAL_CLASSPATH_MAIN_CLASSES, LOADER_FAMILY_PATH_SEGMENTS } from '../constants/LaunchContract';
 import { libraryNames, resolveMergeModuleEntries } from './NeoForgeInstaller';
@@ -111,7 +112,9 @@ export interface LaunchOptions {
   /** 自研桥 so 所在目录（当前与 nativeLibsDir 同：meowjre HSP libs）——JVM 侧
    *  System.loadLibrary 也需能在该目录找到 libmeowcraftbridge.so。 */
   craftLibsDir?: string;
-  /** 自研桥模式：MeowClassLoader + MeowLauncher 入口（配合 clean-room lwjgl.jar）。 */
+  /** 自研启动路径开关（配合 clean-room lwjgl.jar）：开启自研桥固定参数段；并允许**需要 MeowClassLoader
+   *  的形态**（vanilla / launchwrapper 系）经 `MeowLauncher` 入口。非该形态（Forge ≥1.13 / NeoForge /
+   *  Fabric）即便为 true 也**直启**其加载器主类（见 buildLaunchArgv 的 `viaMeowLauncher`）。 */
   meowcraftLaunch?: boolean;
   /** 窗口尺寸（glfwstub 用）。 */
   width?: number;
@@ -151,6 +154,10 @@ export interface LaunchOptions {
    *  **不动 `lib/modules`(jimage) / `jmods` / 模块哈希**。目录不存在时调用方须传空（否则 JVM
    *  初始化即 `patch module ... does not exist` 失败）。 */
   zipfsPatchDir?: string;
+  /** 本次启动所用**随包 JRE 的主版本**（Java major，如 26 / 8；= `JavaRuntime.javaMajor`，
+   *  由 `GameLauncher` 从已解析的 `JavaChoice` 传入）。用于「随包 ASM 覆盖」判定
+   *  （见 `needsAsmOverride`：声明 ASM 能否读**当前 JRE** 的 class 文件）。0/未设 = 不判定、不替换。 */
+  jreMajor?: number;
 }
 
 /**
@@ -182,10 +189,44 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   // 「该有效版本要不要**真 maven 树** classpath」的**单一判据**（按启动形态判，不按 loader 名 /
   // 版本号；见 needsRealClasspath 与 REAL_CLASSPATH_MAIN_CLASSES 的机制说明）。
   const realTreeClasspath = needsRealClasspath(resolved);
-  // 主类分叉：只有**非加载器直启形态**（当前 = 非 NeoForge）才经 MeowLauncher 反射入口。
-  // 只算一次，供 classpath 组装（要走 MeowLauncher 就必须补 launcher/gson 桩件）与下方主类分支共用，
-  // 避免同一判据在两处各写一遍而漂移。
-  const viaMeowLauncher = opts.meowcraftLaunch === true && !neoForge;
+  // ── 随包 ASM 覆盖（方案 A「随包」）──
+  // 判定见 needsAsmOverride（ModLauncher ≥10 且声明 ASM 读不懂当前 JRE 的 class 文件）；
+  // 落位 = 实例 staging 平铺目录下的**子目录**（ASM_STAGE_SUBDIR，**不平铺**，避免混进
+  // 平铺形态的 `-cp "<dir>/*"` 通配）。找不到随包目录/件时**保持原样**（不假装成功）并打 warn。
+  const jreMajor = (opts.jreMajor !== undefined && opts.jreMajor > 0) ? opts.jreMajor : 0;
+  const asmDir = (opts.classpathDir !== undefined && opts.classpathDir.length > 0)
+    ? `${opts.classpathDir}/${ASM_STAGE_SUBDIR}` : '';
+  const asmOverrideWanted = needsAsmOverride(resolved, jreMajor);
+  const asmOverride = asmOverrideWanted && asmBundleComplete(asmDir);
+  if (asmOverrideWanted && !asmOverride) {
+    hilog.error(LOG_DOMAIN, LOG_TAG,
+      'bundled ASM missing/incomplete at %{public}s -> keeping declared ASM (expect'
+      + ' "Unsupported class file major version %{public}d" on this JRE)',
+      asmDir.length > 0 ? asmDir : '(no staged dir)', jreMajor + CLASS_MAJOR_OFFSET);
+  }
+  // **主类分叉 = 桩件判据 = system CL 判据（一个变量驱动三处，同源，不再各写一遍）**：
+  // 只有**需要自研 system classloader（MeowClassLoader）的形态**才经 `MeowLauncher` 反射入口 ——
+  // 即 vanilla 与 launchwrapper 系（legacy ≤1.12.2）。该集合由两个**形态**子判据合取得出：
+  //  • `!realTreeClasspath`（= `needsRealClasspath` 取反）：排除 Forge ≥1.13 / NeoForge 这类**加载器
+  //    直启形态**（它们必须直启其 `mainClass`，且 classpath 是真库树、不补 launcher/gson 桩件）。
+  //  • `form === vanilla || isLaunchWrapperMain(主类)`：vanilla 需要它在运行期 **addURL** 往 classpath
+  //    追加 jar；launchwrapper 的 `Launch.<init>` 有 `(URLClassLoader) getClassLoader()` 强转，也必须
+  //    有 `MeowClassLoader`（两者都不满足的 Fabric —— form=inherits、主类=KnotClient —— 因而是直启）。
+  //
+  // **为什么 Forge ≥1.13 必须直启、不能经 MeowLauncher 反射**（2026-09-30 真机取证：1.17.1 / 1.18.2）：
+  // Java 9+ 模块系统下，从**无名模块**（我们的 launcher.jar，随 app classpath 进 unnamed module）反射调用
+  // **有模块**的主类，会因目标 module 的 `module-info` 未 `exports`/`opens` 自己的包而被拒 —— 报
+  // `IllegalAccessException: class meow.launcher.MeowLauncher cannot access class
+  //  cpw.mods.bootstraplauncher.BootstrapLauncher (in module cpw.mods.bootstraplauncher) because module
+  //  cpw.mods.bootstraplauncher does not export cpw.mods.bootstraplauncher to unnamed module`。
+  // 旧 `bootstraplauncher`（0.1.17 / 1.0.0）的 `module-info` 无任何 exports/opens ⇒ **只有老版本暴露**；
+  // 1.1.2 起 `exports cpw.mods.bootstraplauncher` 才放行（故 1.19.4/1.20.1 的反射能过）。NeoForge 一直
+  // 直启主类、从未踩过此坑 ⇒ 让 Forge ≥1.13 与它同口径。直启后 game 参数照样齐（`arguments.game`
+  // 自带 `--launchTarget`/`--fml.*`，见下方 else 分支的 collectGameArgs）。
+  // ⚠️ 直启形态**必须**同时不设 `-Djava.system.class.loader`：launcher.jar 已不在其 classpath 上，
+  //    仍设会让 JVM 启动期 `Class.forName("meow.launcher.MeowClassLoader")` 直接 ClassNotFound。
+  const viaMeowLauncher = opts.meowcraftLaunch === true && !realTreeClasspath
+    && (resolved.form === VERSION_FORM_VANILLA || isLaunchWrapperMain(json.mainClass));
   // classpath：
   // - 真 maven 树（`realTreeClasspath`）：**必须**是「真库树逐条绝对路径 + 实例 jar」——Forge ≥1.13 的 FML
   //   用 ASM jar 的祖先目录反推 maven 根，平铺通配必然把路径基算错 ⇒ `Missing forge!`
@@ -197,12 +238,15 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   //   **摘出**平铺，改由 `MeowClassLoader` 从真 maven 树加载——留在平铺里会让 app classloader
   //   先命中（父优先委托）⇒ `Launch.<init>` 的 `(URLClassLoader) getClassLoader()` 强转崩。
   //   机理与真机取证见 `collectJarSources`（2026-09-30 更正：本行原先写反了）。
-  const classpath = realTreeClasspath
+  const rawClasspath = realTreeClasspath
     ? assembleRealTreeClasspath(opts.gameRoot, resolved, id,
         opts.classpathDir !== undefined ? opts.classpathDir : '', opts.jsonPath, viaMeowLauncher)
     : ((opts.classpath !== undefined && opts.classpath.length > 0)
       ? opts.classpath
       : assembleClasspath(opts.gameRoot, json, id));
+  // ASM 覆盖：**替换面覆盖 `-cp`**（`-p` 见下方 jvm 参数循环）。只在判据命中且随包件齐时改：
+  // `-cp` 里的 ASM 条目（=`collectFromJson` 收的真树件）换成随包件的**绝对路径**，其余 `org/ow2/asm/*` 剔除。
+  const classpath = asmOverride ? rewriteAsmList(rawClasspath, asmDir) : rawClasspath;
   // classpath 形态自证（稳定英文诊断串）：排查"这类实例为什么起不来"时先看这一行。
   // flat = 平铺目录通配（原版/Fabric/legacy）；real-tree = 真 maven 树逐条绝对路径。
   // bytes = classpath 串的 **UTF-8 字节数**（对齐 argv 长度上限口径；用 util.TextEncoder 精确取，
@@ -211,9 +255,24 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath mode=real-tree (entries=%{public}d, bytes=%{public}d)',
       classpath.length === 0 ? 0 : classpath.split(':').length,
       classpath.length === 0 ? 0 : new util.TextEncoder().encodeInto(classpath).byteLength);
-    logAsmProvider(classpath, opts.gameRoot);
+    logAsmProvider(classpath, opts.gameRoot, asmOverride);
   } else {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath mode=flat');
+  }
+  // ASM 覆盖自证（稳定英文诊断串）：换了哪几件、指向哪个目录、丢掉了哪套声明版本。
+  if (asmOverride) {
+    hilog.info(LOG_DOMAIN, LOG_TAG,
+      'asm override: bundled ASM %{public}s (5 jars) staged at %{public}s; dropped declared'
+      + ' modlauncher=%{public}s asm=%{public}s (jre=%{public}d -> class major %{public}d);'
+      + ' -cp and -p rewritten',
+      ASM_BUNDLED_VERSION, asmDir, declaredModLauncherVersion(resolved.json) ?? '(none)',
+      declaredAsmVersion(resolved.json) ?? '(none)', jreMajor, jreMajor + CLASS_MAJOR_OFFSET);
+  } else if (realTreeClasspath && !asmOverrideWanted) {
+    // 不替换的自证（只在真树形态打，平铺形态不刷屏）。
+    hilog.info(LOG_DOMAIN, LOG_TAG,
+      'asm override: not needed (modlauncher=%{public}s asm=%{public}s jre=%{public}d)',
+      declaredModLauncherVersion(resolved.json) ?? '(none)',
+      declaredAsmVersion(resolved.json) ?? '(none)', jreMajor);
   }
   // natives 目录：JNA/LWJGL native 解压目标（runDir 沙箱内可写优先）。
   const nativesDir = (opts.runDir !== undefined && opts.runDir.length > 0)
@@ -279,19 +338,21 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   }
 
   // 自研桥模式固定参数（与历史启动器 JVMLauncher overridableArguments 全量对齐——LWJGL 桥与 MeowClassLoader 需要）。
-  // NeoForge 同样需要（LWJGL/随包 native/平台伪装都在这一段），只是它**不设** MeowClassLoader、
-  // 主类也不走 MeowLauncher（见下方两个分支的 `neoForge` 条件）。
+  // **加载器直启形态**（Forge ≥1.13 / NeoForge）同样需要（LWJGL/随包 native/平台伪装都在这一段），
+  // 只是它们**不设** MeowClassLoader、主类也不走 MeowLauncher（见下方 `viaMeowLauncher` 分支）。
   if (opts.meowcraftLaunch === true || neoForge) {
-    // 自研 system classloader 服务两类实例：
-    // ① vanilla —— 它让我们在运行期往 classpath 追加 jar（MeowLauncher 的 addURL 路径）；
-    // ② **launchwrapper 系**（≤1.12.2 的 Forge 等）—— `net.minecraft.launchwrapper.Launch.<init>`
-    //    里有 `(URLClassLoader) getClassLoader()` 强转，而 JDK 9+ 的 `AppClassLoader` 不再是
-    //    `URLClassLoader` ⇒ 系统 CL 必须是 `MeowClassLoader`（URLClassLoader 子类），否则启动即
-    //    `ClassCastException`（2026-09-28 真机取证，见 notes `Forge支持-改动方案.md` §10 R1）。
-    // **Fabric / NeoForge 仍不得设**：Fabric Knot 要求 loader 类由父加载器持有、game 类由它自己的
-    // KnotClassLoader 持有；我们自设 system CL 会让 KnotClassLoader 把 loader 类当 game 类加载
-    // → `verifyNotInTargetCl` 抛错 + mixin 类分裂；NeoForge 的 BootstrapLauncher 同理依赖默认 app CL。
-    if (resolved.form === VERSION_FORM_VANILLA || isLaunchWrapperMain(json.mainClass)) {
+    // 自研 system classloader 只服务"经 MeowLauncher 反射入口"的两类实例（= 上方 `viaMeowLauncher`，
+    // 同一判据，不另设布尔）：
+    // ① vanilla —— 让我们在运行期往 classpath 追加 jar（MeowLauncher 的 addURL 路径）；
+    // ② **launchwrapper 系**（≤1.12.2 的 Forge 等）—— `net.minecraft.launchwrapper.Launch.<init>` 的
+    //    `(URLClassLoader) getClassLoader()` 强转在 JDK 9+ 的 `AppClassLoader` 上必崩 ⇒ 系统 CL 必须是
+    //    `MeowClassLoader`（URLClassLoader 子类），否则启动即 `ClassCastException`
+    //    （2026-09-28 真机取证，见 notes `Forge支持-改动方案.md` §10 R1）。
+    // **加载器直启形态（Forge ≥1.13 / NeoForge）与 Fabric 一律不得设**：前者主类由我们直启、launcher.jar
+    // 已从 classpath 摘除 ⇒ 仍设会在 JVM 启动期 `Class.forName` 直接 ClassNotFound（且其 module layer
+    // 依赖默认 app CL）；Fabric Knot 要求 loader 类由父加载器持有，自设 system CL 会破坏该契约。
+    // （判据含 `!realTreeClasspath` 而非只看 form：Forge ≥1.13 的自包含清单会被判成 `vanilla`。）
+    if (viaMeowLauncher) {
       argv.push(`-Djava.system.class.loader=${MEOW_CLASS_LOADER}`);
     }
     // 渲染后端按 MC 版本选（见 RendererPolicy）：≥1.17 → 桌面 GL libGLv4.so(Zink)；
@@ -400,12 +461,21 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   // legacy（≤1.12.2）用 minecraftArguments、没有 arguments.jvm，所以这里不会带出 -cp —— 必须补上，
   // 否则 `-Djava.system.class.loader=MeowClassLoader` 找不到类 → VM 初始化即败（表现=秒崩）。
   let hasClasspathArg = false;
+  // `-p` 的**下一项**是 module path 串：ASM 覆盖时把它一并改写（见 rewriteAsmList —— ②代 ASM 正是
+  // 经 `-p` + `--add-modules ALL-MODULE-PATH` 加载，只改 `-cp` 会留旧件、甚至造成同模块两份）。
+  let rewriteNextAsModulePath = false;
   for (const raw of collectArgs(json.arguments?.jvm)) {
-    const v = expand(raw, macros);
+    let v = expand(raw, macros);
+    if (rewriteNextAsModulePath) {
+      v = asmOverride ? rewriteAsmList(v, asmDir) : v;
+      rewriteNextAsModulePath = false;
+    }
     if (v.length > 0) {
       argv.push(v);
       if (v === '-cp' || v === '-classpath') {
         hasClasspathArg = true;
+      } else if (v === '-p' || v === '--module-path') {
+        rewriteNextAsModulePath = true;
       }
     }
   }
@@ -429,11 +499,12 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     argv.push(`-Dorg.lwjgl.system.SharedLibraryExtractPath=${nativesDir}`);
     argv.push(`-Dio.netty.native.workdir=${nativesDir}`);
   }
-  // 主类与后续参数：
-  // - 原版/Fabric：MeowLauncher <username> <version>（其内部反射真正 mainClass）；
-  // - **NeoForge**：直接以加载器的 mainClass（BootstrapLauncher / fml.startup.Client）为主类，
-  //   并由本函数补齐 game 参数（`--fml.*` 等）——**不设** `-Djava.system.class.loader`
-  //   （NeoForge 自带模块层与类加载体系，自设 system CL 会冲突）。
+  // 主类与后续参数（判据 = 上方 `viaMeowLauncher`，与 classpath 形态 / 桩件 / system CL **同源**）：
+  // - vanilla/legacy：MeowLauncher <username> <version>（其内部反射真正 mainClass、补 game 参数）；
+  // - **加载器直启形态**（Forge ≥1.13 / NeoForge）**与 Fabric**：直接以各自主类启动
+  //   （modlauncher.Launcher / BootstrapLauncher / ForgeBootstrap / fml.startup.Client / KnotClient），
+  //   并由本函数补齐 game 参数（`--launchTarget`/`--fml.*`/账户等）——**不设** `-Djava.system.class.loader`
+  //   （这族自带模块层/类加载体系；且 launcher.jar 已不在此形态的 classpath 上）。
   if (viaMeowLauncher) {
     argv.push(MEOW_MAIN_CLASS);
     argv.push(player);
@@ -452,8 +523,8 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     }
   }
   // MC 的 `--graphicsBackend` 是**游戏参数**，必须在主类之后（之前误放进 JVM 的 -D 区，JVM 会当作自己的
-  // 选项而拒绝启动）。两条路径都在这里追加：原版/Fabric 由我们的 launcher 把 `args[2..]` 原样转给 MC，
-  // NeoForge 直接由本函数补齐 game 参数。MC 默认 GL 优先（见方案文 §5.5），只有它才会去试 Vulkan；
+  // 选项而拒绝启动）。两条路径都在这里追加：vanilla/legacy 由我们的 launcher 把 `args[2..]` 原样转给 MC，
+  // 直启形态（Forge ≥1.13 / NeoForge / Fabric）直接由本函数补齐 game 参数。MC 默认 GL 优先（见方案文 §5.5），只有它才会去试 Vulkan；
   // 候选列表是 {VulkanBackend, GlBackend}，Vulkan 失败仍回退 GL（安全垫）。回退阶梯见 §7.5。
   if (opts.graphicsBackend !== undefined && opts.graphicsBackend.length > 0) {
     argv.push('--graphicsBackend', opts.graphicsBackend);
@@ -627,6 +698,227 @@ function isAsmCoreJarFileName(name: string): boolean {
   return /^asm-\d[\d.]*\.jar$/.test(name);
 }
 
+// ───────────────────────── 随包 ASM 覆盖（方案 A「随包」） ─────────────────────────
+// 背景（2026-09-30 定案）：Forge 1.19.4 在随包 JRE 26 上启动失败 ——
+//   `Unsupported class file major version 70`（`org.objectweb.asm@9.7.1 ClassReader.<init>`）
+//   ← `modlauncher 10.0.8 ClassTransformer.transform → computeHierarchyFromFile`
+// 即 Forge 1.19.4 **声明的 ASM 9.7.1 读不懂 JDK 26 的类文件（major 70）**。
+// 1.17.1（ASM 9.1）/1.18.2 /1.16.5 /1.20.1（ASM 9.9.1）均已实测可启动 ⇒ **不新增 JRE 档**，
+// 改为在启动期为需要的实例把 ASM 指向**随包的 9.9.1**（落在 staging 子目录，见 ASM_STAGE_SUBDIR）。
+
+/** ASM 版本 → 它能读的最高 **class 文件 major**（能力表）；递增排列，查表取"≤ 声明版本 的最大一条"。 */
+interface AsmClassMajor {
+  ver: string;
+  maxMajor: number;
+}
+
+/**
+ * ASM 能力表（class 文件 major；Java major + 44 = class major，Java 8→52 … Java 26→70）。
+ * 9.6→66（Java 22）/ 9.7→67（23）/ **9.7.1→68（24）** / 9.8→69（25）/ **9.9→70（26）**。
+ *
+ * 分界依据（本机实测）：Forge 1.18.2 声明 ASM **9.7.1**（能力 68）在 JDK 26 上**正常**，
+ * 而 Forge 1.19.4 声明**同样的 9.7.1** 却失败 ⇒ 分界**不在 ASM 版本算术**，而在"读 JDK 类文件"
+ * 这件事的**组件版本**：1.18.2 是 modlauncher **9.1.3**、1.19.4 是 modlauncher **10.0.8**
+ * （`ClassTransformer.transform → computeHierarchyFromFile` 这条路径在 ≥10 才去读 JDK 自己的类文件）。
+ * ⇒ 判据 = **ModLauncher ≥ 10 且声明 ASM 覆盖不了当前 JRE 的 class 文件版本**（见 needsAsmOverride）。
+ */
+const ASM_CLASS_MAJOR_TABLE: AsmClassMajor[] = [
+  { ver: '9.0', maxMajor: 60 },    // Java 16
+  { ver: '9.1', maxMajor: 61 },    // Java 17
+  { ver: '9.2', maxMajor: 62 },    // Java 18
+  { ver: '9.3', maxMajor: 63 },    // Java 19
+  { ver: '9.4', maxMajor: 64 },    // Java 20
+  { ver: '9.5', maxMajor: 65 },    // Java 21
+  { ver: '9.6', maxMajor: 66 },    // Java 22
+  { ver: '9.7', maxMajor: 67 },    // Java 23
+  { ver: '9.7.1', maxMajor: 68 },  // Java 24
+  { ver: '9.8', maxMajor: 69 },    // Java 25
+  { ver: '9.9', maxMajor: 70 },    // Java 26
+  { ver: '9.9.1', maxMajor: 70 },  // Java 26（当前随包件 = ASM_BUNDLED_VERSION）
+];
+
+/** class 文件 major = Java major + 44（Java 1.1 起固定；8→52 … 26→70）。 */
+const CLASS_MAJOR_OFFSET: number = 44;
+
+/** 点分版本 → 数值段；先剥 `@ext` 后缀。认不出（空/非数字）返回 null。 */
+function parseDottedVersion(v: string): number[] | null {
+  const at = v.indexOf('@');
+  const core = (at >= 0 ? v.substring(0, at) : v).trim();
+  if (!/^\d+(\.\d+)*$/.test(core)) {
+    return null;
+  }
+  const out: number[] = [];
+  for (const s of core.split('.')) {
+    out.push(parseInt(s));
+  }
+  return out;
+}
+
+/** 点分版本字典序比较（缺段补 0）：a<b → -1，a==b → 0，a>b → 1；认不出 → 0。 */
+function compareDottedVersion(a: string, b: string): number {
+  const pa = parseDottedVersion(a);
+  const pb = parseDottedVersion(b);
+  if (pa === null || pb === null) {
+    return 0;
+  }
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const x = i < pa.length ? pa[i] : 0;
+    const y = i < pb.length ? pb[i] : 0;
+    if (x !== y) {
+      return x < y ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+/** 声明 ASM 版本能读的最高 class major（查 ASM_CLASS_MAJOR_TABLE）。0 = 比表内任何一条都老/认不出。 */
+function asmMaxClassMajor(asmVer: string): number {
+  let out = 0;
+  for (const e of ASM_CLASS_MAJOR_TABLE) {
+    if (compareDottedVersion(e.ver, asmVer) <= 0) {
+      out = e.maxMajor;
+    }
+  }
+  return out;
+}
+
+/** 取任意 `…:<artifact>:<ver>` 的声明版本；无则 null（版本串原样返回，比较时再剥 `@ext`）。 */
+function declaredLibraryVersion(json: VersionJson, artifact: string): string | null {
+  for (const lib of json.libraries ?? []) {
+    const parts = (lib.name ?? '').split(':');
+    if (parts.length >= 3 && parts[1] === artifact) {
+      return parts[2];
+    }
+  }
+  return null;
+}
+
+/** `org.ow2.asm:asm:<ver>` 的声明版本（`Opcodes` 的提供者）；无则 null。 */
+function declaredAsmVersion(json: VersionJson): string | null {
+  return declaredLibraryVersion(json, 'asm');
+}
+
+/** 判据①的取值：ModLauncher 版本。两代 group 都要认（`cpw.mods:modlauncher` /
+ *  `net.minecraftforge:modlauncher`）；无则 null。 */
+function declaredModLauncherVersion(json: VersionJson): string | null {
+  return declaredLibraryVersion(json, 'modlauncher');
+}
+
+/** 该实例是否 NeoForge（结构判据：`loader === neoforge` 或出现 `net.neoforged.*` 库）。 */
+function looksLikeNeoForge(resolved: ResolvedVersion): boolean {
+  if (resolved.loader === LOADER_NEO_FORGE) {
+    return true;
+  }
+  for (const lib of resolved.json.libraries ?? []) {
+    if ((lib.name ?? '').startsWith('net.neoforged.')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 是否需要把 ASM 指向随包件（两条判据都成立）：
+ *  ① **ModLauncher ≥ 10** —— 只有 ≥10 的 `ClassTransformer.transform → computeHierarchyFromFile`
+ *     才去读 **JDK 自己的类文件**（major = 当前 JRE 的 class 版本）；
+ *  ② **实例声明的 ASM 覆盖不了当前 JRE 的 class 文件版本**（能力表 = ASM_CLASS_MAJOR_TABLE）。
+ *
+ * 与本机实测一致（`jreMajor` = 选中随包套的主版本；现代套 26 ⇒ class major 70）：
+ *  - 1.16.5：ML 8.1.3（且 JavaPolicy 判给 Java 8 套）⇒ ① 不成立 ⇒ **不触发** ✓
+ *  - 1.17.1：ML 9.0.7 ⇒ ① 不成立 ⇒ **不触发** ✓（即便其 ASM 9.1 能力仅 61）
+ *  - 1.18.2：ML 9.1.3 ⇒ ① 不成立 ⇒ **不触发** ✓（其声明 9.7.1 与 1.19.4 同版却正常，正是这条分界）
+ *  - 1.19.4：ML 10.0.8 且 ASM 9.7.1（68 < 70）⇒ **触发** ✓
+ *  - 1.20.1：ML 10.0.9 但 ASM 9.9.1（70 ≥ 70）⇒ ② 不成立 ⇒ **不触发** ✓
+ *
+ * **NeoForge 一律不触发**（`looksLikeNeoForge`）：① 其 `-DignoreList` 用**带版本的文件名**点名 ASM
+ * （`asm-9.5.jar,…`，bootstraplauncher 按子串匹配）⇒ 改名会**静默脱靶**；② NeoForge 侧不在本方案
+ * 范围（只动 Forge ≥1.13 的必要实例）。它若真在 JDK 26 上撞同一面，修法必须**同时**改 `-DignoreList`
+ * ——那是另一个改动面，不在本次。
+ */
+function needsAsmOverride(resolved: ResolvedVersion, jreMajor: number): boolean {
+  if (jreMajor <= 0) {
+    return false;   // 未传当前 JRE ⇒ 不判定（绝不瞎替换）
+  }
+  if (looksLikeNeoForge(resolved)) {
+    return false;
+  }
+  const ml = declaredModLauncherVersion(resolved.json);
+  if (ml === null || compareDottedVersion(ml, '10') < 0) {
+    return false;   // ① 未声明 / < 10 ⇒ 不读 JDK 类文件
+  }
+  const asm = declaredAsmVersion(resolved.json);
+  if (asm === null) {
+    return false;   // 未声明 ASM：没有"被替换的那套"，不动
+  }
+  return asmMaxClassMajor(asm) < jreMajor + CLASS_MAJOR_OFFSET;   // ②
+}
+
+/** 随包 ASM 5 件是否都在（在 = 可安全替换；缺 = 保持原样，绝不假装成功）。 */
+function asmBundleComplete(asmDir: string): boolean {
+  if (asmDir.length === 0) {
+    return false;
+  }
+  for (const n of EXPECTED_ASM_JARS) {
+    if (!fileExists(`${asmDir}/${n}`)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** 从 ASM 条目文件名取 artifact（`asm-9.7.1.jar`→`asm`；`asm-commons-9.7.1.jar`→`asm-commons`）；
+ *  非随包的 5 件之一（异形件如 `asm-all` / `asm-debug-all`）返回 ''。 */
+function asmArtifactOf(fileName: string): string {
+  const m: RegExpMatchArray | null = fileName.match(/^(asm(?:-[a-z]+)?)-\d[\d.]*\.jar$/);
+  if (m === null) {
+    return '';
+  }
+  const artifact = m[1];
+  return EXPECTED_ASM_JARS.includes(`${artifact}-${ASM_BUNDLED_VERSION}.jar`) ? artifact : '';
+}
+
+/**
+ * 把一条 `:` 分隔的 classpath / **module path** 串里的旧 ASM 条目换成随包件（或剔除）。
+ *
+ * 替换面必须**同时**覆盖 `-cp` 与 `-p`：Forge ≥1.13 的 ASM 经 `-p` + `--add-modules
+ * ALL-MODULE-PATH` 加载，但 `-cp` 里也有一份（`collectFromJson` 收真树里声明的 ASM）
+ * ⇒ 只改一处会留旧件、甚至造成同模块两份。本函数对**任一** ASM 条目：
+ *  - 落在随包 5 件里 → 换成 `<asmDir>/<artifact>-<随包版本>.jar`（**按绝对路径**引用子目录）；
+ *  - 其余 `org/ow2/asm/*`（异形/旧代） → **剔除**（保证"同组件旧版本条目在任何列表里都不出现"）。
+ * 保序 + 按绝对路径去重。`asmDir` 为空 = 拿不到随包目录 ⇒ 调用方保持原样（见 buildLaunchArgv 告警）。
+ */
+function rewriteAsmList(list: string, asmDir: string): string {
+  if (asmDir.length === 0 || list.length === 0) {
+    return list;
+  }
+  const out: string[] = [];
+  const seen: Set<string> = new Set<string>();
+  for (const one of list.split(':')) {
+    if (one.length === 0) {
+      continue;
+    }
+    if (!one.includes('/org/ow2/asm/')) {
+      if (!seen.has(one)) {
+        seen.add(one);
+        out.push(one);
+      }
+      continue;
+    }
+    const fname = one.substring(one.lastIndexOf('/') + 1);
+    const artifact = asmArtifactOf(fname);
+    if (artifact.length === 0) {
+      continue;   // 不认识的 ASM 件：剔除，绝不残留
+    }
+    const repl = `${asmDir}/${artifact}-${ASM_BUNDLED_VERSION}.jar`;
+    if (!seen.has(repl)) {
+      seen.add(repl);
+      out.push(repl);
+    }
+  }
+  return out.join(':');
+}
+
 /**
  * 真树 classpath 的 **ASM 自证**（只打日志、不改任何行为）。
  *
@@ -636,7 +928,7 @@ function isAsmCoreJarFileName(name: string): boolean {
  * `<gameRoot>/libraries/org/ow2/asm/<artifact>/<ver>/`。这条不变量以前没有可观测落点（只打了条目数），
  * 一旦将来被平铺具名件或新加条目破坏，现象又是 `Missing forge!` 而看不出原因 —— 故在这里落成一行日志。
  */
-function logAsmProvider(classpath: string, gameRoot: string): void {
+function logAsmProvider(classpath: string, gameRoot: string, asmOverridden: boolean): void {
   const libPrefix = `${gameRoot}/libraries/org/ow2/asm/`;
   let first = '';
   for (const one of classpath.split(':')) {
@@ -655,6 +947,15 @@ function logAsmProvider(classpath: string, gameRoot: string): void {
   hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath real-tree: asm=%{public}s (in-libraries=%{public}s)',
     first, inLibs ? 'yes' : 'no');
   if (!inLibs) {
+    if (asmOverridden) {
+      // 我们**主动**把 ASM 换成了随包件（见 needsAsmOverride）⇒ "不在真树里"是**预期**的，不是缺陷：
+      // 该"上溯 6 级"不变量只服务 Forge ≤1.16.x（`cpw.mods.modlauncher.Launcher` 世代），而它天然
+      // **不触发替换**（modlauncher < 10）⇒ 本行不适用于它，也不该报 `Missing forge!`。
+      hilog.info(LOG_DOMAIN, LOG_TAG,
+        'classpath real-tree: asm provider is the bundled override (expected; the <=1.16.x Launcher-gen'
+        + ' tree-relative invariant does not apply to this modlauncher generation)');
+      return;
+    }
     hilog.warn(LOG_DOMAIN, LOG_TAG,
       'classpath real-tree: asm provider is NOT under %{public}s -> Forge <=1.16.x derives a wrong'
       + ' maven root (Missing forge!)', libPrefix);
@@ -736,11 +1037,12 @@ function assembleRealTreeClasspath(gameRoot: string, resolved: ResolvedVersion, 
     if (fileExists(genPath)) {
       parts.push(genPath);
     }
-    // (3) 走 MeowLauncher 的实例（当前 = Forge ≥1.13）主类就是 `meow.launcher.MeowLauncher`，它只存在于
-    //     平铺目录的 launcher.jar 里（**不在** maven 树）⇒ 必须按**绝对路径**把这两个随包桩件加进来，
-    //     否则 JVM 直接 `Could not find or load main class meow.launcher.MeowLauncher`。
-    //     平铺模式下它们由 `<dir>/*` 顺带提供；这里不能再用通配（函数头：平铺目录不得进 classpath）。
-    //     注：NeoForge 走加载器主类、不需要它们 ⇒ 不加（其 classpath 现状保持不变）。
+    // (3) launcher/gson 桩件：**仅当实例主类就是 `meow.launcher.MeowLauncher` 时**才需要（该主类只
+    //     存在于平铺目录的 launcher.jar 里，**不在** maven 树）。自 2026-09-30 起**没有任何真树形态走
+    //     MeowLauncher**：Forge ≥1.13 已改为直启加载器主类（与 NeoForge 同口径）⇒ `viaMeowLauncher`
+    //     在真树形态恒为 false，本分支恒不触发（保留为由**同一判据**驱动的防御性代码）。平铺模式下这
+    //     两个桩件由 `<dir>/*` 顺带提供；将来若真有真树实例走 MeowLauncher，按**绝对路径**补件即可
+    //     （函数头：平铺目录不得以通配进 classpath）。
     if (includeLauncherStubs) {
       for (const n of EXPECTED_EXTRA_JARS) {
         const p = `${stagedDir}/${n}`;

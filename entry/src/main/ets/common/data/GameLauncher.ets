@@ -228,6 +228,9 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     jvmArgs: settings.jvmArgs,
     zipfsPatchDir: zipfsPatchDir,
     logsDir: logsDir,
+    // 当前 JRE 主版本：喂 MinecraftLauncher「随包 ASM 覆盖」判定（ModLauncher ≥10 且声明 ASM
+    // 读不懂**这套 JRE** 的 class 文件时，把 ASM 指向随包 9.9.1）。与选 JRE 同源（jre.runtime）。
+    jreMajor: jre.runtime.javaMajor,
   });
   if (argv.length === 0) {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'launch abort: empty argv for %{public}s', versionId);

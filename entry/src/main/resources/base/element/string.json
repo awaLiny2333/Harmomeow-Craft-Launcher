@@ -850,7 +850,7 @@
     },
     {
       "name": "loader_forge_unsupported",
-      "value": "Forge 安装仅支持 MC 1.7–1.12.2（1.13 及以上需要 JVM）"
+      "value": "Forge 安装仅支持 MC 1.7–1.20.1（1.20.2 及以上请用 NeoForge）"
     },
     {
       "name": "loader_forge_empty",

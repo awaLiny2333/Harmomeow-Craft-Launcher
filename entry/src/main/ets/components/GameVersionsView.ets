@@ -48,12 +48,18 @@ const LOG_TAG = 'GameVersionsView';
 const NEO_FORGE_MIN_MC: string = '1.20.2';
 
 /**
- * Forge 支持的 MC 版本段（**本次只做零 JVM 安装 = 1.7–1.12.2**；见
- * notes 20-design/launch/Forge支持-改动方案.md §13）。1.13+ 的 installer 带 client processor（需外部
- * JVM）⇒ 数据层在写出清单前**明确拒绝**，这里先按版本把入口关掉，不给用户走到那一步。
+ * Forge 支持的 MC 版本段（**1.7–1.20.1**；见 notes 20-design/launch/Forge-1.13至1.20.1-安装实施方案.md）。
+ * ≤1.12.2 为零 JVM 纯 ArkTS 安装；1.13–1.20.1 的 installer 带 client processor（需外部 JVM）⇒ 数据层
+ * 按判型分派到 processor 链。≥1.20.2 交给 NeoForge。
  */
 const FORGE_MIN_MC: string = '1.7';
-const FORGE_MAX_MC: string = '1.12.2';
+const FORGE_MAX_MC: string = '1.20.1';
+
+/**
+ * Forge「安装期需要工具 JVM」的 MC 版本下界（= 新格式安装器世代起点）。
+ * 用**版本比较**（`compareVersionIds`）而非字符串判等；`confirmInstall` 据此决定是否要求 JRE 就绪。
+ */
+const FORGE_JVM_MIN_MC: string = '1.13';
 
 /** 实例名校验结果（UI 据此显示提示 / 是否允许「确认安装」）。 */
 const NAME_OK: number = 0;
@@ -733,7 +739,7 @@ export struct GameVersionsView {
     return compareVersionIds(this.installTargetId, NEO_FORGE_MIN_MC) >= 0;
   }
 
-  /** Forge 的版本门槛：本次只支持 1.7–1.12.2（1.13+ 的安装需外部 JVM，数据层会明确拒绝）。 */
+  /** Forge 的版本门槛：1.7–1.20.1（≤1.12.2 零 JVM；1.13–1.20.1 走 processor 链，见 installForgeVersion）。 */
   private forgeSupported(): boolean {
     return compareVersionIds(this.installTargetId, FORGE_MIN_MC) >= 0
       && compareVersionIds(this.installTargetId, FORGE_MAX_MC) <= 0;
@@ -909,7 +915,7 @@ export struct GameVersionsView {
       return this.neoForgeSupported() && this.installer.neoLoader.length > 0;
     }
     if (this.installer.loaderKind === LOADER_KIND_FORGE) {
-      // 门槛 + 已选构建号（Forge 的安装执行 = 零 JVM 纯 ArkTS，见 VersionInstaller.installForgeVersion）。
+      // 门槛 + 已选构建号（≤1.12.2 零 JVM 纯 ArkTS；1.13–1.20.1 走 processor 链，见 VersionInstaller）。
       return this.forgeSupported() && this.installer.forgeLoader.length > 0;
     }
     if (this.installer.loaderKind === LOADER_KIND_FABRIC && this.installer.fabricLoader.length === 0) {
@@ -968,7 +974,7 @@ export struct GameVersionsView {
     return NAME_OK;
   }
 
-  /** 确认安装：名称合法且不冲突、游戏未运行、NeoForge 的工具 JVM 那套 JRE 已就绪才真正安装。 */
+  /** 确认安装：名称合法且不冲突、游戏未运行；**需工具 JVM 的形态**（NeoForge / Forge ≥1.13）其 JRE 已就绪才真正安装。 */
   private async confirmInstall(): Promise<void> {
     const remote = this.installTargetRef;
     if (remote === null || !this.canConfirmInstall()) {
@@ -976,17 +982,20 @@ export struct GameVersionsView {
     }
     const kind = this.installer.loaderKind;
     const name = this.installName.trim();
-    // NeoForge 安装期会起**工具 JVM**（`:neoinstall` 独立进程，无 UI ⇒ 对话框只能在这里弹）。
+    // NeoForge / Forge ≥1.13 安装期会起**工具 JVM**（`:neoinstall` 独立进程，无 UI ⇒ 对话框只能在这里弹）。
     // ★ 工具 JVM 用**哪套 JRE = 与启动路径同一处解析**：`JavaPolicy.resolveJavaRuntime(MC 版本, loader, 覆盖)`
     //   （`GameLauncher.resolveLaunchRuntime` / `checkLaunchJre` 内部也调它；目标实例尚未创建 ⇒ 无实例覆盖，
     //   传 AUTO）。故安装器与将来启动该实例跑的是**同一套**，不存在"第二事实源"。
-    //   目标 (mcVersion, loader) 取自**安装面板当前选择**：`remote.id`（选中的 MC 版本）+ `LOADER_NEO_FORGE`。
-    //   今天 NeoForge 命中策略的"无约束 ⇒ 取最新"分支 ⇒ 恰好 = 现代套（行为不变，见 JavaPolicy 表 A）。
+    //   目标 (mcVersion, loader) 取自**安装面板当前选择**：`remote.id`（选中的 MC 版本）+ 对应 loader。
     // 就绪判据 = 同一处 `runtimeStatus`（与「Java 环境」区、启动前检查同源）。未就绪 ⇒ 弹与启动同一个
     // 对话框并**保留安装面板**（准备完成后用户再点一次「确认安装」即可，见 LaunchJrePrompt.prepareJre）。
+    // Forge ≤1.12.2 是**零 JVM**（纯 ArkTS）⇒ 不加 JRE 前置；只有 Forge ≥1.13 才要求（用版本比较，不写死字符串）。
     let toolRuntimeId = '';
-    if (kind === LOADER_KIND_NEO_FORGE) {
-      const toolRuntime = resolveJavaRuntime(remote.id, LOADER_NEO_FORGE, JAVA_ENV_AUTO).runtime;
+    const needsToolJvm = kind === LOADER_KIND_NEO_FORGE
+      || (kind === LOADER_KIND_FORGE && compareVersionIds(remote.id, FORGE_JVM_MIN_MC) >= 0);
+    if (needsToolJvm) {
+      const loaderForJre = kind === LOADER_KIND_NEO_FORGE ? LOADER_NEO_FORGE : LOADER_FORGE;
+      const toolRuntime = resolveJavaRuntime(remote.id, loaderForJre, JAVA_ENV_AUTO).runtime;
       const toolJre = runtimeStatus(this.context().filesDir, toolRuntime);
       if (!toolJre.installed) {
         promptJreNotReady(this.getUIContext(), toolRuntime.id, toolRuntime.javaMajor,
@@ -999,7 +1008,7 @@ export struct GameVersionsView {
     if (kind === LOADER_KIND_NEO_FORGE) {
       await this.installNeoForgeRemote(remote, name, toolRuntimeId);
     } else if (kind === LOADER_KIND_FORGE) {
-      await this.installForgeRemote(remote, name);
+      await this.installForgeRemote(remote, name, toolRuntimeId);
     } else if (kind === LOADER_KIND_FABRIC) {
       await this.installFabricRemote(remote, name);
     } else {
@@ -1097,11 +1106,12 @@ export struct GameVersionsView {
   }
 
   /**
-   * 安装 Forge 实例（**零 JVM 面：仅 MC 1.7–1.12.2**；installer jar 只作数据容器）。
-   * 全程在 ArkTS 内完成（不起工具 JVM）⇒ **无需** JRE 就绪前置；安装前校验写权限，
-   * 成功后默认开启隔离并刷新列表（与其它 loader 同）。
+   * 安装 Forge 实例（**MC 1.7–1.20.1**；installer jar 只作数据容器）。
+   * ≤1.12.2 全程在 ArkTS 内完成（不起工具 JVM）；1.13–1.20.1 走 processor 链（工具 JVM），
+   * `jreId` = `confirmInstall` 按 (MC 版本 × Forge) 解析出的那套 JRE（≥1.13 时非空，一路传到 `:neoinstall`）。
+   * 安装前校验写权限；成功后默认开启隔离并刷新列表（与其它 loader 同）。
    */
-  async installForgeRemote(remote: RemoteVersion, instanceName: string): Promise<void> {
+  async installForgeRemote(remote: RemoteVersion, instanceName: string, jreId: string): Promise<void> {
     const root = resolveGameRoot(this.state.selected);
     if (root.length === 0) {
       this.installer.errorKind = INSTALL_ERR_INSTALL;
@@ -1113,7 +1123,8 @@ export struct GameVersionsView {
       this.installer.errorDetail = '';
       return;
     }
-    const ok = await this.installer.installForge(root, remote, instanceName, this.context().cacheDir);
+    const ok = await this.installer.installForge(this.context(), root, this.state.selected, remote,
+      instanceName, jreId);
     if (ok) {
       // 与 HMCL 一致：新装实例默认开启版本隔离。
       const s = InstanceSettings.defaults();

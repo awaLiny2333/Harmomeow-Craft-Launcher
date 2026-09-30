@@ -5,7 +5,7 @@ import { util } from '@kit.ArkTS';
 import { MC_CP_DIR, RAWFILE_MEOWCRAFT_EXTRAS, MEOWCRAFT_EXTRAS_DONE, RAWFILE_OSHI_DIR,
   RAWFILE_OSHI_MANIFEST } from '../constants/Paths';
 import { EXTRAS_VERSION, EXPECTED_EXTRA_JARS, LWJGL_JAR_PREFIX,
-  LWJGL_GEN_JARS } from '../constants/LaunchDefaults';
+  LWJGL_GEN_JARS, ASM_STAGE_SUBDIR, EXPECTED_ASM_JARS } from '../constants/LaunchDefaults';
 import { collectJarSources, lwjglGeneration, isLegacyLwjgl } from './MinecraftLauncher';
 
 // native 导出（extractRawTar：解 meowcraft_extras.tar.gz）
@@ -194,6 +194,15 @@ function stagedBundleComplete(dir: string, keepGenJar: string): boolean {
   for (const n of need) {
     try {
       fileIo.accessSync(`${dir}/${n}`);
+    } catch (e) {
+      return false;
+    }
+  }
+  // 随包 ASM 件在**子目录**里（不平铺，见 LaunchDefaults.ASM_STAGE_SUBDIR）——它们不被
+  // pruneStaleJars 的平铺扫描碰到，故也必须在这里显式核对，否则"标记在、asm9/ 被清空"查不出来。
+  for (const n of EXPECTED_ASM_JARS) {
+    try {
+      fileIo.accessSync(`${dir}/${ASM_STAGE_SUBDIR}/${n}`);
     } catch (e) {
       return false;
     }

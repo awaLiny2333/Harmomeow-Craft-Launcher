@@ -10,6 +10,9 @@ import { activateDirectory } from '../common/access/FileAccess';
 
 const LOG_TAG = 'NeoInstallAbility';
 
+/** 工具 JVM 的临时目录 JVM 参数（父进程写入 job；预检按它报"tmpdir 是否可见"）。 */
+const TMPDIR_FLAG = '-Djava.io.tmpdir=';
+
 /**
  * NeoForge 安装期执行 processor 的**无窗** Ability（B 路线，见 notes `安装期JVM载体-调研.md` §8.3）。
  *
@@ -74,8 +77,80 @@ export default class NeoInstallAbility extends UIAbility {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'abort: JRE %{public}s not ready for tool JVM', toolRuntime.id);
       return;
     }
+    // 诊断：**本进程**是唯一能在失败前回答"工具看得见类路径/输入件吗"的地方（工具 JVM 就在
+    // 本进程里起、同 uid、同一份用户文件授权）⇒ 先留痕再起 JVM。
+    logToolJvmInputPreflight(job.argv);
     startJvm(this.context, job.argv, toolRuntime, '', '', '', '');
   }
+}
+
+/**
+ * 工具 JVM 的**可读性预检 + 完整 argv 留痕**（**只写日志，不改任何行为**）。
+ *
+ * 为什么必须在本进程做：工具 JVM 由本进程 `dlopen(libjli)+JLI_Launch` **in-process** 起，故本进程
+ * `fileIo` 看到的可见性 = 工具 JVM 看到的可见性（同 uid、同一份用户文件授权）。而工具**在自己的
+ * stdout/stderr 上**报错（`Error: Could not find or load main class …` → JLI 退 1；`Input does not
+ * exist …` → 工具 `error()` 退 1），父进程只能拿到退出码 ⇒ 这条日志是本轮唯一能在**没有工具 stderr**
+ * 时判定"是类路径不可见，还是工具自己报错"的证据（工具 stderr 的落盘见桥的 `meow-neo-jvm-tool.log`）。
+ *
+ * 语义边界：`-cp` 条目是**确定**的文件路径 ⇒ 逐条给 exists/size；其余 argv 只对"看起来像绝对路径"的
+ * 项做存在性留痕（**启发式，仅日志**：argv 的语义属工具，本层不解释、不校验、不改写）。
+ */
+function logToolJvmInputPreflight(argv: string[]): void {
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'tool JVM argv(%{public}d): %{public}s', argv.length, argv.join(' '));
+  let cp = '';
+  let tmpdir = '';
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '-cp' || a === '-classpath') {
+      cp = i + 1 < argv.length ? argv[i + 1] : '';
+    } else if (a.startsWith(TMPDIR_FLAG)) {
+      tmpdir = a.substring(TMPDIR_FLAG.length);
+    }
+  }
+  if (cp.length === 0) {
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'cp preflight: -cp missing/empty in argv -> JVM cannot see any tool jar');
+  } else {
+    const entries = cp.split(':');
+    let unreadable = 0;
+    for (const e of entries) {
+      if (e.length === 0) {
+        continue;
+      }
+      const size = readableSize(e);
+      if (size < 0) {
+        unreadable++;
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'cp preflight: UNREADABLE %{public}s', e);
+      }
+    }
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'cp preflight: entries=%{public}d unreadable=%{public}d',
+      entries.length, unreadable);
+  }
+  if (tmpdir.length > 0) {
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'java.io.tmpdir %{public}s exists=%{public}s',
+      tmpdir, readableSize(tmpdir) >= 0 ? 'yes' : 'no');
+  }
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (!a.startsWith('/')) {
+      continue;
+    }
+    const size = readableSize(a);
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'argv[%{public}d] path-like exists=%{public}s size=%{public}d %{public}s',
+      i, size >= 0 ? 'yes' : 'no', size, a);
+  }
+}
+
+/** 文件/目录可读时的字节数；不存在或不可读 ⇒ -1（**绝不抛**：预检本身不得成为失败源）。 */
+function readableSize(path: string): number {
+  try {
+    if (fileIo.accessSync(path)) {
+      return fileIo.statSync(path).size;
+    }
+  } catch (e) {
+    return -1;
+  }
+  return -1;
 }
 
 /**

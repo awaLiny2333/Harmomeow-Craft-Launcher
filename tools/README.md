@@ -96,7 +96,10 @@ sh tools/lwjgl/build_lwjgl_vma.sh --src "$WS/ref/lwjgl3" --sdk-native "$SDK/nati
 #   sh tools/lwjgl/build_lwjgl_vma.sh --src "$WS/ref/lwjgl3" --sdk-native "$SDK/native" --diagnostic   # 诊断版（带 [vma] 串；勿随包）
 
 python3 tools/lwjgl/pack_extras.py --base-tar entry/.../rawfile/meowcraft_extras.tar.gz \
-    --jar lwjgl-3.4.3.jar=… --out entry/.../rawfile/meowcraft_extras.tar.gz   # ⑤ 组包
+    --jar lwjgl-3.4.3.jar=… --drop-prefix asm9 \
+    --jar asm9/asm-9.9.1.jar=… --jar asm9/asm-analysis-9.9.1.jar=… --jar asm9/asm-commons-9.9.1.jar=… \
+    --jar asm9/asm-tree-9.9.1.jar=… --jar asm9/asm-util-9.9.1.jar=… \
+    --out entry/.../rawfile/meowcraft_extras.tar.gz   # ⑤ 组包（含随包 ASM 9.9.1 ×5，落 `asm9/` 子目录）
 
 # A2. legacy 随包件（MC 1.6.x–1.16.x）
 #   LWJGL2 native：**MC 1.6.x–1.12.2 由 tools/lwjgl2/ 的 liblwjgl.so 支持**（见 tools/lwjgl2/README.md）
@@ -174,6 +177,11 @@ python3 tools/jre8/pack_jre_data.py --home stuffs/research/jdk8/out/home \
 - **extras tar 组包配方（可复现，逐字节已验证）**：基座 tar 需含 `launcher.jar` + **未 shade 的** `gson-<v>.jar`（可另含 lwjgl jar，`pack_extras.py` 会丢弃同名 `lwjgl*`），然后
   `python3 tools/relocate_gson.py <base.tar.gz>` → `python3 tools/lwjgl/pack_extras.py --base-tar <base.tar.gz> --jar lwjgl-3.4.3.jar=<built> --require lwjgl-3.4.3.jar --out <final>`
   → 覆盖 `entry/.../rawfile/meowcraft_extras.tar.gz` 并**升 `EXTRAS_VERSION`**。
+- **随包 ASM 9.9.1（5 件，`asm9/` 子目录；v45 2026-09-30）**：`asm9/<artifact>-9.9.1.jar` 从 Maven Central 官方取
+  （`https://repo1.maven.org/maven2/org/ow2/asm/<artifact>/9.9.1/<artifact>-9.9.1.jar`，**逐件下 `.sha1` 校验**），
+  经 `pack_extras.py --jar asm9/<name>=<path> --drop-prefix asm9` 组进 tar（**必须子目录**：平铺形态的 `-cp "<dir>/*"` 通配**不递归**，
+  落平铺面会混进 vanilla/Fabric/legacy 的 classpath）。用途：启动期为「ModLauncher ≥10 且声明的 ASM 读不懂当前 JRE 类文件」的实例
+  （如 Forge 1.19.4 声明 9.7.1、JDK 26 类文件 major 70）把 ASM 指向这 5 件（判据/改写见 `MinecraftLauncher.needsAsmOverride` / `rewriteAsmList`）。
 - **JRE 可复现**：`libc6.so`/`libjli.so`、官方 26 件魔改、数据 tar（`tools/jre26/pack_jre_data.py`，含 `lib/patch/jdk.zipfs`）均**逐字节**；自编 `libjvm` 同 OS/工具链/源/**同路径** + `SOURCE_DATE_EPOCH=1784133400`（`jdk-26.0.2.1-ga` 提交）**2× cmp 一致**（`d28164cd…`；`linux_verify_jvm_repro.sh` 默认 2，`MEOW_REPRO_N` 可调高。见 `tools/jre26/README.md` §可复现性）。
 - **★ `git -C <repo> …` 里的路径基准是 `<repo>`，不是你的 cwd（2026-09-19 事故）**：`git -C ref/SDL worktree add --detach ref/SDL-3.4.14 …`
   会在 `ref/SDL/` **里面**建出 `ref/SDL/ref/SDL-3.4.14`（文档里多处曾这么写，已改）。⇒ **建/删 worktree 一律用绝对路径**（或相对该 repo 的 `../…`）；

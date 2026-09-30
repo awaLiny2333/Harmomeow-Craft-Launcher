@@ -111,6 +111,23 @@ export const MEOWCRAFT_EXTRAS_DONE: string = 'meowcraft_extras.done';
 /** NeoForge 安装期 headless JVM 的阶段/退出码结果文件（由桥在 headless 模式追加写入）。 */
 export const NEO_JVM_RESULT: string = 'meow-neo-jvm-result.txt';
 
+/**
+ * 安装期 headless JVM 的**工具 stdio 落盘件**（由桥在 headless 模式把 fd 1/2 收到的每一行
+ * 按 `<tag> <line>` 追加写入；见 `meowjrebridge.cpp` 的 pump `emit`）。
+ *
+ * 为什么需要它：工具（installertools / jarsplitter / SpecialSource / binarypatcher）的异常只在
+ * stdout/stderr 上（`Error: Could not find or load main class …` / `Input does not exist …` /
+ * `UnsupportedClassVersionError` …），而桥原本只把这两路 pipe 到 **hilog**：hilog 会滚动覆盖、且现场
+ * 抓日志常按 tag 过滤 ⇒ 工具为何退 1 **取证不到**（2026-09-30 实机事故：只拿到
+ * `installertools:MCP_DATA handshake returned code=1 elapsedMs=501` 一行）。
+ * 调用方（`VersionInstaller.runForgeProcessors`）在每次 processor 前清空它、结束后拷到
+ * `<workDir>/logs/<label>.log` 并把路径写进失败错误，故安装失败时**不用再抓日志**。
+ *
+ * 与 `NEO_JVM_RESULT` 同处 `<filesDir>`：两个文件都由 **`:neoinstall` 进程**（同一 App，同一 filesDir）
+ * 写、由父进程读，无跨目录授权问题。
+ */
+export const NEO_JVM_TOOL_LOG: string = 'meow-neo-jvm-tool.log';
+
 /** <filesDir>/meow-jres/<id>（java.home 数据目录）；id **必传**（不设默认，防「忘传 id 静默用现代套」）。 */
 export function jreHomeDir(filesDir: string, id: string): string {
   return `${filesDir}/${JRES_ROOT}/${id}`;

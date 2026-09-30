@@ -15,8 +15,9 @@ export const LOADER_KIND_FABRIC: string = 'fabric';
 /** NeoForge：**仅 MC 1.20.2+**（见 notes 20-design/launch/NeoForge支持-改动方案.md）。 */
 export const LOADER_KIND_NEO_FORGE: string = 'neoforge';
 /**
- * Forge：**本次只做 MC 1.7–1.12.2 的零 JVM 安装**（`spec` 形态带 client processor 的 1.13+
- * 由数据层明确拒绝；见 notes 20-design/launch/Forge支持-改动方案.md §13）。
+ * Forge：应用内安装覆盖 **MC 1.7–1.20.1** —— ≤1.12.2 为零 JVM 纯 ArkTS；1.13–1.20.1 的 installer 带
+ * client processor（需外部 JVM）⇒ 走独立 processor 链（见 notes 20-design/launch/Forge-1.13至1.20.1-安装实施方案.md）。
+ * ≥1.20.2 交给 NeoForge。
  */
 export const LOADER_KIND_FORGE: string = 'forge';
 /** 安装错误码：loader 列表拉取失败 / 未选 loader 版本。 */
@@ -130,7 +131,7 @@ export class InstallerState {
    */
   private neoLoaderSeq: number = 0;
 
-  /** Forge 构建列表与选中项（**仅 MC 1.7–1.12.2**；列表与 installer 都按 **this.forgeSource**）。 */
+  /** Forge 构建列表与选中项（**MC 1.7–1.20.1**；列表与 installer 都按 **this.forgeSource**）。 */
   @Trace forgeLoaders: string[] = [];
   @Trace forgeLoader: string = '';
   @Trace forgeLoadersLoading: boolean = false;
@@ -470,7 +471,7 @@ export class InstallerState {
   }
 
   /**
-   * 拉取某游戏版本的 Forge 构建列表（**仅 1.7–1.12.2**，调用方负责版本门槛）；成功后默认选最新。
+   * 拉取某游戏版本的 Forge 构建列表（**仅 1.7–1.20.1**，调用方负责版本门槛）；成功后默认选最新。
    * 按 **Forge 自己的下载源**(this.forgeSource)——与 Fabric 的 refreshFabricLoaders 同款（Forge 制品来自
    * MinecraftForge，非 Mojang，不用版本源 this.source）；列表源顺序随所选源变化（所选源在前、另一源尽力兜底）：
    *   · mirror  → BMCLAPI 专用列表端点 → 官方 maven-metadata（兜底）；
@@ -520,14 +521,14 @@ export class InstallerState {
   }
 
   /**
-   * 安装 Forge 实例（**零 JVM 面：仅 MC 1.7–1.12.2**；见 `VersionInstaller.installForgeVersion`）。
+   * 安装 Forge 实例（**零 JVM 面：MC 1.7–1.12.2；processor 链面：1.13–1.20.1**）。
    * 整个安装（构建列表之外的清单 / installer / 库 / 资产）都按 `this.forgeSource`（**Forge 自己的源**，
    * 与 Fabric 的 installFabric 传 loaderSource 对称）——Forge 制品来自 MinecraftForge，不复用版本源 this.source。
-   * 全程在 ArkTS 内完成（不起工具 JVM ⇒ **无需** JRE 就绪前置，与 NeoForge/processor 形态不同）；
-   * `cacheDir` 只用于 installer 解包。
+   * `ctx` / `gameRootUri` / `jreId` 供 1.13+ 的 processor 链（工具 JVM）使用（与 installNeoForge 对齐）；
+   * ≤1.12.2 零 JVM 分支收下但忽略这组参数（`cacheDir` 仍用于 installer 解包）。
    */
-  async installForge(gameRoot: string, remote: RemoteVersion, instanceName: string,
-    cacheDir: string): Promise<boolean> {
+  async installForge(ctx: common.UIAbilityContext, gameRoot: string, gameRootUri: string,
+    remote: RemoteVersion, instanceName: string, jreId: string): Promise<boolean> {
     if (this.installingId.length > 0) {
       return false;
     }
@@ -548,7 +549,8 @@ export class InstallerState {
     this.fileTotal = 0;
     let ok = true;
     try {
-      await installForgeVersion(gameRoot, remote, this.forgeLoader, instanceName, this.forgeSource, cacheDir,
+      await installForgeVersion(ctx, gameRoot, gameRootUri, remote, this.forgeLoader, instanceName,
+        this.forgeSource, ctx.cacheDir, jreId,
         (phase: number) => {
           this.phase = phase;
         },

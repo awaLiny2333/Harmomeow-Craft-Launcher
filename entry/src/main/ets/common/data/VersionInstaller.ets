@@ -10,11 +10,22 @@ import { DEFAULT_LIBRARY_URL, DOWNLOAD_CONCURRENCY, ENV_OS_ARCH, ENV_OS_BITS, EN
   forgeInstallerCandidates, forgeMetadataCandidates, manifestCandidates,
   neoforgeInstallerCandidates } from '../constants/DownloadContract';
 import { ASSET_HASH_PREFIX_LENGTH, assetObjectPath, assetsIndexesDir, FORGE_INSTALLER_DIR, librariesDir,
-  NEO_INSTALLER_DIR, NEO_JVM_RESULT, versionDir, versionJarPath, versionJsonPath } from '../constants/Paths';
+  NEO_INSTALLER_DIR, NEO_JVM_RESULT, NEO_JVM_TOOL_LOG, versionDir, versionJarPath,
+  versionJsonPath } from '../constants/Paths';
 import { NEO_INSTALL_ABILITY, NEO_INSTALL_PROCESS_SUFFIX } from '../constants/LaunchContract';
+// 工具 JVM 的平台伪装前缀（**与游戏启动路径同源**的唯一事实源）：定义处是 `LaunchDefaults.ets`
+// 的 `TOOL_JVM_PLATFORM_SPOOF_ARGS`（内含 `SPOOF_OS_NAME` / `SPOOF_OS_VERSION`；游戏侧用法见
+// `MinecraftLauncher.buildLaunchArgv`）。Forge（`runForgeProcessors`）与 NeoForge
+// （`runNeoForgeProcessors`）两处工具 JVM 的 argv 都复用本前缀——工具 JVM 与游戏 JVM 必须伪装成同一个平台。
+import { TOOL_JVM_PLATFORM_SPOOF_ARGS } from '../constants/LaunchDefaults';
 import { buildNeoForgeProcessorPlans, libraryNames, NeoForgeExpandContext, NeoForgeInstallProfileJson,
   NeoForgeLaunchJson, NeoForgeMergeModuleEntry, NeoForgeProcessorJob, NeoForgeProcessorPlan,
   NeoForgeProcessorSet, resolveMergeModuleEntries, stringArgs } from './NeoForgeInstaller';
+// Forge 新格式安装器（1.13–1.20.1）的**独立**数据层：类型 / 占位符展开 / processor 计划 / `outputs` 幂等判定。
+// 刻意不复用 `NeoForgeInstaller` 的符号（方案 B：两侧实现独立，避免语义/生命周期互相绑死）。
+import { buildForgeProcessorPlans, ForgeExpandContext, ForgeNewInstallProfileJson, ForgeProcessorJob,
+  ForgeProcessorPlan, ForgeProcessorSet, forgeOutputsAllMatch, forgeRemoveStaleOutputs,
+  forgeVerifyOutputsOrThrow } from './ForgeNewInstaller';
 import { removeTreeBestEffort } from './VersionTools';
 import { compareVersionIds } from './VersionScanner';
 import { downloadFile, fetchText } from './Downloader';
@@ -85,6 +96,17 @@ export const PROCESSOR_GONE_TIMEOUT_MS: number = 20000;
 /** 起 ability 的重试上限与退避（仅对"already running"/内部错误重试）。 */
 export const PROCESSOR_START_RETRY_MAX: number = 8;
 export const PROCESSOR_START_BACKOFF_MS: number = 800;
+
+/**
+ * 失败消息里**内联**的工具 stdio 摘录上限（字符）。
+ *
+ * 为什么内联（而不只给日志路径）：工具退非 0 的**全部原因都只在它的 stdout/stderr 上**（JLI 的
+ * `Error: Could not find or load main class …`、工具的 `Input does not exist …`、
+ * `UnsupportedClassVersionError` …）。UI 只显示 `errorDetail`（= 异常 message）⇒ 不内联的话，
+ * 用户看到的是「processor failed (x) exit=1」，仍要另外去捞文件。上限取 600：足够装下
+ * JLI/工具的整段错误头，又不至于把 UI 撑爆（超长部分在文件里，路径同时在消息里给出）。
+ */
+export const TOOL_LOG_EXCERPT_MAX: number = 600;
 
 // ---- JSON 结构（Minecraft 版本清单 / 版本 json / 资源索引）----
 
@@ -1288,9 +1310,22 @@ async function runNeoForgeProcessors(ctx: common.UIAbilityContext, set: NeoForge
     job.rootUri = gameRootUri;
     // 工具 JVM 用哪套 JRE：与启动路径同源解析出的 id（`:neoinstall` 据此取 runtime）。
     job.jreId = jreId;
+    // **平台伪装：工具 JVM 与游戏 JVM 必须伪装成同一个平台**。前缀 = 同源常量
+    // `TOOL_JVM_PLATFORM_SPOOF_ARGS`（定义处 `constants/LaunchDefaults.ets`，内含 `SPOOF_OS_NAME` /
+    // `SPOOF_OS_VERSION`；游戏路径的用法见 `MinecraftLauncher.buildLaunchArgv` 的「固定 JVM 参数」段；
+    // 本机真 `os.name` = HarmonyOS）。完整机理与排查要点见 `runForgeProcessors` 的同名注释。
+    //
+    // 为什么**必需**（2026-09-30 真机 stderr 定案，Forge 1.16.5 夹具）：JDK 8（legacy 套）的
+    // `sun.nio.fs.DefaultFileSystemProvider.create()` 按 `os.name` **精确匹配**（`Linux` / `SunOS` /
+    // `Darwin` / …），匹配不上直接 `AssertionError: Platform not recognized`，且发生在**类初始化期**、
+    // 连主类都加载不到 ⇒ JLI 退 1（stderr `A JNI error has occurred`）。
+    // 现代套（26）对未知 `os.name` 宽容回退 ⇒ **不要依赖**这一点。渲染 / LWJGL / natives 参数一律不放
+    // （工具 headless）。`-Dos.*` 排在其余 `-D` 之前：平台属性须在任何类初始化用到文件系统之前生效。
+    //
     // `-Djava.io.tmpdir` 必须指可写沙箱目录（鸿蒙无 /tmp，与游戏路径的注入保持一致）：
     // 部分工具（解压/落盘中间产物）会用它，默认值在设备上不可写。
-    job.argv = ['java', `-Djava.io.tmpdir=${workDir}`, '-cp', plan.classpath.join(':'), plan.mainClass];
+    job.argv = ['java', ...TOOL_JVM_PLATFORM_SPOOF_ARGS,
+      `-Djava.io.tmpdir=${workDir}`, '-cp', plan.classpath.join(':'), plan.mainClass];
     for (const a of plan.argv) {
       job.argv.push(a);
     }
@@ -1578,14 +1613,16 @@ async function waitProcessorExit(resultPath: string, timeoutMs: number, label: s
   throw new Error(`processor timeout (${label}) after ${timeoutMs} ms`);
 }
 
-// ---- Forge（**零 JVM 面 = MC 1.7–1.12.2**）----
+// ---- Forge（**零 JVM 面 = MC 1.7–1.12.2；processor 链面 = 1.13–1.20.1**）----
 // 依据：真 installer 实测（工作区根 stuffs/research/forge-support/evidence/**）+ HMCL 做法对照，见
-// notes `20-design/launch/Forge支持-调研.md` §11 与 `Forge支持-改动方案.md` §13（**按 installer 格式事实自研，不搬 HMCL 代码**）。
+// notes `20-design/launch/Forge支持-调研.md` §11 与 `Forge支持-改动方案.md` §13 /
+// `Forge-1.13至1.20.1-安装实施方案.md`（**按 installer 格式事实自研，不搬 HMCL 代码**）。
 //
 // 判别事实：**"安装要不要 JVM" 只看 client 侧 processor 数**，不是 `spec` 有无 ——
 //   · 老形态（`install` + `versionInfo`，无 `spec`；≤1.8.9）：把 installer 内嵌的 universal jar 解到库路径；
 //   · `spec` 形态且 0 个 client processor（1.12.2）：installer 内 `maven/**` 命中项 + 主制品纯拷贝；
-//   · `spec` 形态且有 client processor（1.13+）：**明确拒绝**（需外部 JVM，本轮范围外）。
+//   · `spec` 形态且有 client processor（**1.13–1.20.1**）：走**独立**的 processor 链
+//     （`installForgeNewVersion` + `ForgeNewInstaller.ets`，与 NeoForge 链代码独立）。
 // 盘上格式与 Fabric/NeoForge 同款：顶层扁平 + `patches[game,forge]`。
 
 /** Forge `install_profile.json` 的 `install` 段（老形态；只列用到的字段）。 */
@@ -1781,9 +1818,16 @@ export async function fetchForgeVersions(mcVersion: string, source: string): Pro
   return result;
 }
 
-/** Forge installer 形态（零 JVM 面 = 前两种；第三种明确拒绝）。 */
+/**
+ * Forge installer 形态：
+ * - `LEGACY`：老形态（无 `spec`，`install` + `versionInfo`；≤1.8.9）——零 JVM，纯拷贝；
+ * - `SPEC_NO_PROCESSOR`：`spec` 形态且 client processor = 0（1.12.2）——零 JVM，内嵌 `maven/**` 命中项拷贝；
+ * - `SPEC_PROCESSORS`：`spec` 形态且 client processor > 0（**1.13–1.20.1**）——需外部 JVM（processor 链）；
+ * - `UNSUPPORTED`：两键皆无（格式不认识）——**明确拒绝**（且必须在写清单之前）。
+ */
 export const FORGE_FORM_LEGACY: string = 'legacy';
 export const FORGE_FORM_SPEC_NO_PROCESSOR: string = 'spec-no-processor';
+export const FORGE_FORM_SPEC_PROCESSORS: string = 'spec-processors';
 export const FORGE_FORM_UNSUPPORTED: string = 'unsupported';
 
 /** client 侧 processor 数（`sides` 缺省 = 双端；这是「安装要不要 JVM」的唯一依据）。 */
@@ -1798,12 +1842,13 @@ function forgeClientProcessorCount(profile: ForgeInstallProfileJson): number {
 }
 
 /**
- * 判型（对齐 HMCL `ForgeInstallTask.detectForgeInstallerType` 的**键判据**，但零 JVM 的判据落在 processor 数上）：
- * 含 `spec` ⇒ 新形态（client processor 为 0 才是零 JVM）；含 `install` 且含 `versionInfo` ⇒ 老形态；两键皆无 ⇒ 拒绝。
+ * 判型（对齐 HMCL `ForgeInstallTask.detectForgeInstallerType` 的**键判据**，但"要不要 JVM"落在 processor 数上）：
+ * 含 `spec` ⇒ 新形态（client processor > 0 = 需外部 JVM；= 0 = 零 JVM）；含 `install` 且含 `versionInfo`
+ * ⇒ 老形态；**两键皆无** ⇒ 拒绝。`spec` 的具体值与该世代主制品形态无关，MC 版本号完全不参与判型。
  */
 export function classifyForgeProfile(profile: ForgeInstallProfileJson): string {
   if (profile.spec !== undefined) {
-    return forgeClientProcessorCount(profile) > 0 ? FORGE_FORM_UNSUPPORTED : FORGE_FORM_SPEC_NO_PROCESSOR;
+    return forgeClientProcessorCount(profile) > 0 ? FORGE_FORM_SPEC_PROCESSORS : FORGE_FORM_SPEC_NO_PROCESSOR;
   }
   if (profile.install !== undefined && profile.versionInfo !== undefined) {
     return FORGE_FORM_LEGACY;
@@ -1904,9 +1949,26 @@ function mergeLibsByCoordinate(highPriority?: LibraryJson[],
  *   Java 侧只读顶层 ⇒ 必须并进来，但同坐标只能留一份，理由与证据见该函数注释）；
  * - 模板自带的 `inheritsFrom`（如 `1.7.10`）**不进顶层**：vanilla 字段已摊平，实例自带 `<名>.jar`。
  * 注意：gamePatch 必须在改写 vanilla 之前构造（否则会拿到被覆盖后的值）。
+ *
+ * `runtimeLibraries`（**只取内嵌清单**的运行期库表）：两条链的 `forge` 库表语义**不同**，故显式传入：
+ * - ≤1.12.2 零 JVM 链（老形态 / `spec` + 0 processor）：`forge` 就是 installer 内嵌的启动清单
+ *   （`install.versionInfo` 或 `version.json`），**它就是运行期权威库表** ⇒ 省略该参数、直接用
+ *   `forge.libraries`（**语义不变，不许改动**）；
+ * - **1.13–1.20.1 processor 链**：必须显式传 **内嵌 `version.json` 的 `libraries`**，**绝不**并入
+ *   `install_profile.json` 的 `libraries`（那份是**安装期工具**：`installertools` / `jarsplitter` /
+ *   `SpecialSource` / `binarypatcher` / `mcp_config` / `fmlcore` …；混进 classpath 会把工具 jar 塞给游戏，
+ *   对 ② 代的 `-p`/模块解析尤其会引入噪声）。
+ *   依据 HMCL（逐行取证）：`ForgeNewInstallTask.execute()` 把 patch 建自**内嵌 `version.json`**
+ *   （`setResult(GameInstancePatch.fromManifest(forgeVersion, …))`，`forgeVersion` = `profile.getJson()` 读出的
+ *   清单），`profile.getLibraries()` **只用于下载**（`GameLibrariesTask`，见 `doPreExecute`）⇒ 运行期清单里
+ *   没有安装期工具。HMCL 的同版本实例 json 亦为逐条实证（`stuffs/test-higher-forge/versions/1.20.1-Forge/`、
+ *   `1.16.5-Forge/`：`patches[forge].libraries` 与内嵌 `version.json` 的库表**逐条相等**，且不含
+ *   `:universal` / `:client` / 任何 `installertools` 家族）。
  */
 function composeForgeManifest(vanilla: VersionJson, instanceName: string, gameVersion: string,
-  loaderVersion: string, forge: VersionJson): VersionJson {
+  loaderVersion: string, forge: VersionJson, runtimeLibraries?: LibraryJson[]): VersionJson {
+  // 运行期 forge 库表：显式传入者优先（**只取内嵌清单**的 processor 链），否则用模板自带的（≤1.12.2 链）。
+  const forgeLibs = runtimeLibraries ?? forge.libraries;
   const gamePatch: PatchJson = {
     id: 'game',
     version: gameVersion,
@@ -1934,7 +1996,7 @@ function composeForgeManifest(vanilla: VersionJson, instanceName: string, gameVe
     mainClass: forge.mainClass,
     minecraftArguments: forge.minecraftArguments,
     arguments: forge.arguments,
-    libraries: forge.libraries,
+    libraries: forgeLibs,
     type: forge.type,
     time: forge.time,
     releaseTime: forge.releaseTime,
@@ -1952,7 +2014,7 @@ function composeForgeManifest(vanilla: VersionJson, instanceName: string, gameVe
   if (args.length > 0) {
     vanilla.minecraftArguments = args;
   }
-  vanilla.libraries = mergeLibsByCoordinate(forge.libraries, vanilla.libraries);
+  vanilla.libraries = mergeLibsByCoordinate(forgeLibs, vanilla.libraries);
   vanilla.arguments = concatArgs(vanilla.arguments, forge.arguments);
   vanilla.patches = [gamePatch, forgePatch];
   return vanilla;
@@ -1989,11 +2051,16 @@ export class ForgeInstallerUnavailableError extends Error {
  * 依据 HMCL `DownloadProvider.injectURL*` 与 `BMCLAPIDownloadProvider.replacement`
  * （ref/HMCL `.../download/BMCLAPIDownloadProvider.java:84-86,141-171`）。
  *
- * ⚠️ `spec` 形态带 client processor（1.13+，需外部 JVM）⇒ **在写出清单之前明确拒绝**，
- * 以免留下"能列出但起不来"的残缺实例（本轮范围外，见方案文档 §13.6 第 3 条）。
+ * ⚠️ `spec` 形态带 client processor（**1.13–1.20.1**，需外部 JVM）⇒ 本函数**在写出清单之前**分派到
+ * `installForgeNewVersion`（独立的 processor 链）；"两键皆无"的坏 profile ⇒ 在写清单前**明确拒绝**，
+ * 以免留下"能列出但起不来"的残缺实例。
+ *
+ * `ctx` / `gameRootUri` / `jreId` 只服务于 processor 链（`spec` + processor 形态）：老形态与
+ * `spec-no-processor` 形态**零 JVM**，这组参数被忽略（与 `installNeoForgeVersion` 对齐签名，便于上层统一透传）。
  */
-export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVersion,
-  loaderVersion: string, instanceName: string, loaderSource: string, cacheDir: string,
+export async function installForgeVersion(ctx: common.UIAbilityContext, gameRoot: string,
+  gameRootUri: string, gameRemote: RemoteVersion,
+  loaderVersion: string, instanceName: string, loaderSource: string, cacheDir: string, jreId: string,
   onPhase: (phase: number) => void,
   onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void,
@@ -2005,18 +2072,15 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
     throw new Error('forge loader version missing');
   }
 
-  // 1) vanilla 清单（Forge 源）
-  onPhase(PHASE_FILES);
-  const vanillaText = await fetchText(fileCandidates(gameRemote.url, loaderSource));
-  const vanilla = JSON.parse(vanillaText) as VersionJson;
-  const gameVersion = (vanilla.id ?? '').length > 0 ? (vanilla.id ?? '') : gameRemote.id;
-
-  // 2) installer jar → 解包 → 判型。工作目录按 **下载源 + loader 版本** 定位（跨实例复用），先清后解。
+  // 1) installer jar → 解包 → 判型（**先做**，便于按形态分派：`spec` + processor 形态走独立的 processor 链；
+  //    vanilla 清单在下面"3)"才取，避免对 processor 形态多做一次无用往返）。
+  //    工作目录按 **下载源 + loader 版本** 定位（跨实例复用），先清后解。
   //    把 `loaderSource` 纳入目录名：installer.jar 按路径"命中即跳过"，若不带源，切换下载源后会**静默复用**
   //    另一源下过的文件（切源 = 不做任何下载、也看不出选的是哪个源）。隔离后，切源必按新候选顺序重下，
   //    "所选源"在磁盘布局上也可观测。整棵 `forge-installer/` 由 `CacheCleaner` 清理（见 CacheCleaner.ets）。
   //    注：同一个 (mc, loader) 的 installer 在不同源下内容一致（BMCLAPI 是 Forge maven 的镜像），
   //    故这是"可观测性 + 不跨源静默复用"的取舍，代价是切源后重下一次（installer 无 sha1 可校，见 §13.6.1）。
+  onPhase(PHASE_FILES);
   const workDir = `${cacheDir}/${FORGE_INSTALLER_DIR}/${loaderSource}/${loaderVersion}`;
   ensureDir(workDir);
   const jarPath = `${workDir}/installer.jar`;
@@ -2048,16 +2112,18 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
 
   // 解包 installer 并读所需文件（先清后解）；任一步失败即视为"这个 jar 不可用"。
   // 复用校验须覆盖**下游真正要用的东西**（对齐 NeoForge 的 `NeoForgeArchive`）：除 `install_profile.json` 外，
-  // `spec` 形态（如 1.12.2）的启动清单在 `profile.json` 指向的内嵌文件里、且下游在 **try/catch 之外**才读它
+  // `spec` 形态的启动清单在 `profile.json` 指向的内嵌文件里、且下游在 **try/catch 之外**才读它
   // ⇒ 若这里只证明有 `install_profile.json`，这类坏缓存会通过自愈、然后在同一处反复失败（评审：Forge 复用
-  // 校验应与 NeoForge 校验同样的事项）。故 `spec` 形态在这里一并读到，缺任一即判坏。
+  // 校验应与 NeoForge 校验同样的事项）。故**所有 `spec` 形态**（含 1.13+ 的 `FORGE_FORM_SPEC_PROCESSORS`）
+  // 在这里一并读到，缺任一即判坏——否则"有 profile、缺内嵌清单"的坏缓存会通过自愈、在 processor 链里才炸。
   const extractArchive = async (): Promise<ForgeArchive> => {
     removeTreeBestEffort(unzipDir);
     ensureDir(unzipDir);
     onCurrent('installer-profile');
     await zlib.decompressFile(jarPath, unzipDir);
     const profile = readJsonFile<ForgeInstallProfileJson>(`${unzipDir}/install_profile.json`);
-    if (classifyForgeProfile(profile) === FORGE_FORM_SPEC_NO_PROCESSOR) {
+    const form = classifyForgeProfile(profile);
+    if (form === FORGE_FORM_SPEC_NO_PROCESSOR || form === FORGE_FORM_SPEC_PROCESSORS) {
       const rel = (profile.json ?? '/version.json').replace(/^\//, '');
       const launch = readJsonFile<VersionJson>(`${unzipDir}/${rel}`);
       return { profile: profile, launch: launch };
@@ -2093,16 +2159,26 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
   }
   const profile = archive.profile;
   const form = classifyForgeProfile(profile);
-  if (form === FORGE_FORM_UNSUPPORTED) {
-    // 明确拒绝（且不留残缺实例）：1.13+ 需外部 JVM；两键皆无 = 格式不认识。
-    const processors = forgeClientProcessorCount(profile);
-    const reason = processors > 0
-      ? `client processors=${processors}`
-      : 'unknown install_profile.json format';
-    hilog.error(LOG_DOMAIN, LOG_TAG, 'forge install unsupported: %{public}s (loader %{public}s)',
-      reason, loaderVersion);
-    throw new Error(`forge install unsupported (needs a JVM): ${reason}`);
+  if (form === FORGE_FORM_SPEC_PROCESSORS) {
+    // 新格式 + client processor（**1.13–1.20.1**）：走**独立**的 processor 链（与 installNeoForgeVersion 平行，
+    // 但不复用其任何函数）。installer 已下好并解包过一次（缓存命中即跳过），新链复用同一 workDir/缓存。
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'forge spec+processors form (client=%{public}d); delegating to new chain',
+      forgeClientProcessorCount(profile));
+    await installForgeNewVersion(ctx, gameRoot, gameRootUri, gameRemote, loaderVersion, instanceName,
+      loaderSource, cacheDir, jreId, onPhase, onCount, onCurrent, onFileProgress);
+    return;
   }
+  if (form === FORGE_FORM_UNSUPPORTED) {
+    // 明确拒绝（且不留残缺实例）：两键皆无 = 格式不认识（`spec`/`processors` 不再落入此分支）。
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'forge install unsupported: unknown install_profile.json format (loader %{public}s)',
+      loaderVersion);
+    throw new Error('forge install unsupported: unknown install_profile.json format');
+  }
+
+  // 2) vanilla 清单（Forge 源）
+  const vanillaText = await fetchText(fileCandidates(gameRemote.url, loaderSource));
+  const vanilla = JSON.parse(vanillaText) as VersionJson;
+  const gameVersion = (vanilla.id ?? '').length > 0 ? (vanilla.id ?? '') : gameRemote.id;
 
   // 3) 启动清单模板：老形态 = `install.versionInfo`；新形态 = 内嵌 `profile.json`（如 `/version.json`，
   //    已在 `extractArchive` 复用校验时读到）。
@@ -2216,4 +2292,652 @@ export async function installForgeVersion(gameRoot: string, gameRemote: RemoteVe
   onPhase(PHASE_WRITE);
   const composed = composeForgeManifest(vanilla, instanceName, gameVersion, loaderVersion, template);
   writeText(versionJsonPath(gameRoot, instanceName), JSON.stringify(composed));
+}
+
+// ---- Forge 新格式 processor 链（**MC 1.13–1.20.1**；与 NeoForge 链代码独立）----
+// 依据：真 installer 实测（1.13.2 / 1.14.4 / 1.15.2 / 1.16.5 / 1.17.1 / 1.18.2 / 1.19.4 / 1.20.1）+
+// notes `Forge-1.13至1.20.1-安装实施方案.md`、`Forge-1.13及以上-调研与方案.md` §2。
+// 本段**不复用** `NeoForgeInstaller` / `installNeoForgeVersion` / `runNeoForgeProcessors` 的任何符号，
+// 只复用 loader 无关的落盘原语（`downloadFile`/`runDownloads`/`libraryItem`/`writeText`/`copyFromUnzip`/
+// `forgeLibraryRelPath`/`mergeLibsByCoordinate`/`composeForgeManifest`）与**平台载体**（`:neoinstall` + job 文件协议）。
+
+/** Forge 新格式 installer 的解包结果：`install_profile.json`（含 `data`/`outputs`）与内嵌启动清单。 */
+interface ForgeNewArchive {
+  profile: ForgeNewInstallProfileJson;
+  launch: VersionJson;
+}
+
+/** `runForgeProcessors` / `forgeWaitProcessorExit` 的**新鲜度基线**：发起本次 processor 时结果文件已有的字节数与发起时刻。 */
+interface ForgeProcessorBaseline {
+  /** 结果文件已有的字节数（unlink 成功/文件不存在 ⇒ 0）。 */
+  offset: number;
+  /** 发起本次 processor 的时刻（ms；仅用于日志）。 */
+  startMs: number;
+}
+
+/**
+ * 安装 Forge **新格式**实例（`install_profile.json` 带 `spec` 且 client processor > 0；**MC 1.13–1.20.1**）。
+ *
+ * 步骤：拉 vanilla 清单 → installer 获取/自愈/解包（`install_profile.json` + 内嵌 `version.json`）→
+ * **G1 内嵌 `maven/**` 解包**（1.13–1.16.5 的主制品与 `:universal` 的库 `url` 为空，只能从这里取；
+ * **必须在库下载之前**）→ 下 vanilla 资产与两份库（profile.libraries + 内嵌清单的 libraries）→
+ * 【G3 `outputs` 幂等 + processor 链】→ 写清单（HMCL 形态：顶层扁平 + `patches[game, forge]`）。
+ *
+ * 签名与 `installNeoForgeVersion` 对齐：整条链按 `loaderSource`（Forge 自己的源）；`jreId` = processor
+ * **工具 JVM** 用的那套 JRE（由 `confirmInstall` 经 `JavaPolicy` 按 (MC 版本 × Forge) 解析，与启动路径同源），
+ * 仅透传到 `:neoinstall`，本函数不解析 JRE。
+ */
+export async function installForgeNewVersion(ctx: common.UIAbilityContext, gameRoot: string,
+  gameRootUri: string, gameRemote: RemoteVersion, loaderVersion: string, instanceName: string,
+  loaderSource: string, cacheDir: string, jreId: string,
+  onPhase: (phase: number) => void,
+  onCount: (done: number, total: number) => void,
+  onCurrent: (label: string) => void,
+  onFileProgress: (received: number, total: number) => void): Promise<void> {
+  if (!isValidInstanceName(instanceName)) {
+    throw new Error('invalid instance name');
+  }
+  if (loaderVersion.length === 0) {
+    throw new Error('forge loader version missing');
+  }
+
+  // 1) vanilla 清单（Forge 源）
+  onPhase(PHASE_FILES);
+  const vanillaText = await fetchText(fileCandidates(gameRemote.url, loaderSource));
+  const vanilla = JSON.parse(vanillaText) as VersionJson;
+  const gameVersion = (vanilla.id ?? '').length > 0 ? (vanilla.id ?? '') : gameRemote.id;
+
+  // 2) installer jar → 解包（与 installForgeVersion 同 workDir；缓存命中即复用，不再重下）。
+  const workDir = `${cacheDir}/${FORGE_INSTALLER_DIR}/${loaderSource}/${loaderVersion}`;
+  ensureDir(workDir);
+  const jarPath = `${workDir}/installer.jar`;
+  const unzipDir = `${workDir}/unzipped`;
+
+  const downloadInstaller = async (): Promise<void> => {
+    const installerUrls = forgeInstallerCandidates(gameRemote.id, loaderVersion, loaderSource);
+    onCount(0, 1);
+    onCurrent('forge-installer.jar');
+    try {
+      await downloadFile(installerUrls, jarPath, '', onFileProgress);
+    } catch (error) {
+      const err = error as BusinessError;
+      const buildId = `${gameRemote.id}-${loaderVersion}`;
+      hilog.error(LOG_DOMAIN, LOG_TAG,
+        'forge installer jar unavailable for build %{public}s; candidates tried: %{public}s; last error: %{public}s',
+        buildId, installerUrls.join(', '), err.message ?? '');
+      throw new ForgeInstallerUnavailableError(buildId);
+    }
+    onCount(1, 1);
+  };
+
+  // 解包（先清后解）：profile 与内嵌启动清单**都读到**才算"这个 jar 可用"（F3：自愈面覆盖内嵌清单）。
+  const extractNewArchive = async (): Promise<ForgeNewArchive> => {
+    removeTreeBestEffort(unzipDir);
+    ensureDir(unzipDir);
+    onCurrent('installer-profile');
+    await zlib.decompressFile(jarPath, unzipDir);
+    const profile = readJsonFile<ForgeNewInstallProfileJson>(`${unzipDir}/install_profile.json`);
+    const rel = (profile.json ?? '/version.json').replace(/^\//, '');
+    const launch = readJsonFile<VersionJson>(`${unzipDir}/${rel}`);
+    return { profile: profile, launch: launch };
+  };
+
+  let archive: ForgeNewArchive | null = null;
+  if (exists(jarPath)) {
+    try {
+      archive = await extractNewArchive();
+    } catch (error) {
+      const err = error as BusinessError;
+      hilog.warn(LOG_DOMAIN, LOG_TAG,
+        'cached forge installer unusable, re-downloading: %{public}s (%{public}s)', jarPath, err.message ?? '');
+      try {
+        fileIo.unlinkSync(jarPath);
+      } catch {
+        // 删除失败也继续：`downloadFile` 落盘前会先删目标再 rename。
+      }
+    }
+  }
+  if (archive === null) {
+    await downloadInstaller();
+    archive = await extractNewArchive();
+  }
+  const profile = archive.profile;
+  const launch = archive.launch;
+  const profileLibs = (profile.libraries ?? []) as LibraryJson[];
+
+  // 3) **G1：内嵌 `maven/**` 解包**（1.13–1.16.5 的**必需项**，**必须在库下载之前**）。
+  //    真件：主制品（`profile.path`）与 `:universal` 库条目的 `downloads.artifact.url` 都是 `""`
+  //    ⇒ `libraryItem` 会穿透到 `DEFAULT_LIBRARY_URL`（libraries.minecraft.net）生成 404；
+  //    靠"目标已存在即跳过"的语义接住这一步落位（与 1.12.2 分支同款）。rel 必须与 `libraryItem` 落点一致
+  //    （`forgeLibraryRelPath` 优先 `downloads.artifact.path`，否则 `mavenPath(name)`）。
+  //    这一步只负责**把文件放进 maven 树**：`net.minecraftforge:forge:<ver>` 与 `:universal` **都不进运行期
+  //    清单**（前者本就在内嵌 `version.json` 的库表里；后者由 1.13–1.16.5 的 FML 用"ASM jar 上溯 6 级反推
+  //    maven 根"自行定位，只要**文件在 maven 树里**即可）。`-client.jar` 是 `binarypatcher` 的产物、同样不进程清单。
+  for (const lib of profileLibs) {
+    const rel = forgeLibraryRelPath(lib);
+    if (rel.length === 0) {
+      continue;
+    }
+    const src = `${unzipDir}/maven/${rel}`;
+    if (exists(src)) {
+      copyFromUnzip(src, `${librariesDir(gameRoot)}/${rel}`);
+    }
+  }
+  const mainRel = mavenPath(profile.path ?? '');
+  const mainSrc = mainRel.length > 0 ? `${unzipDir}/maven/${mainRel}` : '';
+  if (mainSrc.length > 0 && exists(mainSrc)) {
+    copyFromUnzip(mainSrc, `${librariesDir(gameRoot)}/${mainRel}`);
+  }
+
+  // 4) 待下载项：vanilla（client jar 落 `<名>.jar` + 原版库 + 资源索引）+ 两份 Forge 库（共享库区）。
+  const files: DownloadItem[] = [];
+  const client = vanilla.downloads?.client;
+  if (client !== undefined) {
+    const url = client.url ?? '';
+    if (url.length > 0) {
+      files.push(newItem(`${instanceName}.jar`, [url], versionJarPath(gameRoot, instanceName),
+        client.sha1 ?? '', client.size ?? 0));
+    }
+  }
+  for (const lib of vanilla.libraries ?? []) {
+    const item = libraryItem(gameRoot, lib);
+    if (item !== null) {
+      files.push(item);
+    }
+  }
+  const indexItem = assetIndexItem(gameRoot, vanilla.assets ?? '', vanilla.assetIndex);
+  if (indexItem !== null) {
+    files.push(indexItem);
+  }
+  // profile.libraries（processor 依赖与主制品所在的那份；maven 树）
+  for (const lib of profileLibs) {
+    const item = libraryItem(gameRoot, lib);
+    if (item !== null) {
+      files.push(item);
+    }
+  }
+  // 内嵌启动清单的库表（主制品/加载器库）
+  const launchLibs = (launch.libraries ?? []) as LibraryJson[];
+  for (const lib of launchLibs) {
+    const item = libraryItem(gameRoot, lib);
+    if (item !== null) {
+      files.push(item);
+    }
+  }
+  await runDownloads(files, loaderSource, onCount, onCurrent, onFileProgress);
+
+  // 5) 资源对象（依赖已下好的索引；Forge 源）
+  const assetId = (vanilla.assetIndex?.id ?? '').length > 0
+    ? (vanilla.assetIndex?.id ?? '')
+    : (vanilla.assets ?? '');
+  if (indexItem !== null && assetId.length > 0) {
+    onPhase(PHASE_ASSETS);
+    let index: AssetIndexJson = {};
+    try {
+      index = JSON.parse(fileIo.readTextSync(`${assetsIndexesDir(gameRoot)}/${assetId}.json`)) as AssetIndexJson;
+    } catch {
+      index = {};
+    }
+    await runDownloads(assetObjectItems(gameRoot, index), loaderSource, onCount, onCurrent, onFileProgress);
+  }
+
+  // 6) processor 链：installer 只当数据容器，按 profile 顺序执行工具，产出 patched client jar。
+  //    `{MINECRAFT_JAR}` 必须用**独立 temp 副本**（HMCL 同款硬约束）：工具会就地改写该 jar。
+  onPhase(PHASE_PROCESS);
+  onFileProgress(0, 0); // 处理器阶段无文件进度（清掉上一阶段残留的字节数显示）
+  const mcJarForTools = `${workDir}/mc.jar`;
+  try {
+    fileIo.copyFileSync(versionJarPath(gameRoot, instanceName), mcJarForTools);
+  } catch (error) {
+    const err = error as BusinessError;
+    throw new Error(`copy minecraft jar for processors failed: ${err.message ?? ''}`);
+  }
+  const expandCtx: ForgeExpandContext = {
+    libraryDir: librariesDir(gameRoot),
+    unzipDir: unzipDir,
+    gameRoot: gameRoot,
+    installerJar: jarPath,
+    minecraftJar: mcJarForTools,
+    minecraftVersion: gameVersion,
+    mavenPathOf: (name: string): string => mavenPath(name)
+  };
+  const set = await buildForgeProcessorPlans(profile, expandCtx, workDir);
+  await runForgeProcessors(ctx, set, workDir, gameRootUri, jreId, onCount, onCurrent);
+  if (set.patchedPath.length === 0 || !exists(set.patchedPath)) {
+    throw new Error('forge patched client jar missing after processors');
+  }
+
+  // 7) 写清单（HMCL 形态：顶层扁平 + patches[game, forge]）。
+  //    **运行期 `libraries` 只取内嵌 `version.json`**（`launch.libraries`，经 `composeForgeManifest` 的
+  //    `runtimeLibraries` 参数**显式**传入），**绝不**并入 `profile.libraries` —— 后者是**安装期工具**集
+  //    （`installertools`/`jarsplitter`/`SpecialSource`/`binarypatcher`/`mcp_config`/`fmlcore` …），进了
+  //    classpath 就是给游戏塞一堆工具 jar（对 ② 代的 `-p`/模块解析尤其引入噪声）。依据与 HMCL 对照见
+  //    `composeForgeManifest` 的注释；`mainClass`/`arguments` 也取内嵌清单。
+  onPhase(PHASE_WRITE);
+  const forgeTemplate: VersionJson = launch;
+  const composed = composeForgeManifest(vanilla, instanceName, gameVersion, loaderVersion, forgeTemplate,
+    launchLibs);
+  writeText(versionJsonPath(gameRoot, instanceName), JSON.stringify(composed));
+}
+
+/**
+ * 桥在 headless 模式落盘的**工具 stdio** 绝对路径（`<filesDir>/meow-neo-jvm-tool.log`）。
+ * 由 `:neoinstall` 进程写、本进程读（同一 App、同一 filesDir）⇒ 无跨目录授权问题。
+ */
+function forgeToolLogPath(ctx: common.UIAbilityContext): string {
+  return `${ctx.filesDir}/${NEO_JVM_TOOL_LOG}`;
+}
+
+/** 清空上一轮的工具日志（桥以**追加**写；不清会把上一轮内容算进本轮归档）。删不掉也继续。 */
+function forgeClearToolLog(path: string): void {
+  try {
+    if (exists(path)) {
+      fileIo.unlinkSync(path);
+    }
+  } catch {
+    // 忽略：归档时按现有内容整体拷贝，最坏情况是多一层旧行（不静默、可辨）。
+  }
+}
+
+/** 标签 → 安全文件名（label 含 `:`，如 `installertools:MCP_DATA`；只留 `[A-Za-z0-9._-]`）。 */
+function forgeLogSafeName(label: string): string {
+  let out = '';
+  for (let i = 0; i < label.length; i++) {
+    const c = label.charAt(i);
+    const keep = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+      || c === '.' || c === '_' || c === '-';
+    out += keep ? c : '_';
+  }
+  return out.length > 0 ? out : 'processor';
+}
+
+/**
+ * 把工具 stdio 归档到 `<workDir>/logs/<序号>-<label>.log` 并返回**恒定**的路径。
+ *
+ * 为什么"没内容也写一个文件"：失败消息里的路径必须**总是**存在且可读，否则用户无法区分
+ * 「工具什么都没打印」与「路径错了/日志没落盘」——这两种情况的下一步完全不同。
+ */
+function forgeArchiveToolLog(ctx: common.UIAbilityContext, workDir: string, label: string,
+  index: number): string {
+  const logsDir = `${workDir}/logs`;
+  const dest = `${logsDir}/${index}-${forgeLogSafeName(label)}.log`;
+  try {
+    ensureDir(logsDir);
+    const src = forgeToolLogPath(ctx);
+    if (exists(src)) {
+      fileIo.copyFileSync(src, dest);
+    } else {
+      writeText(dest, '(no tool stdio captured: bridge log absent => either the tool JVM printed nothing on'
+        + ' stdout/stderr, or the installed bridge predates headless stdio logging (needs an HSP rebuild))\n');
+    }
+  } catch (error) {
+    const err = error as BusinessError;
+    hilog.warn(LOG_DOMAIN, LOG_TAG, 'archive tool log for %{public}s failed: %{public}s',
+      label, err.message ?? '');
+  }
+  return dest;
+}
+
+/** 工具日志的**有界摘录**（进失败消息：控制符压成 ` | `，便于 UI 单行/多行显示）。 */
+function forgeToolLogExcerpt(path: string, maxLen: number): string {
+  try {
+    if (!exists(path)) {
+      return '';
+    }
+    const raw = fileIo.readTextSync(path);
+    let out = '';
+    for (let i = 0; i < raw.length && out.length < maxLen; i++) {
+      const code = raw.charCodeAt(i);
+      out += (code < 0x20) ? ' | ' : raw.charAt(i);
+    }
+    return out.trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 执行 Forge 新格式的 processor 链：**每个 processor 起一次无窗 UIAbility（独立进程 + headless JVM）**。
+ *
+ * 为什么逐次起进程：JLI_Launch 一进程只能起一次；`System.exit` 只杀该进程；工具间静态状态互不污染。
+ * 退出码来自桥在 headless 模式写的 `<filesDir>/meow-neo-jvm-result.txt`（native 只有 hilog，拿不到返回值）；
+ * ⚠️ 工具**多数 fail-open（参数错也退 0）** ⇒ 成败另有产物断言（G3 `outputs` + 调用方的 `PATCHED` 断言）。
+ *
+ * **工具 stdio 必须是可回看的**（本函数新增）：JLI/工具的失败原因**只写在它自己的 stdout/stderr 上**
+ * （`Error: Could not find or load main class …` / `Input does not exist …` / `UnsupportedClassVersionError`
+ * / VM 初始化失败），而桥只把它 pipe 到 hilog（滚动覆盖 + 现场抓取常按 tag 过滤）。故：每轮前清空桥的
+ * `<filesDir>/meow-neo-jvm-tool.log` → 每次失败把该文件归档到 `<workDir>/logs/<序号>-<label>.log`，
+ * 并把**路径 + 有界摘录**写进错误消息（UI 直接可读）。载体侧的"可读性预检"见 `NeoInstallAbility`
+ * 的 `logToolJvmInputPreflight`（同进程视角，是唯一能在失败前回答"工具看得见类路径吗"的位置）。
+ *
+ * **G3 `outputs` 幂等**：整条 processor 的 `outputs`（对象 `{路径: sha1}`，已展开）全命中 ⇒ 跳过该条
+ * （重入不重跑工具）；未全命中 ⇒ 先清掉不符的陈旧产物再执行；执行后逐条校验（sha1 主判据 + **`.jar` 的
+ * ZIP 结构降级**，对齐 HMCL Forge 侧，见 `forgeVerifyOutputsOrThrow`），不符先删再抛。
+ *
+ * `jreId` 写进 job 交给 `:neoinstall`，让工具进程用与启动路径**同源**的那套 JRE 起 `startJvm`（不在本层解析）。
+ */
+async function runForgeProcessors(ctx: common.UIAbilityContext, set: ForgeProcessorSet,
+  workDir: string, gameRootUri: string, jreId: string, onCount: (done: number, total: number) => void,
+  onCurrent: (label: string) => void): Promise<void> {
+  const resultPath = `${ctx.filesDir}/${NEO_JVM_RESULT}`;
+  const total = set.plans.length;
+  if (total === 0) {
+    throw new Error('forge profile has no client-side processors');
+  }
+  onCount(0, total);
+  for (let i = 0; i < total; i++) {
+    const plan: ForgeProcessorPlan = set.plans[i];
+    onCurrent(plan.label);
+    // G3 幂等预检：`outputs` 非空且**全命中** ⇒ 整条跳过（重入/重试不再重跑工具）。
+    if (await forgeOutputsAllMatch(plan)) {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'forge processor %{public}s skipped (outputs already match)', plan.label);
+      onCount(i + 1, total);
+      continue;
+    }
+    // 未全命中：先删掉与声明不符/为空的陈旧产物，交给工具重建（工具多为"先删后写"）。
+    await forgeRemoveStaleOutputs(plan);
+    // job：完整 java 参数（不经 meow.launcher；headless 由 rendererLib='' 触发）
+    const job = new ForgeProcessorJob();
+    job.rootUri = gameRootUri;
+    job.jreId = jreId;
+    // **平台伪装：工具 JVM 与游戏 JVM 必须伪装成同一个平台**（前缀 = 同源常量
+    // `TOOL_JVM_PLATFORM_SPOOF_ARGS`，定义处 `constants/LaunchDefaults.ets`，内含 `SPOOF_OS_NAME` /
+    // `SPOOF_OS_VERSION`，游戏路径的用法见 `MinecraftLauncher.buildLaunchArgv` 的「固定 JVM 参数」段；
+    // 本机真 `os.name` = HarmonyOS）。
+    //
+    // 为什么**必需**（2026-10-01 真机 stderr 定案，Forge 1.16.5 夹具）：JDK 8 的
+    // `sun.nio.fs.DefaultFileSystemProvider.create()` 按 `os.name` **精确匹配**（`Linux` / `SunOS` /
+    // `Darwin` / …），匹配不上**直接 `throw new AssertionError("Platform not recognized")`**。
+    // 该异常发生在**类初始化期**——`java.io.FilePermission.<clinit>`
+    // → `sun.net.www.protocol.file.FileURLConnection.getPermission` → `java.net.URLClassLoader.getPermissions`
+    // → `sun.misc.Launcher$AppClassLoader.getPermissions` —— 于是 `sun.launcher.LauncherHelper.checkAndLoadMain`
+    // 连**主类都加载不到**，JLI 只能退 1（stderr: `A JNI error has occurred` + `java.lang.AssertionError:
+    // Platform not recognized`）。**在 legacy（Java 8）套上这就是必炸**：本机 `os.name` 是 HarmonyOS，
+    // 而工具 JVM 此前不带任何平台伪装（游戏侧那一段则一直带）。
+    // 现代套（26）对未知 `os.name` 宽容回退到 `UnixFileSystemProvider`，所以此前在 26 上没暴露——
+    // **不要依赖**这一点：工具链将来落 Java 8 会同样中招。
+    // 渲染 / LWJGL / natives 参数**一律不放**：工具是 headless（桥由 `NeoInstallAbility` 传
+    // `rendererLib=''` 触发，不加载 GL、不做 glthread 失效安全），它不需要这些。
+    // `-Dos.*` 排在 `-cp` 之前：与游戏路径同一形态，且平台属性必须在任何类初始化使用文件系统之前生效。
+    // `cpu.name` / `meow.cpu.chip` 不在此列：它们只服务游戏侧 oshi 的 CPU 型号显示，工具从不查询。
+    //
+    // `-Djava.io.tmpdir` 必须指可写沙箱目录（鸿蒙无 /tmp；部分工具会用它落中间产物）。
+    job.argv = ['java', ...TOOL_JVM_PLATFORM_SPOOF_ARGS,
+      `-Djava.io.tmpdir=${workDir}`, '-cp', plan.classpath.join(':'), plan.mainClass];
+    for (const a of plan.argv) {
+      job.argv.push(a);
+    }
+    const jobPath = `${workDir}/job-${i}.json`;
+    writeText(jobPath, JSON.stringify(job));
+    // **工具 stdio 归零**：桥以追加写 `<filesDir>/meow-neo-jvm-tool.log`，不清会把上一轮的内容
+    // 归到本轮（会让失败诊断指向错误的工具）。与 resultPath 的清空同一时机、同一目的。
+    forgeClearToolLog(forgeToolLogPath(ctx));
+    // 清上一次的结果文件（避免读到陈旧退出码）
+    const jobStartMs = Date.now();
+    try {
+      fileIo.unlinkSync(resultPath);
+    } catch (e) {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'clear prev result file failed (ignored): %{public}s', JSON.stringify(e));
+    }
+    // **新鲜度基线**：即便上面的 unlink 失败，也据"发起本 processor 时文件已有的字节数"把陈旧内容排除裁决之外。
+    const baseline: ForgeProcessorBaseline = {
+      offset: forgeResultFileSize(resultPath),
+      startMs: jobStartMs,
+    };
+    const want: Want = {
+      bundleName: ctx.abilityInfo.bundleName,
+      moduleName: 'entry',
+      abilityName: NEO_INSTALL_ABILITY,
+      parameters: {
+        'job': jobPath,
+      },
+    };
+    const options: StartOptions = {
+      processMode: contextConstant.ProcessMode.NEW_PROCESS_ATTACH_TO_PARENT,
+      startupVisibility: contextConstant.StartupVisibility.STARTUP_HIDE,
+    };
+    // 上一次 processor 的进程要完全退出后才能再起（否则 16000068）；并对该码做退避重试。
+    await forgeWaitInstallGone();
+    let started = false;
+    let lastStartError = '';
+    for (let attempt = 0; attempt < PROCESSOR_START_RETRY_MAX && !started; attempt++) {
+      try {
+        await ctx.startAbility(want, options);
+        started = true;
+      } catch (error) {
+        const err = error as BusinessError;
+        lastStartError = `${err.code} ${err.message ?? ''}`;
+        const retryable = (err.code === 16000068 || err.code === 16000050);
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'forge startAbility attempt %{public}d failed: %{public}s',
+          attempt + 1, lastStartError);
+        if (!retryable) {
+          break;
+        }
+        await new Promise<void>((resolve: () => void) => {
+          setTimeout(resolve, PROCESSOR_START_BACKOFF_MS * (attempt + 1));
+        });
+      }
+    }
+    if (!started) {
+      throw new Error(`start install ability failed (${plan.label}): ${lastStartError} job=${jobPath}`);
+    }
+    let code = 0;
+    try {
+      code = await forgeWaitProcessorExit(resultPath, PROCESSOR_TIMEOUT_MS, plan.label, baseline);
+    } catch (error) {
+      // 「软超时判崩/硬超时」同样是**工具侧**故障（崩溃/被杀/JLI 未返回）⇒ 工具 stdio 与 job 一并给出。
+      const err = error as BusinessError;
+      const log = forgeArchiveToolLog(ctx, workDir, plan.label, i + 1);
+      const excerpt = forgeToolLogExcerpt(log, TOOL_LOG_EXCERPT_MAX);
+      throw new Error(`${err.message ?? 'processor wait failed'} log=${log} job=${jobPath}`
+        + (excerpt.length > 0 ? ` tool-output: ${excerpt}` : ' tool-output: (empty)'));
+    }
+    // 归档本轮的**工具 stdio**（无论成败都归）；失败消息里给出路径 + 有界摘录 —— 工具的失败原因
+    // **只在它自己的 stdout/stderr 上**，这是 UI 能直接读到真相的唯一通路（见本函数头注释）。
+    const toolLog = forgeArchiveToolLog(ctx, workDir, plan.label, i + 1);
+    if (code !== 0) {
+      const excerpt = forgeToolLogExcerpt(toolLog, TOOL_LOG_EXCERPT_MAX);
+      hilog.error(LOG_DOMAIN, LOG_TAG,
+        'forge processor %{public}s exit=%{public}d tool-stdio=%{public}s job=%{public}s',
+        plan.label, code, toolLog, jobPath);
+      throw new Error(`processor failed (${plan.label}) exit=${code} log=${toolLog} job=${jobPath}`
+        + (excerpt.length > 0 ? ` tool-output: ${excerpt}` : ' tool-output: (empty)'));
+    }
+    // 产物断言：`outputs` 逐条 sha1（`.jar` 不符时可降级为 ZIP 结构校验；非 `.jar` ⇒ 先删再抛）。
+    // 工具退 0 但产物不对时，工具自己的 stdout 同样是第一手证据 ⇒ 一并带上（不吞原错误）。
+    try {
+      await forgeVerifyOutputsOrThrow(plan, workDir);
+    } catch (error) {
+      const err = error as BusinessError;
+      const excerpt = forgeToolLogExcerpt(toolLog, TOOL_LOG_EXCERPT_MAX);
+      throw new Error(`${err.message ?? 'outputs rejected'} log=${toolLog} job=${jobPath}`
+        + (excerpt.length > 0 ? ` tool-output: ${excerpt}` : ' tool-output: (empty)'));
+    }
+    onCount(i + 1, total);
+  }
+}
+
+/**
+ * `:neoinstall` 进程是否存活（`appManager` 只看本应用进程，无需权限）。
+ * 探测失败按「存活」处理——宁可慢，也不要因为探测不到就误判失败。
+ */
+async function forgeInstallProcessAlive(): Promise<boolean> {
+  try {
+    const list = await appManager.getRunningProcessInformation();
+    for (const info of list) {
+      if (info.processName.includes(NEO_INSTALL_PROCESS_SUFFIX)) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * 等 `:neoinstall` 进程完全消失（上一次 processor 的 JVM 刚 `_exit`，能力实例仍在回收窗口中；
+ * 立刻再 `startAbility` 会得到 16000068）。只在**已看到过该进程**时才等待；探测失败按"已退出"处理。
+ */
+async function forgeWaitInstallGone(): Promise<void> {
+  const deadline = Date.now() + PROCESSOR_GONE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (!(await forgeInstallProcessAlive())) {
+      return;
+    }
+    await new Promise<void>((resolve: () => void) => {
+      setTimeout(resolve, PROCESSOR_POLL_MS);
+    });
+  }
+}
+
+/**
+ * 结果文件当前字节数（缺失/读取失败 ⇒ 0）。
+ * 用**字节数**（而非 mtime）作新鲜度门限：`statSync().mtime` 是秒级整数，`resultFileSize` 与桥的
+ * **追加**写（`fopen(..., "a")`）配合可做精确、单调的偏移判定。
+ */
+function forgeResultFileSize(path: string): number {
+  try {
+    if (!fileIo.accessSync(path)) {
+      return 0;
+    }
+    return fileIo.statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 轮询结果文件，等出 `JLI_RETURNED code=N`；超时抛错。
+ *
+ * 裁决顺序（**返回码权威**）：一旦出现 `JLI_RETURNED code=N` 就按 N 返回（0 成功；非 0 交调用方判失败，
+ * **绝不吞**）；只有 `JLI_BEGIN` 而无返回码时，才允许用「进程探测」兜底判异常终结；两样都没写 = 尚未开始，
+ * 继续轮询到 deadline。
+ *
+ * **陈旧退出码防护（`baseline`）**：只认**基线偏移之后**出现的返回码；文件长度若小于基线（被截断/重写，
+ * 正常不该发生）则视为整份新鲜，避免误挂到硬超时。握手文本固定为全 ASCII ⇒ 字节偏移与字符下标一致。
+ *
+ * **软超时**（`PROCESSOR_SOFT_TIMEOUT_MS`）：自**首次** `JLI_BEGIN` 起算；其间只要探针观察到存活即重置起点
+ * （探针可用的环境里"合法慢"不会被误杀）。到点仍无返回码 ⇒ 判工具崩溃/被杀，提前抛**可诊断**错误。
+ * 判死前**重读一次**（返回码可能刚好落盘），且**仅在确实见过该进程存活时**才信"探测不到 = 已退出"
+ * （进程列表是瞬时快照，单次漏列不该误杀正在干活的 processor）。
+ *
+ * 本函数为 Forge 链**独立实现**（语义与 NeoForge 链已验证的 `waitProcessorExit` 一致，但代码独立）。
+ */
+async function forgeWaitProcessorExit(resultPath: string, timeoutMs: number, label: string,
+  baseline: ForgeProcessorBaseline): Promise<number> {
+  const startMs = Date.now();
+  const deadline = startMs + timeoutMs;
+  const marker = 'JLI_RETURNED code=';
+  const readHandshake = (): string => {
+    try {
+      if (fileIo.accessSync(resultPath)) {
+        return fileIo.readTextSync(resultPath);
+      }
+    } catch {
+      // 读失败按空处理（空串 ≠ 成功，绝不会误判）。
+    }
+    return '';
+  };
+  const returnedCode = (text: string): number | undefined => {
+    const at = text.lastIndexOf(marker);
+    if (at < 0) {
+      return undefined;
+    }
+    const n = parseInt(text.substring(at + marker.length).split('\n')[0].trim(), 10);
+    return Number.isNaN(n) ? -1 : n;
+  };
+  const freshReturnedCode = (text: string): number | undefined => {
+    const base = text.length < baseline.offset ? 0 : baseline.offset;
+    return returnedCode(base > 0 ? text.substring(base) : text);
+  };
+  const handshakeDigest = (text: string): string => {
+    const t = text.trim();
+    if (t.length === 0) {
+      return 'absent';
+    }
+    const body = t.split('\n').join(' | ');
+    return returnedCode(text) === undefined ? `partial(${body})` : `complete(${body})`;
+  };
+  let missedPolls = 0;
+  let processEverAlive = false;
+  // 软超时起点：**首次**观察到 `JLI_BEGIN`（工具 JVM 确已起）的时刻；0 = 尚未观察到。
+  let beginMs = 0;
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve: () => void) => {
+      setTimeout(resolve, PROCESSOR_POLL_MS);
+    });
+    const text = readHandshake();
+    // 1) 返回码权威（只认基线之后的**新鲜**码）：0 与非 0 都原样返回（绝不吞非 0）。
+    const code = freshReturnedCode(text);
+    if (code !== undefined) {
+      hilog.info(LOG_DOMAIN, LOG_TAG,
+        'forge processor %{public}s handshake returned code=%{public}d elapsedMs=%{public}d',
+        label, code, Date.now() - startMs);
+      return code;
+    }
+    // 2) 无返回码：只有看到 `JLI_BEGIN`（JVM 确已起）才允许进程探测兜底；否则继续轮询。
+    if (!text.includes('JLI_BEGIN')) {
+      continue;
+    }
+    if (beginMs === 0) {
+      beginMs = Date.now();
+    }
+    if (Date.now() - beginMs >= PROCESSOR_SOFT_TIMEOUT_MS) {
+      const sinceBegin = Date.now() - beginMs;
+      const sinceJob = Date.now() - baseline.startMs;
+      hilog.error(LOG_DOMAIN, LOG_TAG,
+        'forge processor %{public}s soft timeout: no exit code %{public}d ms after JLI_BEGIN and never'
+        + ' observed alive (sinceJobStart=%{public}d ms) -> treating as crashed', label, sinceBegin, sinceJob);
+      throw new Error(`processor appears crashed (${label}): no exit code ${sinceBegin} ms after tool`
+        + ` JVM start (${sinceJob} ms since job start) and no liveness signal`);
+    }
+    if (await forgeInstallProcessAlive()) {
+      processEverAlive = true;
+      missedPolls = 0;
+      beginMs = Date.now();   // 探针看到存活 ⇒ 重置软超时起点（合法慢不误杀）
+      continue;
+    }
+    // 3) 探测不到：**仅在确实见过它存活时**才当「已退出」用（否则「没列出来」可能只是快照漏列）。
+    if (!processEverAlive) {
+      if (missedPolls === 0) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG,
+          'forge processor %{public}s never observed alive; ignoring probe-gone and waiting for handshake (elapsedMs=%{public}d)',
+          label, Date.now() - startMs);
+      }
+      missedPolls++;
+      continue;
+    }
+    missedPolls++;
+    if (missedPolls < 2) {
+      continue;
+    }
+    // 4) 决定前**重读一次**：此刻若返回码已补上就以它为准 —— 探测绝不覆盖已写出的退出码。
+    const recheck = readHandshake();
+    const recheckCode = freshReturnedCode(recheck);
+    if (recheckCode !== undefined) {
+      hilog.info(LOG_DOMAIN, LOG_TAG,
+        'forge processor %{public}s handshake returned code=%{public}d (on re-read) elapsedMs=%{public}d',
+        label, recheckCode, Date.now() - startMs);
+      return recheckCode;
+    }
+    hilog.error(LOG_DOMAIN, LOG_TAG,
+      'forge processor %{public}s ended without exit code: handshake=%{public}s probeAlive=false elapsedMs=%{public}d',
+      label, handshakeDigest(recheck), Date.now() - startMs);
+    throw new Error(`processor terminated without exit code (${label})`);
+  }
+  // 到 deadline：再重读一次（返回码可能刚好落盘），拿到就用。
+  const finalText = readHandshake();
+  const finalCode = freshReturnedCode(finalText);
+  if (finalCode !== undefined) {
+    hilog.info(LOG_DOMAIN, LOG_TAG,
+      'forge processor %{public}s handshake returned code=%{public}d (at timeout) elapsedMs=%{public}d',
+      label, finalCode, Date.now() - startMs);
+    return finalCode;
+  }
+  hilog.error(LOG_DOMAIN, LOG_TAG,
+    'forge processor %{public}s timeout after %{public}d ms: handshake=%{public}s probeAlive=%{public}s elapsedMs=%{public}d',
+    label, timeoutMs, handshakeDigest(finalText),
+    (await forgeInstallProcessAlive()) ? 'true' : 'false', Date.now() - startMs);
+  throw new Error(`processor timeout (${label}) after ${timeoutMs} ms`);
 }

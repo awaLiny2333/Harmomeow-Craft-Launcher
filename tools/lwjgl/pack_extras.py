@@ -3,14 +3,27 @@
 
 Since 2026-09-14 the bundle carries ONE modern LWJGL generation (`lwjgl-3.4.3.jar`, whose
 overlay holds the 3.4.x compat shims); ArkTS staging keeps exactly that jar per version.
+
+Since 2026-09-30 it also carries a **bundled ASM 9.9.1** (the 5 `org.ow2.asm` artifacts)
+under the `asm9/` SUBdirectory. At launch the ArkTS side swaps an instance's too-old
+declared ASM for these (e.g. Forge 1.19.4 declares 9.7.1, which cannot read JDK 26 class
+files, major 70). The SUBdirectory matters: the flat `<dir>/*` classpath wildcard
+(vanilla / Fabric / legacy) does NOT recurse, so the bundled ASM can never leak into those
+instances' classpath. Nested member names are supported because `--jar NAME=PATH` writes
+the member verbatim (`./` + NAME) and the native untar makes parent dirs for regular files.
 Layout:
 
-    ./launcher.jar           (kept from --base-tar)
-    ./gson-for-launcher.jar  (kept from --base-tar)
-    ./lwjgl-3.4.3.jar        (from --jar)
+    ./launcher.jar                 (kept from --base-tar)
+    ./gson-for-launcher.jar        (kept from --base-tar)
+    ./lwjgl-3.4.3.jar              (from --jar)
+    ./asm9/asm-9.9.1.jar           (from --jar asm9/<name>=<path>)
+    ./asm9/asm-analysis-9.9.1.jar
+    ./asm9/asm-commons-9.9.1.jar
+    ./asm9/asm-tree-9.9.1.jar
+    ./asm9/asm-util-9.9.1.jar
 
 Every `lwjgl*.jar` the base tar carried is dropped first, so a retired generation cannot
-linger.
+linger (pass `--drop-prefix asm9` to retire the bundled ASM the same way).
 
 Deterministic: gzip mtime=0, tar mtime=0, mode 0644 (0755 for dirs), members
 sorted. Pure python, so the agent can run it.
