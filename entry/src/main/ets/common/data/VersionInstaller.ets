@@ -68,6 +68,18 @@ export const PHASE_PROCESS: number = 4;
 /** processor 执行：轮询间隔与单步超时（ART/binarypatcher 在大 jar 上可能较慢）。 */
 export const PROCESSOR_POLL_MS: number = 500;
 export const PROCESSOR_TIMEOUT_MS: number = 300000;
+/**
+ * **软超时**（工具 JVM 崩溃/被杀时别让界面挂满硬上限 300s）。
+ *
+ * 计时起点 = 首次观察到 `JLI_BEGIN`（工具 JVM 确已起）；此后若这么久内既无退出码、又没有能观察到的
+ * 进程存活迹象 ⇒ 判崩，抛**可诊断**错误提前失败（点名 processor + 已等时长 + 去看 `.hmmcraft/logs`）。
+ *
+ * 取值依据：本工程 processor 是本地 jar 变换（installertools / binarypatcher / SpecialSource 等），
+ * 实测单个远小于 1s；120s 是对实测 100×+ 的余量，且 <硬上限（300s）。**误杀防护**：只要进程探针能
+ * 观察到 `:neoinstall` 存活（探针可用的环境），软超时计时即被重置 ⇒ "合法慢"不会因软超时被杀，
+ * 只受硬上限（300s）约束。本机探针恒不可用（见 `neoInstallProcessAlive`），故软超时在设备上生效。
+ */
+export const PROCESSOR_SOFT_TIMEOUT_MS: number = 120000;
 /** processor 之间：等上一次 `:neoinstall` 进程完全退出（JVM `_exit` 后仍有回收窗口，立刻再起会 16000068）。 */
 export const PROCESSOR_GONE_TIMEOUT_MS: number = 20000;
 /** 起 ability 的重试上限与退避（仅对"already running"/内部错误重试）。 */
@@ -1285,6 +1297,7 @@ async function runNeoForgeProcessors(ctx: common.UIAbilityContext, set: NeoForge
     const jobPath = `${workDir}/job-${i}.json`;
     writeText(jobPath, JSON.stringify(job));
     // 清上一次的结果文件，避免读到陈旧退出码
+    const jobStartMs = Date.now();
     try {
       fileIo.unlinkSync(resultPath);
     } catch (e) {
@@ -1292,6 +1305,12 @@ async function runNeoForgeProcessors(ctx: common.UIAbilityContext, set: NeoForge
       hilog.info(LOG_DOMAIN, LOG_TAG, 'clear prev result file failed (ignored): %{public}s',
         JSON.stringify(e));
     }
+    // **新鲜度基线**：即便上面的 unlink 失败，也据「发起本 processor 时文件已有的字节数」把陈旧内容
+    // 排除在裁决之外（桥以**追加**模式写结果文件，见 meowjrebridge.cpp:WriteHeadlessResult）。
+    const baseline: ProcessorResultBaseline = {
+      offset: resultFileSize(resultPath),
+      startMs: jobStartMs,
+    };
     const want: Want = {
       bundleName: ctx.abilityInfo.bundleName,
       moduleName: 'entry',
@@ -1329,7 +1348,7 @@ async function runNeoForgeProcessors(ctx: common.UIAbilityContext, set: NeoForge
     if (!started) {
       throw new Error(`start install ability failed (${plan.label}): ${lastStartError}`);
     }
-    const code = await waitProcessorExit(resultPath, PROCESSOR_TIMEOUT_MS, plan.label);
+    const code = await waitProcessorExit(resultPath, PROCESSOR_TIMEOUT_MS, plan.label, baseline);
     if (code !== 0) {
       throw new Error(`processor failed (${plan.label}) exit=${code}`);
     }
@@ -1374,11 +1393,48 @@ async function waitNeoInstallGone(): Promise<void> {
 }
 
 /**
+ * `waitProcessorExit` 的**新鲜度基线**：发起本次 processor 时结果文件已有的字节数与发起时刻。
+ * 见 `waitProcessorExit` 文档——用于在 **unlink 可能失败** 的前提下排除陈旧退出码。
+ */
+interface ProcessorResultBaseline {
+  /** 结果文件已有的字节数（unlink 成功/文件不存在 ⇒ 0）。 */
+  offset: number;
+  /** 发起本次 processor 的时刻（ms；仅用于日志）。 */
+  startMs: number;
+}
+
+/**
+ * 结果文件当前字节数（缺失/读取失败 ⇒ 0）。
+ *
+ * 用**字节数**（而非 mtime）作新鲜度门限：`fileIo.statSync().mtime` 是**秒级**整数，同一秒内先后
+ * 两次 processor 的写入无法区分；而桥对结果文件是**追加**写（`fopen(..., "a")`，见 meowjrebridge.cpp），
+ * 每次运行新增的内容必然落在既有字节之后 ⇒ "本次是否新增了 `JLI_RETURNED`" 可用精确、单调的偏移判定。
+ */
+function resultFileSize(path: string): number {
+  try {
+    if (!fileIo.accessSync(path)) {
+      return 0;
+    }
+    return fileIo.statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * 轮询结果文件，等出 `JLI_RETURNED code=N`；超时抛错。
  *
  * 裁决顺序（**返回码权威**）：文件里一旦出现 `JLI_RETURNED code=N` 就按 N 返回（0 成功；非 0
  * 交调用方判失败，**绝不吞**）；只有 `JLI_BEGIN` 而无返回码时，才允许用「进程探测」兜底判异常终结；
  * 两样都没写 = 尚未开始，继续轮询到 deadline。
+ *
+ * **陈旧退出码防护（`baseline`）**：桥以**追加**模式写结果文件（`WriteHeadlessResult`：`fopen` "a"），
+ * 故上一轮若 unlink 失败、文件残留了 `JLI_RETURNED code=0`，只按"文件里有返回码"就会**误把上一轮的
+ * 结果当本轮**。这里只认**基线偏移之后**出现的返回码（`baseline.offset` = 发起本轮时文件已有字节数）：
+ * unlink 成功 ⇒ 基线 0（整份都是新的）；unlink 失败 ⇒ 基线 = 残留长度，头部旧内容一律不看。文件长度
+ * 若小于基线（被截断/重写，正常不该发生）则视为整份新鲜，避免误挂到硬超时。选偏移而非 mtime 的理由
+ * 见 `resultFileSize`（mtime 秒级精度不够）。握手文本固定为全 ASCII（`JLI_BEGIN args=N` /
+ * `JLI_RETURNED code=N`）⇒ 字节偏移与字符下标一致。
  *
  * 【2026-09-30 设备取证 → 为什么这样改】NeoForge 安装报 `processor terminated without exit code
  * (installertools)`，但握手文件
@@ -1393,7 +1449,8 @@ async function waitNeoInstallGone(): Promise<void> {
  * 现改为：返回码权威、**抛错前重读一次**、进程探测只在**确实见过该进程存活**时才可信
  * （否则一律继续轮询到 deadline —— 2026-09-30 的事故正说明「没列出来」≠「没在跑」）。
  */
-async function waitProcessorExit(resultPath: string, timeoutMs: number, label: string): Promise<number> {
+async function waitProcessorExit(resultPath: string, timeoutMs: number, label: string,
+  baseline: ProcessorResultBaseline): Promise<number> {
   const startMs = Date.now();
   const deadline = startMs + timeoutMs;
   const marker = 'JLI_RETURNED code=';
@@ -1417,6 +1474,12 @@ async function waitProcessorExit(resultPath: string, timeoutMs: number, label: s
     const n = parseInt(text.substring(at + marker.length).split('\n')[0].trim(), 10);
     return Number.isNaN(n) ? -1 : n;   // 有行但非数字 ⇒ -1（沿旧语义：判失败，绝不吞）
   };
+  // **新鲜**返回码：只在基线之后的切片里找（排除上一轮 unlink 失败残留的陈旧码）。文件被截断/重写
+  // （长度 < 基线，正常不该发生）⇒ 基线按 0 处理（整份新鲜），避免误挂到硬超时。
+  const freshReturnedCode = (text: string): number | undefined => {
+    const base = text.length < baseline.offset ? 0 : baseline.offset;
+    return returnedCode(base > 0 ? text.substring(base) : text);
+  };
   // 单行握手摘要（日志用）：空 ⇒ absent；否则标 partial/complete 并附原文（换行折成 " | "）。
   const handshakeDigest = (text: string): string => {
     const t = text.trim();
@@ -1428,13 +1491,15 @@ async function waitProcessorExit(resultPath: string, timeoutMs: number, label: s
   };
   let missedPolls = 0;
   let processEverAlive = false;
+  // 软超时起点：**首次**观察到 `JLI_BEGIN`（工具 JVM 确已起）的时刻；0 = 尚未观察到。
+  let beginMs = 0;
   while (Date.now() < deadline) {
     await new Promise<void>((resolve: () => void) => {
       setTimeout(resolve, PROCESSOR_POLL_MS);
     });
     const text = readHandshake();
-    // 1) 返回码权威：一旦写上立刻裁决，0 与非 0 都原样返回给调用方（绝不吞非 0）。
-    const code = returnedCode(text);
+    // 1) 返回码权威（只认基线之后的**新鲜**码）：一旦写上立刻裁决，0 与非 0 都原样返回（绝不吞非 0）。
+    const code = freshReturnedCode(text);
     if (code !== undefined) {
       hilog.info(LOG_DOMAIN, LOG_TAG,
         'processor %{public}s handshake returned code=%{public}d elapsedMs=%{public}d',
@@ -1445,9 +1510,27 @@ async function waitProcessorExit(resultPath: string, timeoutMs: number, label: s
     if (!text.includes('JLI_BEGIN')) {
       continue;
     }
+    // 2.5) **软超时**（见 PROCESSOR_SOFT_TIMEOUT_MS）：BEGIN 之后长时间既无退出码、又无存活迹象 ⇒
+    //      判工具崩溃/被杀，提前抛**可诊断**错误，别让界面挂满硬上限。只要探针观察到存活即重置起点
+    //      （下面 probeAlive 分支），故探针可用的环境里"合法慢"不会被误杀。
+    if (beginMs === 0) {
+      beginMs = Date.now();
+    }
+    if (Date.now() - beginMs >= PROCESSOR_SOFT_TIMEOUT_MS) {
+      // 已等时长：自 `JLI_BEGIN`（工具 JVM 起）与自 job 发起（含 ability 启动/重试）各报一个。
+      const sinceBegin = Date.now() - beginMs;
+      const sinceJob = Date.now() - baseline.startMs;
+      hilog.error(LOG_DOMAIN, LOG_TAG,
+        'processor %{public}s soft timeout: no exit code %{public}d ms after JLI_BEGIN and never'
+        + ' observed alive (sinceJobStart=%{public}d ms) -> treating as crashed'
+        + ' (see hilog and the instance .hmmcraft/logs)', label, sinceBegin, sinceJob);
+      throw new Error(`processor appears crashed (${label}): no exit code ${sinceBegin} ms after tool`
+        + ` JVM start (${sinceJob} ms since job start) and no liveness signal; see .hmmcraft/logs`);
+    }
     if (await neoInstallProcessAlive()) {
       processEverAlive = true;
       missedPolls = 0;
+      beginMs = Date.now();   // 探针看到存活 ⇒ 重置软超时起点（合法慢不误杀）
       continue;
     }
     // 3) 探测不到：**仅在确实见过它存活时**才当「已退出」用（否则「没列出来」可能只是快照漏列）。
@@ -1467,7 +1550,7 @@ async function waitProcessorExit(resultPath: string, timeoutMs: number, label: s
     }
     // 4) 决定前**重读一次**：此刻若返回码已补上就以它为准 —— 探测绝不覆盖已写出的退出码。
     const recheck = readHandshake();
-    const recheckCode = returnedCode(recheck);
+    const recheckCode = freshReturnedCode(recheck);
     if (recheckCode !== undefined) {
       hilog.info(LOG_DOMAIN, LOG_TAG,
         'processor %{public}s handshake returned code=%{public}d (on re-read) elapsedMs=%{public}d',
@@ -1481,7 +1564,7 @@ async function waitProcessorExit(resultPath: string, timeoutMs: number, label: s
   }
   // 到 deadline：再重读一次（返回码可能刚好落盘），拿到就用。
   const finalText = readHandshake();
-  const finalCode = returnedCode(finalText);
+  const finalCode = freshReturnedCode(finalText);
   if (finalCode !== undefined) {
     hilog.info(LOG_DOMAIN, LOG_TAG,
       'processor %{public}s handshake returned code=%{public}d (at timeout) elapsedMs=%{public}d',
