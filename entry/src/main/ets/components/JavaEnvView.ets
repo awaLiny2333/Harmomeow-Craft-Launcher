@@ -3,6 +3,7 @@ import { installRuntime, JavaEnvInfo } from '../common/data/JavaEnvScanner';
 import { LauncherState, getLauncherState } from '../common/state/LauncherState';
 import { LAYOUT_SPACE, LAYOUT_SPACE_SMALL, OPACITY_SECONDARY } from '../common/constants/Constants';
 import { jreHomeDir } from '../common/constants/Paths';
+import { javaRuntimeLabel } from './JavaRuntimeLabel';
 
 /**
  * Java 环境区块（与 GameVersionsView 平级，由 Index 挂载）。
@@ -47,7 +48,7 @@ export struct JavaEnvView {
     this.installingId = '';
   }
 
-  /** 行副行文本：<版本>  <java.home 完整路径>（版本未装时省略，主行已显 id）。 */
+  /** 行副行文本：<版本>  <java.home 完整路径>（版本未装时省略，主行已显友好名）。 */
   private rowSubText(env: JavaEnvInfo): string {
     const ver = env.version.length > 0 ? `${env.version}  ` : '';
     return `${ver}${jreHomeDir(this.context().filesDir, env.id)}`;
@@ -66,9 +67,9 @@ export struct JavaEnvView {
         .each((obj: RepeatItem<JavaEnvInfo>) => {
           Row({ space: LAYOUT_SPACE }) {
             Column({ space: LAYOUT_SPACE_SMALL }) {
-              // 主行：JRE id + 就绪状态
+              // 主行：JRE 友好名 + 就绪状态
               Row({ space: LAYOUT_SPACE }) {
-                Text(obj.item.id)
+                Text(javaRuntimeLabel(obj.item.id))
                   .fontWeight(FontWeight.Medium)
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis });

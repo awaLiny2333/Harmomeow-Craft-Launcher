@@ -306,11 +306,11 @@
     },
     {
       "name": "version_edit_java_label",
-      "value": "Java 环境 JAVA_HOME"
+      "value": "Java 环境 OHOS_JAVA_HOME"
     },
     {
       "name": "versions_jre_major",
-      "value": "JRE %d"
+      "value": "清单 JRE %d"
     },
     {
       "name": "java_env_auto",

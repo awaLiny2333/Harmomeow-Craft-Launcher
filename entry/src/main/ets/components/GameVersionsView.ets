@@ -14,10 +14,10 @@ import {
   RENDERER_BACKEND_VULKAN, RENDERER_BACKEND_GL4ES3, JAVA_ENV_AUTO
 } from '../common/constants/LaunchDefaults';
 import { rendererForVersion, vulkanBackendRequested } from '../common/data/RendererPolicy';
-import { JavaRuntime, BUNDLED_RUNTIMES } from '../common/data/JavaRuntime';
+import { BUNDLED_RUNTIMES } from '../common/data/JavaRuntime';
 import { resolveJavaRuntime } from '../common/data/JavaPolicy';
 import { runtimeStatus } from '../common/data/JavaEnvScanner';
-import { JRE_ID_MEOW, JRE_ID_MEOW_LEGACY } from '../common/constants/Paths';
+import { javaRuntimeLabel } from './JavaRuntimeLabel';
 import { LOADER_FABRIC, LOADER_LEGACY_FABRIC, LOADER_FORGE, LOADER_NEO_FORGE, VERSION_FORM_VANILLA } from '../common/data/VersionResolver';
 import { SettingsTools } from '../common/data/SettingsTools';
 import {
@@ -436,20 +436,9 @@ export struct GameVersionsView {
   private javaEnvOptions(): SelectOption[] {
     const opts: SelectOption[] = [{ value: $r('app.string.java_env_auto') }];
     for (const rt of BUNDLED_RUNTIMES) {
-      opts.push({ value: this.javaRuntimeLabel(rt) });
+      opts.push({ value: javaRuntimeLabel(rt.id) });
     }
     return opts;
-  }
-
-  /** 某套 JRE 的展示名（id → 资源；认不出的 id 退原文，**不静默换标签**）。 */
-  private javaRuntimeLabel(rt: JavaRuntime): ResourceStr {
-    if (rt.id === JRE_ID_MEOW) {
-      return $r('app.string.java_env_modern');
-    }
-    if (rt.id === JRE_ID_MEOW_LEGACY) {
-      return $r('app.string.java_env_legacy');
-    }
-    return rt.id;
   }
 
   /** 面板 Java 环境下拉索引（0 = 自动；1.. = `BUNDLED_RUNTIMES` 顺序）。 */
@@ -465,7 +454,7 @@ export struct GameVersionsView {
 
   private editingJavaEnvValue(): ResourceStr {
     const i = this.editingJavaEnvIndex();
-    return i === 0 ? $r('app.string.java_env_auto') : this.javaRuntimeLabel(BUNDLED_RUNTIMES[i - 1]);
+    return i === 0 ? $r('app.string.java_env_auto') : javaRuntimeLabel(BUNDLED_RUNTIMES[i - 1].id);
   }
 
   /**

@@ -213,7 +213,10 @@ function autoChoice(mcVersion: string, loader: string): JavaChoice {
   }
   const best = pickBest(candidates, req.preferredMajor);
   if (best === null) {
-    // 无候选（例如将来表 A 的区间比随包 JRE 更严）：兜底现代套并**明说**。
+    // ⚠️ **当前静态候选表下不可达**：表 A 的每个区间都至少被随包的一套 JRE 满足
+    // （如 1.13–1.16.999 段由 Java 8 满足）⇒ 不会走到这里。仅当将来把表 B 改成
+    // 按"已安装 / 已解压"做**可用性 join** 时，"某区间无候选"才可能出现 ⇒ 届时此
+    // 分支才会生效（兜底现代套并**明说**）。**这里不是当前的兜底路径**。
     const fallback = defaultRuntime();
     return new JavaChoice(fallback,
       `auto: no bundled JRE satisfies segment (prefer java${req.preferredMajor}) => fallback ${fallback.id} (java${fallback.javaMajor}, may fail)`);
