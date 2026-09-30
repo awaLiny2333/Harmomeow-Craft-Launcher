@@ -66,11 +66,11 @@ Harmomeow Craft Launcher 面向**鸿蒙（HarmonyOS）PC**：不依赖 Android �
 - **刷新率档位**：帧率上限 = 系统显示档位（"动态"=60 / "高"=90），应用侧**无法**强制 90。
 - **鼠标抓取采样 = 显示帧率**：grab（鼠标锁定）时鼠标采样与 UI 帧率同步；非 grab 走原生约 500Hz 绝对坐标直通（跟手一些）。
 - **物理键盘 F 键**：F 行为可能会有一些问题，我们已经尽力优化 🤪。
-- **MC ≥ 26.2 的原生 Vulkan 后端不可用**：KirinX90 的 Vulkan 驱动缺少 MC 所需的某些扩展。
+- **MC ≥ 26.2 的原生 Vulkan 后端**：KirinX90 的 Vulkan 驱动确实少报了几个 MC 需要的扩展；我们让它走自研 loader shim（`libmeowvulkan.so`），因此原生 Vulkan 后端可用（26.3 已实机验证）。
 - **1.16.5 首屏无文字** 这个真的不知道为什么了，非常诡异。
 - 平台 `libGLv4` 为 **Mesa Zink**（GL-on-Vulkan），偶发 20–70ms 尖刺，非应用层可解。
 - 更老（1.4.x / 1.5.x）未验证，**不在**支持窗口。
-- **我们只安装并支持 Fabric**。其它启动器装的实例（**Forge / NeoForge / Quilt / …**）会显示为「未知」，不保证能启动。
+- **我们安装并支持 Fabric、Forge（MC ≤ 1.12.2）与 NeoForge（MC 1.20.2+）**。这些范围之外的其它启动器装的实例（**其它版本的 Forge / NeoForge、Quilt / …**）会显示为「未知」，不保证能启动。
 
 ## 获取与安装
 

@@ -66,11 +66,11 @@ Harmomeow Craft Launcher targets **HarmonyOS PCs**. It does not rely on an Andro
 - **Refresh-rate tier**: the FPS ceiling equals the system display tier ("Dynamic" = 60 / "High" = 90); the app cannot force 90.
 - **Mouse grab sampling = display frame rate**: while grabbing (cursor locked) the mouse sampling is tied to the UI frame rate; when not grabbing, native ~500 Hz absolute coordinates pass through (a bit more responsive).
 - **Physical F-keys**: the F row may behave oddly; we've done our best 🤪.
-- **Native Vulkan backend unavailable on MC ≥ 26.2**: the KirinX90 Vulkan driver lacks some extensions MC requires.
+- **Native Vulkan backend on MC ≥ 26.2**: the stock KirinX90 Vulkan driver under-reports several extensions MC requires; we route it through our own loader shim (`libmeowvulkan.so`), so the native Vulkan backend is usable (verified on 26.3).
 - **1.16.5 first screen has no text** — honestly no idea why, very bizarre.
 - The platform `libGLv4` is **Mesa Zink** (GL-on-Vulkan); occasional 20–70 ms spikes, not solvable at the app layer.
 - Older versions (1.4.x / 1.5.x) are unverified and **outside** the support window.
-- **Fabric is the only loader we install and support.** Instances installed by other launchers (**Forge / NeoForge / Quilt / …**) are shown as “Unknown”, with no promise that they launch.
+- **We install and support Fabric, Forge (MC ≤ 1.12.2) and NeoForge (MC 1.20.2+).** Instances from other launchers outside these ranges (**other Forge / NeoForge versions, Quilt / …**) are shown as “Unknown”, with no promise that they launch.
 
 ## Getting & installing
 
