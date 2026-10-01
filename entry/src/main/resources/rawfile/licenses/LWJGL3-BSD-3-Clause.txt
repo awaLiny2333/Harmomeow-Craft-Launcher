@@ -1,3 +1,22 @@
+适用组件: LWJGL 3 (Lightweight Java Game Library)
+SPDX-License-Identifier: BSD-3-Clause
+--------------------------------------------------------------------------------
+Upstream:       https://github.com/LWJGL/lwjgl3
+Copyright:      Copyright (c) 2012-present Lightweight Java Game Library
+                All rights reserved.
+Bundled:        Yes - lwjgl-*.jar (in entry/src/main/resources/rawfile/
+                meowcraft_extras.tar.gz) and the natives liblwjgl_343{,_opengl,_stb}.so
+                (libs/meowlwjgls/libs/arm64-v8a/).
+Our use:        Modified / self-built. Natives cross-compiled for OHOS; the jar is
+                the official modules plus this project's clean-room overlay (GLFW
+                binding / GLCapabilities / RendererInit). Overlay files are
+                derivatives of LWJGL and remain BSD-3-Clause. Copyright notices kept.
+Redistribution: Retain the copyright notice, the conditions and the disclaimer;
+                reproduce them in binary distributions; do not use the name
+                "Lightweight Java Game Library" or its contributors to endorse or
+                promote this project without prior written permission.
+--------------------------------------------------------------------------------
+
 Copyright (c) 2012-present Lightweight Java Game Library
 All rights reserved.
 

@@ -1,3 +1,19 @@
+适用组件: OpenAL Soft
+SPDX-License-Identifier: LGPL-2.0-or-later
+--------------------------------------------------------------------------------
+Upstream:       https://github.com/kcat/openal-soft
+Copyright:      OpenAL Soft is copyright its authors/contributors
+                (see the upstream source tree).
+Bundled:        Yes - libopenal.so (libs/meowlwjgls/libs/arm64-v8a/).
+Our use:        Modified / self-built. OHOS port with a new OHAudio backend,
+                OpenSL fixes, and the ALC_SOFT_system_events export.
+Redistribution: LGPL v2 (Library GPL) or later. Because the library ships as a
+                separate dynamically-linked .so, users may replace/relink it; the
+                complete corresponding source of the modified library is available
+                - see SOURCE-OFFER.md. Altered versions must not be represented as
+                the original OpenAL Soft, and its authors do not endorse this project.
+--------------------------------------------------------------------------------
+
                   GNU LIBRARY GENERAL PUBLIC LICENSE
                        Version 2, June 1991
 
@@ -435,3 +451,4 @@ SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH
 DAMAGES.
 
                      END OF TERMS AND CONDITIONS
+

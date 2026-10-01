@@ -1,3 +1,25 @@
+适用组件: OpenJDK (bundled JRE, "meowjre")
+SPDX-License-Identifier: GPL-2.0-only WITH Classpath-exception-2.0
+--------------------------------------------------------------------------------
+Upstream:       https://jdk.java.net/archive/  (Linux/aarch64)
+                sources: https://github.com/openjdk/jdk26u
+Copyright:      Copyright (c) Oracle and/or its affiliates. All rights reserved.
+                (OpenJDK and the JRE are copyright Oracle and the OpenJDK contributors.)
+Bundled:        Yes - libs/meowjre/libs/arm64-v8a/*.so (29 libs) and
+                entry/src/main/resources/rawfile/meow_jre.tar.gz (java.home data).
+Our use:        Modified / partly self-built. The official libraries are
+                binary-patched in place (ELF .dynstr NEEDED rewrite); libc6.so,
+                libjli.so and libjvm.so are self-built; the data image is the
+                official data slimmed with jlink.
+Redistribution: GPLv2 copyleft with the Classpath Exception. The Classpath
+                Exception lets independent modules link against the JRE and be
+                distributed under terms of the distributor's choice. Redistribution
+                of the modified JRE binaries requires the corresponding source
+                (GPLv2 section 3) - see SOURCE-OFFER.md.
+Note:           The JRE's own legal/ directory is not shipped; this file plus
+                THIRD-PARTY-NOTICES.md provide the required notices.
+--------------------------------------------------------------------------------
+
                     GNU GENERAL PUBLIC LICENSE
                        Version 2, June 1991
 
@@ -336,3 +358,23 @@ proprietary programs.  If your program is a subroutine library, you may
 consider it more useful to permit linking proprietary applications with the
 library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.
+
+
+--------------------------------------------------------------------------------
+The Classpath Exception (as used by OpenJDK and the Java Runtime Environment)
+--------------------------------------------------------------------------------
+
+Linking this library statically or dynamically with other modules is making a
+combined work based on this library. Thus, the terms and conditions of the GNU
+General Public License cover the whole combination.
+
+As a special exception, the copyright holders of this library give you
+permission to link this library with independent modules to produce an
+executable, regardless of the license terms of these independent modules, and
+to copy and distribute the resulting executable under terms of your choice,
+provided that you also meet, for each linked independent module, the terms and
+conditions of the license of that module. An independent module is a module
+which is not derived from or based on this library. If you modify this library,
+you may extend this exception to your version of the library, but you are not
+obligated to do so. If you do not wish to do so, delete this exception
+statement from your version.

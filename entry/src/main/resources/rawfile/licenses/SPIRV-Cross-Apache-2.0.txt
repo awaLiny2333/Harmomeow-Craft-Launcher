@@ -1,3 +1,14 @@
+适用组件: SPIRV-Cross (KhronosGroup/SPIRV-Cross)
+SPDX-License-Identifier: Apache-2.0
+--------------------------------------------------------------------------------
+Upstream:       https://github.com/KhronosGroup/SPIRV-Cross
+Copyright:      Copyright 2015-2021 Arm Limited (and other contributors).
+Bundled:        Yes - libspirv-cross.so (libs/meowlwjgls/libs/arm64-v8a/).
+Our use:        Unmodified; cross-compiled for OHOS.
+Redistribution: Give recipients a copy of this license; state significant changes;
+                retain attribution notices. No NOTICE file ships with this project.
+--------------------------------------------------------------------------------
+
 
                                  Apache License
                            Version 2.0, January 2004
@@ -200,3 +211,4 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+

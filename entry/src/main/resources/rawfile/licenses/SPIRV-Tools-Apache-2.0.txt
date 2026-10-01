@@ -1,3 +1,15 @@
+适用组件: SPIRV-Tools (statically linked into libshaderc.so)
+SPDX-License-Identifier: Apache-2.0
+--------------------------------------------------------------------------------
+Upstream:       https://github.com/KhronosGroup/SPIRV-Tools
+Copyright:      Copyright (c) 2015-2020 The Khronos Group Inc. (and other contributors).
+Bundled:        Yes, statically linked into libshaderc.so.
+Our use:        Unmodified.
+Redistribution: Give recipients a copy of this license; state significant changes;
+                retain attribution notices. No NOTICE file ships with this project.
+--------------------------------------------------------------------------------
+
+
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -199,3 +211,4 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+

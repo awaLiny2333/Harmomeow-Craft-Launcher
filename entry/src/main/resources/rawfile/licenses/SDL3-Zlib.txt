@@ -1,3 +1,17 @@
+适用组件: SDL3 (this project's OHOS fork)
+SPDX-License-Identifier: Zlib
+--------------------------------------------------------------------------------
+Upstream:       https://github.com/libsdl-org/SDL
+Copyright:      Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
+Bundled:        Yes - libSDL3.so (libs/meowlwjgls/libs/arm64-v8a/).
+Our use:        Modified / self-built. This is an ALTERED version: our fork adds a
+                custom "ohos" video / mouse / EGL driver (SDL3 is used by Minecraft
+                26.3, which drops GLFW).
+Redistribution: Under Zlib clause 3, this altered source must be plainly marked as
+                such and must not be misrepresented as the original SDL software;
+                the upstream authors do not endorse this project.
+--------------------------------------------------------------------------------
+
 Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
   
 This software is provided 'as-is', without any express or implied
@@ -15,4 +29,5 @@ freely, subject to the following restrictions:
 2. Altered source versions must be plainly marked as such, and must not be
    misrepresented as being the original software.
 3. This notice may not be removed or altered from any source distribution.
+
 

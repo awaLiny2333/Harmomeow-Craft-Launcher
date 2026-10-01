@@ -1,3 +1,20 @@
+适用组件: PFFFT (a modified PFFFT, statically linked into libopenal.so)
+SPDX-License-Identifier: BSD-3-Clause
+--------------------------------------------------------------------------------
+Upstream:       https://bitbucket.org/jpommier/pffft  (as bundled by OpenAL Soft)
+Copyright:      Copyright (c) 2023  Christopher Robinson
+                Copyright (c) 2013  Julien Pommier (pommier@modartt.com)
+                Copyright (c) 2004 the University Corporation for Atmospheric
+                Research ("UCAR"). All rights reserved. Developed by NCAR's
+                Computational and Information Systems Laboratory, UCAR.
+Bundled:        Yes, statically linked into libopenal.so (HRTF convolver).
+Our use:        Unmodified.
+Redistribution: Retain the copyright notices, the conditions and the disclaimer;
+                reproduce them in binary distributions; do not use the names of
+                NCAR / UCAR or its sponsors/contributors to endorse or promote this
+                project without prior written permission.
+--------------------------------------------------------------------------------
+
 A modified PFFFT is included, with the following license.
 
 Copyright (c) 2023  Christopher Robinson
@@ -36,3 +53,4 @@ EXEMPLARY, OR CONSEQUENTIAL DAMAGES OR OTHER LIABILITY, WHETHER IN AN
 ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS WITH THE
 SOFTWARE.
+

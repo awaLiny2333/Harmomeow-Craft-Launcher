@@ -1,0 +1,42 @@
+适用组件: OpenAL Soft - dynamic-linking / relink notice (LGPL-2.0-or-later)
+SPDX-License-Identifier: LGPL-2.0-or-later
+--------------------------------------------------------------------------------
+This is a short, human-readable notice that accompanies the full LGPL v2 text in
+OpenAL-Soft-LGPL-2.0-or-later.txt. It documents HOW OpenAL Soft is used by
+this project, which is what lets us combine it with our MIT-licensed code under
+the LGPL's "work that uses the library" provisions.
+--------------------------------------------------------------------------------
+
+1. Form of use.
+   OpenAL Soft is bundled ONLY as a SEPARATE, DYNAMICALLY-LINKED shared object:
+
+       libs/meowlwjgls/libs/arm64-v8a/libopenal.so   (SONAME libopenal.so)
+
+   It is NOT statically linked into any of this project's libraries. Our own code
+   loads it at run time through the normal dynamic linker (DT_NEEDED / dlopen).
+   Because it is a distinct .so, it is a "work that uses the library" - not a
+   combined/derivative work - and it remains replaceable.
+
+2. Relinkability (LGPL section 6).
+   A user may replace libopenal.so with a modified build of OpenAL Soft and the
+   rest of the application will keep working, provided the replacement keeps the
+   ABI/export surface this project relies on. To make that possible, we provide:
+     * the complete corresponding source of the (modified) library, and
+     * the source of "the work that uses the library" (this project's
+       MIT-licensed application and bridge code).
+
+3. Where to get the source (do not guess - see the written offer).
+   Upstream OpenAL Soft: https://github.com/kcat/openal-soft  (tag 1.24.3).
+   Our OHOS modifications + exact rebuild recipe: tools/openal/.
+   The binding written source offer (valid >= 3 years, with the maintainer
+   contact) is in SOURCE-OFFER.md (repository root).
+
+4. No endorsement / no misrepresentation.
+   This is an ALTERED version of OpenAL Soft (OHOS port, new OHAudio backend,
+   OpenSL fixes, ALC_SOFT_system_events export). It must not be represented as the
+   original OpenAL Soft, and the OpenAL Soft authors do not endorse this project.
+
+--------------------------------------------------------------------------------
+If the .so form is ever changed to static linking, this notice and the license
+compliance for OpenAL Soft MUST be re-evaluated (static linking changes the
+"work that uses the library" analysis).

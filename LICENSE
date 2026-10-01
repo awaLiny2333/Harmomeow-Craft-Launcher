@@ -48,7 +48,7 @@ overlay and GLCapabilities, the SDL `ohos` driver, the OpenAL OHAudio backend,
 the oshi/gl4es patches). Those files remain under their upstream licenses and
 may NOT be relicensed under MIT.
 
-Full license texts are in `LICENSES/`. Written source offers for the
+Full license texts are in `entry/src/main/resources/rawfile/licenses/`. Written source offers for the
 copyleft components are in `SOURCE-OFFER.md`.
 
 Minecraft is a trademark of Mojang/Microsoft; this project is unofficial and
