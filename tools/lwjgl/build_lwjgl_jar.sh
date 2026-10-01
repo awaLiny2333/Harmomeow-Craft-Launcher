@@ -21,7 +21,7 @@
 # The official LWJGL modules are pulled from Maven Central (release, sha1-verified)
 # and cached, so the stock base is the verifiable Maven RELEASE by default (stronger
 # provenance than the historical 3.3.3-snapshot). Same "download if missing" pattern as
-# tools/meow-launcher and tools/oshi.
+# tools/oshi.
 #
 # Required:
 #   --overlay DIR    overlay source root (org/lwjgl/**); repeatable, applied in order
@@ -129,7 +129,7 @@ esac
 
 # resolve_maven <group-path> <artifact> <version> -> path | empty
 # Maven (release) wins; --official is the offline / not-on-Maven fallback. Verifies
-# the published .sha1 (same "download if missing" spirit as tools/meow-launcher|oshi).
+# the published .sha1 (same "download if missing" spirit as tools/oshi).
 resolve_maven() {
   gp="$1"; art="$2"; ver="$3"
   dest="$CACHE/$gp/$art/$ver/$art-$ver.jar"

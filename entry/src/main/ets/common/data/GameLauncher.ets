@@ -107,6 +107,11 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     hilog.info(LOG_DOMAIN, LOG_TAG, 'launch abort: classpath stage failed for %{public}s', versionId);
     return;
   }
+  // ★staging 目录**按 classpath 形态**物化（见 `ClasspathStager.classpathUsesWildcard`）：
+  //  - flat（本版本 `-cp` 是 `<dir>/*`，vanilla / Fabric）：铺**整份声明库**，逐件完整；
+  //  - slim（`-cp` 是显式列表：launchwrapper 系 ordered / Forge ≥1.13 与 NeoForge 的 real-tree）：
+  //    只铺**随包件 + oshi 补丁件**（下面传的 `classpath`/`classpathDir` 里，slim 形态只用到
+  //    `classpathDir` —— 启动路径按绝对路径从它取那几件；`classpath` 通配只在 flat 形态被采用）。
   const runDir = `${ctx.cacheDir}/${MC_RUN_DIR_PREFIX}${versionId}`;
   for (const d of [runDir, `${runDir}/${NATIVES_DIR}`]) {
     try {
@@ -209,7 +214,6 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
     runDir: runDir,
     nativeLibsDir: jre.runtime.libsDir(ctx.bundleCodeDir), // 选中那套 JRE 的 el1（隔离命名空间）
     craftLibsDir: jre.runtime.libsDir(ctx.bundleCodeDir), // 桥已并入同一个 HSP
-    meowcraftLaunch: true,
     // 账户信息由 ArkTS 直接组进 game 参数 ⇒ 三件套必须传真值。
     authUuid: launchAccount.uuid,
     authAccessToken: launchAccount.accessToken !== undefined ? launchAccount.accessToken : '',

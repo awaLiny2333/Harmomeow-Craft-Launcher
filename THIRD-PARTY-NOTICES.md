@@ -94,7 +94,7 @@ are copied from OpenJDK and are under the same GPL-2.0+Classpath-Exception terms
 * Apache-2.0 §4: the upstream `NOTICE` files (where present) must be preserved;
   these libraries are unmodified except for the OHOS build configuration.
 
-## 7. gl4es / libffi / oshi / gson
+## 7. gl4es / libffi / oshi / gson / ASM
 
 * **gl4es** v1.1.7 — **MIT** ([`LICENSES/MIT.txt`](LICENSES/MIT.txt));
   self-built for OHOS (`libgl4es.so`).
@@ -107,6 +107,20 @@ are copied from OpenJDK and are under the same GPL-2.0+Classpath-Exception terms
   `meowcraft_extras.tar.gz`). The previously bundled, relocated
   `gson-for-launcher.jar` (`com.google.gson` → `meow.gson`) was removed on
   2026-10-01 together with the clean-room `meow.launcher`.
+* **ASM 9.9.1** — `org.ow2.asm` ×5 (`asm`, `asm-analysis`, `asm-commons`,
+  `asm-tree`, `asm-util`) — **BSD-3-Clause** —
+  [`LICENSES/BSD-3-Clause.txt`](LICENSES/BSD-3-Clause.txt).
+  * Bundled as: the five `asm9/<artifact>-9.9.1.jar` members inside
+    `meowcraft_extras.tar.gz` (subdirectory `asm9/`), staged at launch under
+    `<cache>/mc-cp/<instance>/asm9/`.
+  * Upstream source: **Maven Central**, official release artifacts (each
+    fetched together with its published `.sha1` and verified) —
+    `https://repo1.maven.org/maven2/org/ow2/asm/<artifact>/9.9.1/<artifact>-9.9.1.jar`
+    (per-artifact sha1/sha256/size: `notes/30-supply-chain/provenance-master.md`
+    §4.2 and `assets-digests.txt`).
+  * Used **unmodified**: they are only dropped onto the module/caller classpath
+    to override an older ASM that a Forge generation declared but which cannot
+    read the bundled JRE's class files (see `MinecraftLauncher.needsAsmOverride`).
 
 ## 8. Build-time / toolchain (not redistributed as separate files)
 

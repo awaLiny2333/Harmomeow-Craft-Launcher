@@ -19,8 +19,10 @@ We distribute an OpenJDK 26 JRE that we **modified and partly rebuilt**:
     NEEDED rewrite; `tools/jre26/patch_dynstr.py`) so they load on OHOS (musl);
   * `libc6.so` — our self-built glibc compatibility shim (`tools/jre26/glibc_compat.c`);
   * `libjvm.so` and `libjli.so` — **self-built** from OpenJDK source
-    (`https://github.com/openjdk/jdk`, tag **`jdk-26-ga`**, commit `4408cd2a07a…`)
-    with our OHOS split-layout patches (`tools/jre26/patches/`);
+    (`https://github.com/openjdk/jdk26u`, tag **`jdk-26.0.2.1-ga`**, commit
+    `d55edf1cba61219d17565da51cd13a4d425f7c59` — the **update repository**, since
+    26.0.x is not in the mainline `openjdk/jdk`) with our OHOS split-layout patches
+    (`tools/jre26/patches/`);
   * the data image (`lib/modules`, …) — official 26.0.2.1 data, **slimmed** via `jlink`.
 
 > **We DO modify the JRE code.** The claim that only a data image was slimmed is obsolete.

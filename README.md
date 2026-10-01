@@ -70,7 +70,7 @@ Harmomeow Craft Launcher targets **HarmonyOS PCs**. It does not rely on an Andro
 - **1.16.5 first screen has no text** — honestly no idea why, very bizarre.
 - The platform `libGLv4` is **Mesa Zink** (GL-on-Vulkan); occasional 20–70 ms spikes, not solvable at the app layer.
 - Older versions (1.4.x / 1.5.x) are unverified and **outside** the support window.
-- **We install and support Fabric, Forge (MC ≤ 1.12.2) and NeoForge (MC 1.20.2+).** Instances from other launchers outside these ranges (**other Forge / NeoForge versions, Quilt / …**) are shown as “Unknown”, with no promise that they launch.
+- **We install and support Fabric, Forge (MC 1.7 – 1.20.1) and NeoForge (MC 1.20.2+).** Instances from other launchers outside these ranges (**other Forge / NeoForge versions, Quilt / …**) are shown as “Unknown”, with no promise that they launch.
 
 ## Getting & installing
 
@@ -136,7 +136,8 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
 | gl4es | v1.1.7 | MIT | ✅ | fixed-pipeline translation layer for ≤ 1.16 / legacy |
 | libffi | 3.8.0 | MIT | (linked into lwjgl) | LWJGL ≥ 3.4 dependency |
 | oshi | 5.7–6.9 + 1.1 | MIT | ✅ | CPU-info patch |
-| gson | 2.13.1 | Apache-2.0 | ✅ | dependency declared by the MC / Fabric / Forge manifests |
+| ASM | 9.9.1 (`org.ow2.asm` ×5) | BSD-3 | ✅ | startup-time ASM override so a Forge generation whose *declared* ASM cannot read the bundled JRE's class files still launches (see [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) §7) |
+| gson | 2.13.1 | Apache-2.0 | — | dependency declared by the MC / Fabric / Forge manifests; **no longer shipped in the bundle** |
 
 > Full third-party attributions: [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md); full license texts: [`LICENSES/`](LICENSES/); source offer: [`SOURCE-OFFER.md`](SOURCE-OFFER.md).
 

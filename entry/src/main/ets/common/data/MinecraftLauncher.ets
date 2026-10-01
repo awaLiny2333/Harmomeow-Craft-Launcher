@@ -19,6 +19,17 @@ const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'GameLauncher';
 
 /**
+ * classpath 三态**字面量的唯一来源**（只作诊断串的见证；见 `buildLaunchArgv` 的 `classpath mode=<…>`）：
+ *  - `real-tree` = 真库树逐条绝对路径 + 实例 jar（Forge ≥1.13 / NeoForge）；
+ *  - `ordered`   = launchwrapper 形态的**显式有序绝对路径**（≤1.12.2 Forge / LiteLoader / OptiFine）；
+ *  - `flat`      = 平铺目录通配 `<dir>/*`（原版 / Fabric）。
+ * 判据见 `needsRealClasspath` / `isLaunchWrapperMain`；名字集中在此以免三处日志各写一份。
+ */
+const CLASSPATH_MODE_REAL_TREE: string = 'real-tree';
+const CLASSPATH_MODE_ORDERED: string = 'ordered';
+const CLASSPATH_MODE_FLAT: string = 'flat';
+
+/**
  * 窗口所在显示器的尺寸（px），由 GameWindow 在 surface 就绪时写入。全屏尺寸取决于我们上报给
  * LWJGL2 的 DisplayMode（见 buildLaunchArgv 里 legacy 分支的说明），而窗口可能在副屏上 —— 用默认
  * 显示器会尺寸不符。0 = 未提供，回退到默认显示器。
@@ -112,9 +123,6 @@ export interface LaunchOptions {
   /** 自研桥 so 所在目录（当前与 nativeLibsDir 同：meowjre HSP libs）——JVM 侧
    *  System.loadLibrary 也需能在该目录找到 libmeowcraftbridge.so。 */
   craftLibsDir?: string;
-  /** 自研启动路径开关（配合 clean-room lwjgl.jar）：开启自研桥固定参数段。
-   *  **不再**影响主类选择（2026-10-01：MeowLauncher 退役后，所有形态一律直启 `json.mainClass`）。 */
-  meowcraftLaunch?: boolean;
   /** 窗口尺寸（glfwstub 用）。 */
   width?: number;
   height?: number;
@@ -177,8 +185,6 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
     return [];
   }
   const json = resolved.json;
-  // NeoForge：启动参数与 classpath 形态都不同于原版/Fabric（见下方各处 `neoForge` 分支）。
-  const neoForge = resolved.loader === LOADER_NEO_FORGE;
   // 实例身份 = versions 目录名（opts.versionId，对齐 HMCL）；无则退回 json 的 id。
   const id = (opts.versionId !== undefined && opts.versionId.length > 0)
     ? opts.versionId : (json.id ?? '');
@@ -263,16 +269,18 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   const cpEntries = classpath.length === 0 ? 0 : classpath.split(':').length;
   const cpBytes = classpath.length === 0 ? 0 : new util.TextEncoder().encodeInto(classpath).byteLength;
   if (realTreeClasspath) {
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath mode=real-tree (entries=%{public}d, bytes=%{public}d)',
+    hilog.info(LOG_DOMAIN, LOG_TAG,
+      'classpath mode=' + CLASSPATH_MODE_REAL_TREE + ' (entries=%{public}d, bytes=%{public}d)',
       cpEntries, cpBytes);
     logAsmProvider(classpath, opts.gameRoot, asmOverride);
   } else if (launchWrapperClasspath) {
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath mode=ordered (entries=%{public}d, bytes=%{public}d)',
+    hilog.info(LOG_DOMAIN, LOG_TAG,
+      'classpath mode=' + CLASSPATH_MODE_ORDERED + ' (entries=%{public}d, bytes=%{public}d)',
       cpEntries, cpBytes);
     // 同名类多提供者体检（F3）：本次事故"下次一眼可见"的保障，只对已知敏感类做定点检查。
     logDuplicateClassProviders(classpath, DUPLICATE_CLASS_WATCHLIST);
   } else {
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath mode=flat');
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath mode=' + CLASSPATH_MODE_FLAT);
   }
   // ASM 覆盖自证（稳定英文诊断串）：换了哪几件、指向哪个目录、丢掉了哪套声明版本。
   if (asmOverride) {
@@ -357,105 +365,102 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   // 注：这一段**不再设** `-Djava.system.class.loader`（MeowLauncher/MeowClassLoader 已退役，2026-10-01）：
   //  各形态一律直启其 `mainClass`、classpath 平铺/真树自足 ⇒ 设它只会让 JVM 启动期
   //  `Class.forName` 直接 ClassNotFound。Fabric 同理（Knot 要求 loader 类由父加载器持有）。
-  if (opts.meowcraftLaunch === true || neoForge) {
-    // 渲染后端按 MC 版本选（见 RendererPolicy）：≥1.17 → 桌面 GL libGLv4.so(Zink)；
-    // ≤1.16 → gl4es(libgl4es.so，GLES 上的固定管线翻译)。必须与 startJvm 传的 rendererLib 一致；
-    // glfwstub 不自建 EGL，交给渲染后端（桥按 MEOWCRAFT_RENDERER 决定 GL/GLES）。
-    const rendererLib = (opts.rendererLib !== undefined && opts.rendererLib.length > 0)
-      ? opts.rendererLib : RENDERER_LIB;
-    argv.push(`-Dorg.lwjgl.opengl.libname=${rendererLib}`);
-    // LWJGL 世代命名：世代号紧跟基名（`liblwjgl_<digits>[_opengl|_stb].so`，如 liblwjgl_343.so），与随包
-    // 扁平目录里的多代共存；启动一律设 mapper + 世代号，交给 MeowBundledNameMapper 选名。
-    const lwjglGen = lwjglGeneration(opts.jsonPath);
-    argv.push(`-Dorg.lwjgl.system.bundledLibrary.nameMapper=${LWJGL_NAME_MAPPER}`);
-    argv.push(`-Dmeow.lwjgl.gen=${lwjglGen}`);
-    argv.push('-Dorg.lwjgl.system.allocator=system');
-    argv.push('-Dorg.lwjgl.glfw.checkThread0=false');
-    // 【F75 env-cleanup】`-Dorg.lwjgl.vulkan.libname` 就是"选哪个 Vulkan 后端"的参数：选 Vulkan
-    // （opts.graphicsBackend 非空）→ 指向自研 shim（libmeowvulkan.so，随包 native；修正本机 ICD 的
-    // "上报面裁剪"并翻译提交与 WSI，见 meowvulkan.c 头注释）；否则 → 指向不存在的占位库
-    // （libmeow-no-vulkan.so），让 LWJGL 的 Vulkan 探测直接失败、跳过 Vulkan 组。
-    // 不再需要任何 env；shim 一经加载即默认挂钩（逃生口 = 用户 env 里写 `MEOW_VK_SHIM=0`）。
-    // 回退阶梯见方案文 §7.5 / §13。
-    const vulkanLibName = (opts.graphicsBackend !== undefined && opts.graphicsBackend.length > 0)
-      ? VULKAN_LIB_SHIM : VULKAN_LIB_DISABLED;
-    argv.push(`-Dorg.lwjgl.vulkan.libname=${vulkanLibName}`);
-    argv.push('-DDEBUG=true');
-    argv.push(`-Dcpu.name=${SPOOF_CPU_NAME}`);
-    argv.push(`-Dnet.minecraft.clientmodname=${CLIENT_MOD_NAME}`);
-    argv.push('-Dfml.earlyprogresswindow=false');
-    argv.push('-Dloader.disable_forked_guis=true');
-    argv.push('-Dsodium.checks.issue2561=false');
-    argv.push('-Djdk.lang.Process.launchMechanism=FORK');
-    argv.push('-Dglfwstub.initEgl=false');
-    const w = opts.width ?? WINDOW_DEFAULT_W;
-    const h = opts.height ?? WINDOW_DEFAULT_H;
-    argv.push(`-Dglfwstub.windowWidth=${w}`);
-    argv.push(`-Dglfwstub.windowHeight=${h}`);
-    // 窗口尺寸的 cacio 键（历史 launcher 的 MeowLauncher.launchMinecraft 曾读它转写为
-    // glfw.windowSize）。**现无消费者**，保留以不改动手册/夹具；桥的窗口尺寸由 glfwstub.window* 承载。
-    argv.push(`-Dcacio.managed.screensize=${w}x${h}`);
-    argv.push(`-Dmeowcraft.path.minecraft=${opts.gameRoot}`);
-    // 目录模型：MEOWCRAFT_HOME=homeDir（运行数据 home），MEOWCRAFT_GAME_DIR=.minecraft。
-    // 传 filesDir 下沙箱目录最稳（外部目录可能不可写）；缺省时退回游戏根。
-    const homeDir = opts.meowHomeDir !== undefined && opts.meowHomeDir.length > 0
-      ? opts.meowHomeDir
-      : opts.gameRoot;
-    argv.push(`-DMEOWCRAFT_HOME=${homeDir}`);
-    argv.push(`-DMEOWCRAFT_GAME_DIR=${opts.gameRoot}`);
-    argv.push('-Djna.nosys=false');
-    argv.push('-Doshi.util.disable.cpufrequency=true');
-    argv.push('-Doshi.util.disable.powersource=true');
-    // CPU 线程数覆盖（高级选项）；0/未设 = 不传，由 JVM 自动探测（sysconf）。
-    if (opts.activeProcessorCount !== undefined && opts.activeProcessorCount > 0) {
-      argv.push(`-XX:ActiveProcessorCount=${opts.activeProcessorCount}`);
-    }
-    // 崩喷落点统一到实例的 `.hmmcraft/logs`：`-XX:ErrorFile` 是**产品**参数（可直接用），
-    // JVM 的 hs_err 默认落 cwd（= 游戏目录）⇒ 指到这里。沿用本文件「用户额外参数优先」的约定：
-    // 用户自己给了 `-XX:ErrorFile` 就不覆盖。
-    // ⚠️ 这里**不要**加 `-XX:LogFile=`：它是**诊断**参数，未开 `-XX:+UnlockDiagnosticVMOptions`
-    //    会让 JVM 直接拒启（2026-09-16 实测："VM option 'LogFile' is diagnostic …" → 启动失败，
-    //    且**没有** hs_err、MC 的 latest.log 也不更新）。需要 Log* 时由用户自己在额外参数里连 unlock 一起给。
-    const userArgs = opts.jvmArgs !== undefined ? opts.jvmArgs : '';
-    if (opts.logsDir !== undefined && opts.logsDir.length > 0 && !/-\s*XX:ErrorFile\s*=/.test(userArgs)) {
-      argv.push(`-XX:ErrorFile=${opts.logsDir}/hs_err_pid%p.log`);
-    }
-    argv.push(`-Duser.language=${LOCALE_LANGUAGE}`);
-    argv.push(`-Duser.country=${LOCALE_COUNTRY}`);
-    argv.push(`-Duser.timezone=${LOCALE_TIMEZONE}`);
-    argv.push('-Dlog4j2.formatMsgNoLookups=true');
-    // Tools.getMinecraftArgs 会读 Server_Ip 属性并 isBlank() 判空（历史启动器 JVMLauncher 同款）；
-    // 缺属性则 getProperty 返回 null → NPE。空值可安全走"无服务器直连"分支。
-    argv.push('-DServer_Ip=');
-    // LWJGL 调试开关：**默认不设（= 关）**。`org.lwjgl.util.Debug=true` 会开启 LWJGL 的
-    // "额外运行期检查（部分很贵）"并刷诊断输出（LWJGL 源码 Configuration.DEBUG 原文）；
-    // `DebugLoader` 依附于它；`org.lwjgl.opengl.Debug` 根本不是 LWJGL 属性（core/opengl 源码零命中，
-    // MC json 也不设）→ 历史死旗标，已一并移除。排障/A-B 时用高级选项「额外 JVM 参数」加
-    // `-Dorg.lwjgl.util.Debug=true` 即可覆盖（额外参数排在固定参数之前，不会被覆盖）。
-    // legacy 也必须保持关：LWJGL2 的 LWJGLUtil.DEBUG 门控 Display.swapBuffers 的"交换前 glGetError
-    // 检查"，会把 gl4es 的良性 GL 错误变成致命 OpenGLException（实测 `Invalid operation (1282)`）。
-    const legacyLwjgl = isLegacyLwjgl(opts.jsonPath);
-    if (legacyLwjgl) {
-      // LWJGL2 的全屏尺寸来自"应用选定的 DisplayMode"（createWindow 里 window_width=mode.width；
-      // 且全屏时 LWJGL2 主动抑制 resize 通知：Display.java `window_resized = !isFullscreen() && …`）。
-      // 故把真实屏幕尺寸告诉 native，让它作为 fullscreen-capable 模式上报，否则 MC 全屏后视口
-      // 仍是窗口尺寸（画面停在左下角）。
-      try {
-        // 优先用"窗口所在显示器"尺寸（副屏场景）；没有则退回默认显示器。
-        let dw = windowDisplayW;
-        let dh = windowDisplayH;
-        if (!(dw > 0 && dh > 0)) {
-          const d = display.getDefaultDisplaySync();
-          dw = d.width;
-          dh = d.height;
-        }
-        if (dw > 0 && dh > 0) {
-          argv.push(`-Dmeow.screen.w=${dw}`);
-          argv.push(`-Dmeow.screen.h=${dh}`);
-        }
-      } catch (e) {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'screen size query failed: %{public}s', JSON.stringify(e));
+  // **本段无条件执行**（原 `if (opts.meowcraftLaunch === true || neoForge)` 守卫已随 `meowcraftLaunch`
+  //  恒真钩子一并删除，2026-10-01 —— 它从未起过筛选作用；各形态都需要这一段）。
+  // 渲染后端按 MC 版本选（见 RendererPolicy）：≥1.17 → 桌面 GL libGLv4.so(Zink)；
+  // ≤1.16 → gl4es(libgl4es.so，GLES 上的固定管线翻译)。必须与 startJvm 传的 rendererLib 一致；
+  // glfwstub 不自建 EGL，交给渲染后端（桥按 MEOWCRAFT_RENDERER 决定 GL/GLES）。
+  const rendererLib = (opts.rendererLib !== undefined && opts.rendererLib.length > 0)
+    ? opts.rendererLib : RENDERER_LIB;
+  argv.push(`-Dorg.lwjgl.opengl.libname=${rendererLib}`);
+  // LWJGL 世代命名：世代号紧跟基名（`liblwjgl_<digits>[_opengl|_stb].so`，如 liblwjgl_343.so），与随包
+  // 扁平目录里的多代共存；启动一律设 mapper + 世代号，交给 MeowBundledNameMapper 选名。
+  const lwjglGen = lwjglGeneration(opts.jsonPath);
+  argv.push(`-Dorg.lwjgl.system.bundledLibrary.nameMapper=${LWJGL_NAME_MAPPER}`);
+  argv.push(`-Dmeow.lwjgl.gen=${lwjglGen}`);
+  argv.push('-Dorg.lwjgl.system.allocator=system');
+  argv.push('-Dorg.lwjgl.glfw.checkThread0=false');
+  // 【F75 env-cleanup】`-Dorg.lwjgl.vulkan.libname` 就是"选哪个 Vulkan 后端"的参数：选 Vulkan
+  // （opts.graphicsBackend 非空）→ 指向自研 shim（libmeowvulkan.so，随包 native；修正本机 ICD 的
+  // "上报面裁剪"并翻译提交与 WSI，见 meowvulkan.c 头注释）；否则 → 指向不存在的占位库
+  // （libmeow-no-vulkan.so），让 LWJGL 的 Vulkan 探测直接失败、跳过 Vulkan 组。
+  // 不再需要任何 env；shim 一经加载即默认挂钩（逃生口 = 用户 env 里写 `MEOW_VK_SHIM=0`）。
+  // 回退阶梯见方案文 §7.5 / §13。
+  const vulkanLibName = (opts.graphicsBackend !== undefined && opts.graphicsBackend.length > 0)
+    ? VULKAN_LIB_SHIM : VULKAN_LIB_DISABLED;
+  argv.push(`-Dorg.lwjgl.vulkan.libname=${vulkanLibName}`);
+  argv.push('-DDEBUG=true');
+  argv.push(`-Dcpu.name=${SPOOF_CPU_NAME}`);
+  argv.push(`-Dnet.minecraft.clientmodname=${CLIENT_MOD_NAME}`);
+  argv.push('-Dfml.earlyprogresswindow=false');
+  argv.push('-Dloader.disable_forked_guis=true');
+  argv.push('-Dsodium.checks.issue2561=false');
+  argv.push('-Djdk.lang.Process.launchMechanism=FORK');
+  argv.push('-Dglfwstub.initEgl=false');
+  const w = opts.width ?? WINDOW_DEFAULT_W;
+  const h = opts.height ?? WINDOW_DEFAULT_H;
+  argv.push(`-Dglfwstub.windowWidth=${w}`);
+  argv.push(`-Dglfwstub.windowHeight=${h}`);
+  argv.push(`-Dmeowcraft.path.minecraft=${opts.gameRoot}`);
+  // 目录模型：MEOWCRAFT_HOME=homeDir（运行数据 home），MEOWCRAFT_GAME_DIR=.minecraft。
+  // 传 filesDir 下沙箱目录最稳（外部目录可能不可写）；缺省时退回游戏根。
+  const homeDir = opts.meowHomeDir !== undefined && opts.meowHomeDir.length > 0
+    ? opts.meowHomeDir
+    : opts.gameRoot;
+  argv.push(`-DMEOWCRAFT_HOME=${homeDir}`);
+  argv.push(`-DMEOWCRAFT_GAME_DIR=${opts.gameRoot}`);
+  argv.push('-Djna.nosys=false');
+  argv.push('-Doshi.util.disable.cpufrequency=true');
+  argv.push('-Doshi.util.disable.powersource=true');
+  // CPU 线程数覆盖（高级选项）；0/未设 = 不传，由 JVM 自动探测（sysconf）。
+  if (opts.activeProcessorCount !== undefined && opts.activeProcessorCount > 0) {
+    argv.push(`-XX:ActiveProcessorCount=${opts.activeProcessorCount}`);
+  }
+  // 崩喷落点统一到实例的 `.hmmcraft/logs`：`-XX:ErrorFile` 是**产品**参数（可直接用），
+  // JVM 的 hs_err 默认落 cwd（= 游戏目录）⇒ 指到这里。沿用本文件「用户额外参数优先」的约定：
+  // 用户自己给了 `-XX:ErrorFile` 就不覆盖。
+  // ⚠️ 这里**不要**加 `-XX:LogFile=`：它是**诊断**参数，未开 `-XX:+UnlockDiagnosticVMOptions`
+  //    会让 JVM 直接拒启（2026-09-16 实测："VM option 'LogFile' is diagnostic …" → 启动失败，
+  //    且**没有** hs_err、MC 的 latest.log 也不更新）。需要 Log* 时由用户自己在额外参数里连 unlock 一起给。
+  const userArgs = opts.jvmArgs !== undefined ? opts.jvmArgs : '';
+  if (opts.logsDir !== undefined && opts.logsDir.length > 0 && !/-\s*XX:ErrorFile\s*=/.test(userArgs)) {
+    argv.push(`-XX:ErrorFile=${opts.logsDir}/hs_err_pid%p.log`);
+  }
+  argv.push(`-Duser.language=${LOCALE_LANGUAGE}`);
+  argv.push(`-Duser.country=${LOCALE_COUNTRY}`);
+  argv.push(`-Duser.timezone=${LOCALE_TIMEZONE}`);
+  argv.push('-Dlog4j2.formatMsgNoLookups=true');
+  // Tools.getMinecraftArgs 会读 Server_Ip 属性并 isBlank() 判空（历史启动器 JVMLauncher 同款）；
+  // 缺属性则 getProperty 返回 null → NPE。空值可安全走"无服务器直连"分支。
+  argv.push('-DServer_Ip=');
+  // LWJGL 调试开关：**默认不设（= 关）**。`org.lwjgl.util.Debug=true` 会开启 LWJGL 的
+  // "额外运行期检查（部分很贵）"并刷诊断输出（LWJGL 源码 Configuration.DEBUG 原文）；
+  // `DebugLoader` 依附于它；`org.lwjgl.opengl.Debug` 根本不是 LWJGL 属性（core/opengl 源码零命中，
+  // MC json 也不设）→ 历史死旗标，已一并移除。排障/A-B 时用高级选项「额外 JVM 参数」加
+  // `-Dorg.lwjgl.util.Debug=true` 即可覆盖（额外参数排在固定参数之前，不会被覆盖）。
+  // legacy 也必须保持关：LWJGL2 的 LWJGLUtil.DEBUG 门控 Display.swapBuffers 的"交换前 glGetError
+  // 检查"，会把 gl4es 的良性 GL 错误变成致命 OpenGLException（实测 `Invalid operation (1282)`）。
+  const legacyLwjgl = isLegacyLwjgl(opts.jsonPath);
+  if (legacyLwjgl) {
+    // LWJGL2 的全屏尺寸来自"应用选定的 DisplayMode"（createWindow 里 window_width=mode.width；
+    // 且全屏时 LWJGL2 主动抑制 resize 通知：Display.java `window_resized = !isFullscreen() && …`）。
+    // 故把真实屏幕尺寸告诉 native，让它作为 fullscreen-capable 模式上报，否则 MC 全屏后视口
+    // 仍是窗口尺寸（画面停在左下角）。
+    try {
+      // 优先用"窗口所在显示器"尺寸（副屏场景）；没有则退回默认显示器。
+      let dw = windowDisplayW;
+      let dh = windowDisplayH;
+      if (!(dw > 0 && dh > 0)) {
+        const d = display.getDefaultDisplaySync();
+        dw = d.width;
+        dh = d.height;
       }
+      if (dw > 0 && dh > 0) {
+        argv.push(`-Dmeow.screen.w=${dw}`);
+        argv.push(`-Dmeow.screen.h=${dh}`);
+      }
+    } catch (e) {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'screen size query failed: %{public}s', JSON.stringify(e));
     }
   }
 
@@ -466,6 +471,12 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   // `-p` 的**下一项**是 module path 串：ASM 覆盖时把它一并改写（见 rewriteAsmList —— ②代 ASM 正是
   // 经 `-p` + `--add-modules ALL-MODULE-PATH` 加载，只改 `-cp` 会留旧件、甚至造成同模块两份）。
   let rewriteNextAsModulePath = false;
+  // 与 game 参数循环**有意不同**：这里**丢弃"展开后为空"的 token**。
+  //  依据（逐处说明）：json 的 `arguments.jvm` 全是**自足单 token**（`-cp ${classpath}` / `-p ${module_path}` /
+  //  `-Dfoo=${bar}` / `--add-opens …`），`${…}` 均**恒非空**（classpath / module path / 各 -D 值都不会是空串）
+  //  ⇒ "展开为空"只可能是规则过滤或异常清单，此时把空串推进 JVM 选项区反而会被 JVM 当非法选项。
+  //  这段是 ArkTS 侧新写的 JVM argv（**不**来自已删除的 Java `ArgBuilder`——它只管 game 参数），故不适用
+  //  game 那段"空串照发"的口径。
   for (const raw of collectArgs(json.arguments?.jvm)) {
     let v = expand(raw, macros);
     if (rewriteNextAsModulePath) {
@@ -516,11 +527,14 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   if (isLaunchWrapperMain(mainClass)) {
     gameArgs = reorderLaunchWrapperTweaks(gameArgs, resolved, json);
   }
+  // 空串**照发**（与已删除的 Java 侧 `ArgBuilder.build` 同口径）：旧实现（= 已删的 Java `ArgBuilder.build`）只跳过"**展开前**即为空"的原始
+  // token，**展开后**为空的照 push。`${clientid}` / `${auth_xuid}` 在未配置 / 离线时展开为空串；若在此
+  // 丢弃，`--clientId` / `--xuid` 就会把**下一个 flag** 吃成自己的值（标志与值错位，2026-10-01 修正）。
   for (const raw of gameArgs) {
-    const v = expand(raw, macros);
-    if (v.length > 0) {
-      argv.push(v);
+    if (raw.length === 0) {
+      continue;
     }
+    argv.push(expand(raw, macros));
   }
   // MC 的 `--graphicsBackend` 是**游戏参数**，必须在主类之后（之前误放进 JVM 的 -D 区，JVM 会当作自己的
   // 选项而拒绝启动）。所有形态的 game 参数都由本函数补齐（2026-10-01 起无 Java 侧转发）。
@@ -561,7 +575,10 @@ function makeMacros(gameDir: string, gameRoot: string, id: string, json: Version
   // `auth_uuid` **去横线**（32 位紧凑形式）——旧 Java `ArgBuilder.stripDashes` 与 HMCL 的
   // `UUIDs.toCompactString` 都如此，且 HMCL 对**所有**版本（含 1.20.x）都发紧凑形式 ⇒ 统一去横线。
   m.set('auth_uuid', authUuid.split('-').join(''));
-  m.set('auth_access_token', authAccessToken);
+  // `auth_access_token` 与 `auth_session` 同义、**同口径**：离线（`authAccessToken` 为空）时退回
+  // `OFFLINE_TOKEN`（= 旧 Java `Account.OFFLINE_ACCESS_TOKEN='0'`：原版只要求非空、不校验值）。
+  // 离线仍发 `'0'`（而非空串）—— 与 `auth_session` 一致，且避免 `--accessToken` 后接空值。
+  m.set('auth_access_token', authAccessToken.length > 0 ? authAccessToken : OFFLINE_TOKEN);
   // legacy（≤1.12.2）清单要用的三个宏 —— 旧 Java 侧 `ArgBuilder` 有、ArkTS 侧原先缺（本函数原先只服务
   // 直启形态：Fabric / Forge ≥1.13 / NeoForge，它们的现代清单不用这三个）。legacy 也从本函数走后
   // **必须补齐**，否则会把 `${...}` 字面量原样发给 MC：
@@ -584,6 +601,13 @@ function makeMacros(gameDir: string, gameRoot: string, id: string, json: Version
   m.set('primary_jar_name', `${id}.jar`);
   m.set('launcher_name', LAUNCHER_NAME);
   m.set('launcher_version', LAUNCHER_VERSION);
+  // 现代清单（≥1.14）的三个账户相关宏（`--clientId` / `--xuid` / `--userType`）——取值对齐旧 Java
+  // `Account` + `ArgBuilder`（本机无 `clientToken` 来源，且旧 `Account` 对离线把 `clientToken`/`xuid`
+  // 皆归一为空串）：
+  //  · `clientid`：**恒空串**（离线 / 正版一致；我们不发 client token）。
+  //  · `auth_xuid`：正版 = XSTS user hash（`Account.xuid`）；离线 = 空串。
+  //  · `user_type`：**恒 `'msa'`**（HMCL 对离线也发 msa；`'mojang'` 联机可能被判无效会话）。
+  // 空串在 argv 里**照发**（见上方 game 参数循环）⇒ `--clientId` / `--xuid` 后面始终有一个值。
   m.set('clientid', '');
   m.set('auth_xuid', authXuid);
   m.set('user_type', 'msa');
@@ -665,8 +689,11 @@ const LAUNCHWRAPPER_MAIN: string = 'net.minecraft.launchwrapper.Launch';
  * 主类是否 launchwrapper 形态（≤1.12.2 的 Forge / LiteLoader / 独立 OptiFine）。
  * 判据按**主类（形态）**而非 MC 版本号 / loader 名：薄 `inheritsFrom`、被人工改写的清单、
  * 独立 OptiFine 等都能稳定命中。用于挑「显式有序 classpath」与 tweak 顺序修复。
+ *
+ * **导出**：staging 侧（`ClasspathStager.classpathUsesWildcard`）的形态分流与这里**共用同一判据**
+ * ⇒ 两处不可能分歧（此前 staging 侧另存了一份主类字面量，需人工同步）。
  */
-function isLaunchWrapperMain(main: string | undefined): boolean {
+export function isLaunchWrapperMain(main: string | undefined): boolean {
   return main === LAUNCHWRAPPER_MAIN;
 }
 /** Forge 的 tweaker（1.5.2 的 LibraryFixer / 1.7.10 的 cpw.mods / 1.8+ 的 net.minecraftforge）。
@@ -1108,12 +1135,13 @@ function logAsmProvider(classpath: string, gameRoot: string, asmOverridden: bool
   }
   if (first.length === 0) {
     hilog.warn(LOG_DOMAIN, LOG_TAG,
-      'classpath real-tree: asm=(none) (in-libraries=no) -> Forge <=1.16.x cannot locate its'
+      'classpath ' + CLASSPATH_MODE_REAL_TREE + ': asm=(none) (in-libraries=no) -> Forge <=1.16.x cannot locate its'
       + ' libraries root (Missing forge!)');
     return;
   }
   const inLibs = first.startsWith(libPrefix);
-  hilog.info(LOG_DOMAIN, LOG_TAG, 'classpath real-tree: asm=%{public}s (in-libraries=%{public}s)',
+  hilog.info(LOG_DOMAIN, LOG_TAG,
+    'classpath ' + CLASSPATH_MODE_REAL_TREE + ': asm=%{public}s (in-libraries=%{public}s)',
     first, inLibs ? 'yes' : 'no');
   if (!inLibs) {
     if (asmOverridden) {
@@ -1121,12 +1149,12 @@ function logAsmProvider(classpath: string, gameRoot: string, asmOverridden: bool
       // 该"上溯 6 级"不变量只服务 Forge ≤1.16.x（`cpw.mods.modlauncher.Launcher` 世代），而它天然
       // **不触发替换**（modlauncher < 10）⇒ 本行不适用于它，也不该报 `Missing forge!`。
       hilog.info(LOG_DOMAIN, LOG_TAG,
-        'classpath real-tree: asm provider is the bundled override (expected; the <=1.16.x Launcher-gen'
+        'classpath ' + CLASSPATH_MODE_REAL_TREE + ': asm provider is the bundled override (expected; the <=1.16.x Launcher-gen'
         + ' tree-relative invariant does not apply to this modlauncher generation)');
       return;
     }
     hilog.warn(LOG_DOMAIN, LOG_TAG,
-      'classpath real-tree: asm provider is NOT under %{public}s -> Forge <=1.16.x derives a wrong'
+      'classpath ' + CLASSPATH_MODE_REAL_TREE + ': asm provider is NOT under %{public}s -> Forge <=1.16.x derives a wrong'
       + ' maven root (Missing forge!)', libPrefix);
   }
 }
@@ -1149,6 +1177,12 @@ function logAsmProvider(classpath: string, gameRoot: string, asmOverridden: bool
  *
  * ⇒ 顺序来源仍是**清单顺序**（与旧 `MeowClassLoader` / HMCL 同口径），只在两类件上做上述整理；
  *    **不是**改回通配，故不依赖任何文件系统枚举顺序。就地改写 `parts`（保序去重由调用方紧随其后）。
+ *
+ * ⚠️ **本判据的前提 = "Forge/LiteLoader 与 OptiFine 共存"**（丢 `launchwrapper-of` 的理由正是
+ *    "Forge/LiteLoader supply their own"）**；独立 OptiFine（无 Forge、无 LiteLoader）不在支持范围**：
+ *    此时 OptiFine 的 `optifine:launchwrapper-of` 很可能是 classpath 上**唯一**的
+ *    `net.minecraft.launchwrapper.Launch` 提供者，把它丢掉反而会让主类无处可寻。此前提由用户裁决
+ *    （2026-10-01），**不改本逻辑**——真要为独立 OptiFine 兜底，须先有能力判定"谁是 Launch 的提供者"。
  */
 function launchWrapperOptifineOrder(parts: string[], gameRoot: string, json: VersionJson): void {
   const libRoot = `${gameRoot}/libraries/`;
@@ -1205,7 +1239,7 @@ function launchWrapperOptifineOrder(parts: string[], gameRoot: string, json: Ver
   }
   if (dropped > 0 || tail.length > 0) {
     hilog.info(LOG_DOMAIN, LOG_TAG,
-      'classpath ordered: optifine last (moved=%{public}d), dropped launchwrapper-of=%{public}d'
+      'classpath ' + CLASSPATH_MODE_ORDERED + ': optifine last (moved=%{public}d), dropped launchwrapper-of=%{public}d'
       + ' (HMCL getClasspath parity: keeps forge before optifine, Launch single-sourced)',
       tail.length, dropped);
   }
@@ -1461,7 +1495,7 @@ function assembleRealTreeClasspath(gameRoot: string, resolved: ResolvedVersion, 
     // 平铺目录 ⇒ 该件按**绝对路径**补不进来：LWJGL3 缺失 ⇒ 加载器/游戏 `NoClassDefFoundError`。
     // 导出 API 的防御性可观测化（纯日志，不改行为）。
     hilog.warn(LOG_DOMAIN, LOG_TAG,
-      'real-tree classpath: stagedDir empty -> bundled LWJGL3 jar will NOT be added'
+      CLASSPATH_MODE_REAL_TREE + ' classpath: stagedDir empty -> bundled LWJGL3 jar will NOT be added'
       + ' (expect NoClassDefFoundError)');
   }
   // launchwrapper 形态：按 HMCL `DefaultLauncher.getClasspath()` 重排 —— 把 OptiFine 排到最后、

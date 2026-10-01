@@ -16,13 +16,21 @@ const TMPDIR_FLAG = '-Djava.io.tmpdir=';
 /**
  * NeoForge 安装期执行 processor 的**无窗** Ability（B 路线，见 notes `安装期JVM载体-调研.md` §8.3）。
  *
+ * **命名正名（2026-10-01）**：本 ability 是**两条链共用**的安装期载体 —— Forge ≥1.13 与 NeoForge 都往
+ * `:neoinstall` 投**同一份 job 协议**、由同一个 `startJvm` 起 headless 工具 JVM（见 `VersionInstaller`
+ * 的「安装期工具 JVM 载体」）。名字里的 `Neo` 是历史（它先为 NeoForge 而建）。**平台标识一律不改**：
+ * `module.json5` 的 ability 名、`:neoinstall` 进程名、`LaunchContract.NEO_INSTALL_ABILITY` /
+ * `NEO_INSTALL_PROCESS_SUFFIX`、job 里的引用与 notes/夹具全靠它们对齐 ⇒ 改名是高风险 churn、零行为收益。
+ * 故按"注释层正名"办：读作**"安装期工具 JVM 载体 ability"**（对两条链等价）。
+ *
  * 要点：
  * - 声明静态 `process: ":neoinstall"`（module.json5）⇒ 与主进程隔离：JVM 结束时桥会 `_exit`，
  *   只结束本进程，启动器不受影响；
  * - **不 `loadContent`**（不建页面）；窗口显隐由父进程 `startAbility` 的 StartOptions 决定
  *   （`processMode: NEW_PROCESS_ATTACH_TO_PARENT` + `startupVisibility: STARTUP_HIDE`，二者必须成对，实测无感）；
- * - 作业经 **job 文件**传入（`want.parameters.job`）：内容为 `{argv: [...]}`，即完整 java 参数
- *   （`java -cp <tools> <MainClass> ...`，由父进程按 installer profile 原样展开）；
+ * - 作业经 **job 文件**传入（`want.parameters.job`）：内容为 `{argv: [...], rootUri, jreId}`，即完整 java
+ *   参数（`java -cp <tools> <MainClass> ...`）+ 目录授权 URI + 该用的 JRE id。**两条链**按同一协议投递
+ *   （Forge 侧是同形的 `ForgeProcessorJob`，字段同名同序 ⇒ 本文件按 `NeoForgeProcessorJob` 读即可）；
  * - `rendererLib` 传空 ⇒ 桥走 **headless**（跳过渲染器预 dlopen / GL env / glthread 失效安全），
  *   并把 `JLI_BEGIN` / `JLI_RETURNED code=N` 写入 `<filesDir>/meow-neo-jvm-result.txt` 供父进程判成败。
  */

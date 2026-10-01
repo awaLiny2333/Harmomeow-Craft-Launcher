@@ -48,7 +48,7 @@ export const REAL_CLASSPATH_MAIN_CLASSES: string[] = [
  *   user_type / clientid / version_name / version_type / game_directory / assets_root /
  *   assets_index_name / classpath / natives_directory / launcher_name / launcher_version
  * - Java 系统属性键（-D）：MEOWCRAFT_HOME / MEOWCRAFT_GAME_DIR / meowcraft.path.* / glfwstub.* /
- *   cacio.managed.screensize / Server_Ip / os.name / os.version / cpu.name / user.* /
+ *   Server_Ip / os.name / os.version / cpu.name / user.* /
  *   org.lwjgl.* / jna.* / oshi.* / log4j2.formatMsgNoLookups 等
  * - 随包 extras 成员名：lwjgl-<gen>.jar（平铺）/ asm9/*.jar（子目录）——见 LaunchDefaults
  */

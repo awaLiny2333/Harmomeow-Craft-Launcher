@@ -6,7 +6,10 @@ import { MC_CP_DIR, RAWFILE_MEOWCRAFT_EXTRAS, MEOWCRAFT_EXTRAS_DONE, RAWFILE_OSH
   RAWFILE_OSHI_MANIFEST } from '../constants/Paths';
 import { EXTRAS_VERSION, LWJGL_JAR_PREFIX,
   LWJGL_GEN_JARS, ASM_STAGE_SUBDIR, EXPECTED_ASM_JARS } from '../constants/LaunchDefaults';
-import { collectJarSources, lwjglGeneration, isLegacyLwjgl } from './MinecraftLauncher';
+// 真树 classpath 的**主类形态表**（与 `MinecraftLauncher.needsRealClasspath` 同一份常量 ⇒ 同一事实源）。
+import { REAL_CLASSPATH_MAIN_CLASSES } from '../constants/LaunchContract';
+import { collectJarSources, lwjglGeneration, isLegacyLwjgl, isLaunchWrapperMain } from './MinecraftLauncher';
+import { LOADER_NEO_FORGE, resolveVersion } from './VersionResolver';
 
 // native 导出（extractRawTar：解 meowcraft_extras.tar.gz）
 import native from 'libmeowassets.so';
@@ -14,10 +17,54 @@ import native from 'libmeowassets.so';
 const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'ClasspathStager';
 
+/** staging 物化意图（日志用）：`-cp` 是 `<dir>/*` 通配。 */
+const STAGE_FLAT: string = 'flat';
+/** staging 物化意图（日志用）：`-cp` 是显式绝对路径列表。 */
+const STAGE_SLIM: string = 'slim';
+
 /**
- * 把某版本的运行 jar 平铺到 `cacheDir/mc-cp/<id>/`，供 `-cp "<dir>/*"` 使用
- * （超长 -cp 在本 JLI 移植会失效）。含 meowcraft_extras 解压与残留 jar 清理。
- * 纯文件操作，不依赖 UI；失败时返回空串由调用方中止启动。
+ * 本实例的 `-cp` 会不会是**平铺通配** `<dir>/*`（= 必须把整份声明库物化到 staging 目录）。
+ *
+ * 必须与 `MinecraftLauncher.buildLaunchArgv` 的形态分流（`needsRealClasspath` / `isLaunchWrapperMain`）
+ * **同源**——staging 目录存在的意义就是被那条 `-cp` 消费。判据**全部复用启动侧的共享件**
+ * （`REAL_CLASSPATH_MAIN_CLASSES` 同一常量 + 导入的 `isLaunchWrapperMain`）⇒ 两处不可能分歧：
+ *  - 主类属真树族（`REAL_CLASSPATH_MAIN_CLASSES`）或 `loader === neoforge`
+ *    ⇒ `-cp` 是逐条绝对路径（`real-tree`）⇒ **slim**；
+ *  - 主类 = launchwrapper `Launch`（≤1.12.2 Forge / LiteLoader / 独立 OptiFine）⇒ `-cp` 是逐条绝对
+ *    路径的**有序**列表（`ordered`）⇒ **slim**；
+ *  - 其余（vanilla / Fabric）⇒ `<dir>/*` ⇒ **flat**。
+ *
+ * **方向性是故意的**：与启动侧判据同源 ⇒ 真正的"判不出"只剩"主类未被任何分支认出"这一种，
+ * 一律落回 **flat**（多铺整套声明库）。这一侧偏安全 —— flat 的 `-cp` **就是**平铺目录通配，
+ * 宁可多铺（只多花 I/O），不要少铺（会缺件）。
+ */
+function classpathUsesWildcard(gameRoot: string, jsonPath: string): boolean {
+  const resolved = resolveVersion(gameRoot, jsonPath);
+  if (resolved === null) {
+    return true;
+  }
+  const main = resolved.json.mainClass ?? '';
+  if (REAL_CLASSPATH_MAIN_CLASSES.includes(main)) {
+    return false;
+  }
+  if (resolved.loader === LOADER_NEO_FORGE) {
+    return false;
+  }
+  return !isLaunchWrapperMain(main);
+}
+
+/**
+ * 把某版本的运行 jar **按 classpath 形态**物化到 `cacheDir/mc-cp/<id>/`（超长 -cp 在本 JLI 移植会失效）。
+ *
+ * 形态分流（判据见 `classpathUsesWildcard`；**行为上唯一允许的差异 = 不再多铺无用的库**）：
+ *  - **flat**（vanilla / Fabric）：`-cp "<dir>/*"` ⇒ 把整份声明库**逐件**平铺（缺一件就起不来）；
+ *  - **slim**（launchwrapper 系的 `ordered` / Forge ≥1.13 与 NeoForge 的 `real-tree`）：`-cp` 是
+ *    **显式绝对路径列表** ⇒ 平铺目录只剩两处取件用途：
+ *      ① 随包件：`lwjgl-<gen>.jar`（`real-tree` 按绝对路径补进 `-cp`）与 `asm9/*`（ASM 覆盖）；
+ *      ② **oshi 补丁件**：`real-tree` / `ordered` 都按**绝对路径**前置这一件（见
+ *         `MinecraftLauncher.assembleRealTreeClasspath`），故它必须物化（且是覆盖后的补丁内容）。
+ *    整份声明库在这一形态里**不进任何 classpath** ⇒ 拷它纯属无用 I/O。
+ * 两种形态都含 meowcraft_extras 解压与残留 jar 清理。纯文件操作，不依赖 UI；失败时返回空串由调用方中止启动。
  */
 export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string,
   jsonPath: string, versionId: string): string {
@@ -34,6 +81,8 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
   // sealing violation）。此时 keepGenJar 置空 → 把随包的那一代 jar 从平铺目录移除，只留 MC 的 LWJGL2。
   const legacyLwjgl = isLegacyLwjgl(jsonPath);
   const keepGenJar = legacyLwjgl ? '' : genJar;
+  // ★形态（判据见 `classpathUsesWildcard`）：flat = 整份平铺；slim = 只物化"随包件 + oshi 补丁件"。
+  const flat = classpathUsesWildcard(gameRoot, jsonPath);
   for (const d of [base, dir]) {
     try {
       fileIo.mkdirSync(d);
@@ -76,10 +125,18 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
   } catch (e) {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'extract meowcraft_extras fail: %{public}s', JSON.stringify(e));
   }
-  const sources = collectJarSources(gameRoot, jsonPath, versionId);
+  // oshi 覆盖清单：**一次读**、两处用（slim 的物化选择 + 覆盖本身）。清单缺失/为空 ⇒ 空表（= 无覆盖，
+  // 优雅降级为上游行为）。与旧行为的唯一差别：这条 info 在 slim 下出现在拷贝循环**之前**。
+  const oshiEntries = oshiManifestEntries(ctx);
+  // 声明库只在"确实要物化它们"时才收集：slim 且清单为空（本版本没有可覆盖的 oshi 件）⇒ 连这一步都省
+  // （省掉对全库逐件的 stat）。slim 的物化选择本身 = "清单点名 ∩ 本版本声明"（见 slimDeclaredSources）。
+  const sources = (flat || oshiEntries.length > 0)
+    ? collectJarSources(gameRoot, jsonPath, versionId)
+    : [];
+  const stageSources = flat ? sources : slimDeclaredSources(sources, oshiEntries);
   let copied = 0;
   let checked = 0;
-  for (const src of sources) {
+  for (const src of stageSources) {
     const name = src.substring(src.lastIndexOf('/') + 1);
     const dest = `${dir}/${name}`;
     try {
@@ -102,18 +159,26 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
   }
   // 自编 patched oshi 覆盖 staged 的同名 jar（版本无关；不改用户 .minecraft）：鸿蒙沙箱禁
   // /proc/cpuinfo，上游 oshi 读不到 CPU 型号；覆盖件认 -Dmeow.cpu.chip（:game 进程 deviceInfo.chipType）。
-  // 只覆盖本版本实际 staged 的 oshi 件（清单里其余版本跳过）。
-  applyOshiOverrides(ctx, dir);
+  // 只覆盖本版本实际物化过的 oshi 件（清单里其余版本跳过）。flat 下"物化过"= 刚平铺进来的那一件；
+  // slim 下 = slimDeclaredSources 选中的那一件，故覆盖面两形态一致。
+  applyOshiOverrides(ctx, dir, oshiEntries);
   dropOtherLwjglJar(dir, keepGenJar);
-  pruneStaleJars(dir, sources, keepGenJar);
+  // 期望集合 = **本次物化过的那几件** + 保留的 LWJGL 世代 jar（flat 时前者 = 整份声明库，与旧行为一致；
+  // slim 时 = oshi 补丁件）。其余 .jar 一律删 —— 旧 cacheDir 里遗留的 `launcher.jar` /
+  // `gson-for-launcher.jar`、上一次 flat 铺下的整份库、退代的 `lwjgl-3.3.3.jar` 都由此清掉。
+  pruneStaleJars(dir, stageSources, keepGenJar);
   // 启动期形态断言：classpath 里 `org.lwjgl` 的提供者必须形态正确（不混代、不多不少）。
   // 异常直接中止启动（把类冲突挡在更前面），而非带着坏 classpath 硬跑。
-  if (!lwjglClasspathOk(dir, legacyLwjgl, keepGenJar)) {
+  if (!lwjglClasspathOk(dir, legacyLwjgl, keepGenJar, flat)) {
     hilog.error(LOG_DOMAIN, LOG_TAG,
       'LWJGL classpath shape invalid (legacy=%{public}s keep=%{public}s): abort launch',
       legacyLwjgl ? 'yes' : 'no', keepGenJar.length > 0 ? keepGenJar : '(none)');
     return '';
   }
+  // 形态自证（上机验证"这次到底铺了什么"先看这一行）：sources = 本次**有资格被物化**的件数
+  // （flat = 整份声明库；slim = 清单点名的 oshi 件）。
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'stage %{public}s: mode=%{public}s sources=%{public}d',
+    versionId, flat ? STAGE_FLAT : STAGE_SLIM, stageSources.length);
   hilog.info(LOG_DOMAIN, LOG_TAG,
     'stage %{public}s: gen=%{public}s keep=%{public}s(%{public}d) checked=%{public}d copied=%{public}d',
     versionId, gen, keepGenJar.length > 0 ? keepGenJar : '(none)',
@@ -122,12 +187,15 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
 }
 
 /**
- * 断言平铺 classpath 的 `org.lwjgl` 形态正确（启动期，一次）：
- * - legacy（LWJGL2，≤1.12.2）：**不得**出现我们的任一 LWJGL3 世代 jar；至少要有 MC 的 LWJGL2（`lwjgl-2.*`/`lwjgl_util-2.*`）。
+ * 断言平铺目录里 `org.lwjgl` 的提供者形态正确（启动期，一次）：
+ * - legacy（LWJGL2，≤1.12.2）：**不得**出现我们的任一 LWJGL3 世代 jar；`flat` 形态还要求 MC 的
+ *   LWJGL2（`lwjgl-2.*`/`lwjgl_util-2.*`）就在这个目录里 —— 因为 flat 的 `-cp "<dir>/*"` **就是**
+ *   classpath（MC 的 LWJGL2 必须靠它）；`slim`（ordered）的 `-cp` 是显式列表、MC 的 LWJGL2 从真库树取
+ *   ⇒ 该要求是空对空，只断言"不留我们的 LWJGL3"。
  * - 现代（LWJGL3）：**恰好**保留选中世代那一个 jar；不得出现 LWJGL2。
  * 违反 → 返回 false（调用方中止启动），避免"两份 org.lwjgl 类"的密封/重复类错误。
  */
-function lwjglClasspathOk(dir: string, legacy: boolean, keepGenJar: string): boolean {
+function lwjglClasspathOk(dir: string, legacy: boolean, keepGenJar: string, flat: boolean): boolean {
   let ours = 0;
   let oursKeep = 0;
   let mc2 = 0;
@@ -160,7 +228,9 @@ function lwjglClasspathOk(dir: string, legacy: boolean, keepGenJar: string): boo
     return false;
   }
   if (legacy) {
-    return ours === 0 && mc2 >= 1;
+    // flat：平铺目录就是 classpath ⇒ MC 的 LWJGL2 必须在里面（否则 legacy 实例根本没有 org.lwjgl）。
+    // slim（ordered）：平铺目录不进 classpath ⇒ 不再要求它在这里，只要求我们的 LWJGL3 一件不留。
+    return ours === 0 && (flat ? mc2 >= 1 : true);
   }
   return ours === 1 && oursKeep === 1 && mc2 === 0;
 }
@@ -186,7 +256,13 @@ function jarBytes(path: string): number {
   }
 }
 
-/** 抽取标记命中时确认"该有的件都在"（防 cacheDir 被系统部分清理：标记还在、文件没了）。 */
+/**
+ * 抽取标记命中时确认"该有的件都在"（防 cacheDir 被系统部分清理：标记还在、文件没了）。
+ *
+ * 断言对象 = **随包 extras 里的件**（tar 根下的 `keepGenJar` + `asm9/*`）——两形态同款：
+ * slim 也依赖这两处（`real-tree` 按绝对路径取 `lwjgl-<gen>.jar`；ASM 覆盖取 `asm9/`），
+ * 而"声明库件在不在"另有拷贝循环逐件兜底（每轮都跑，不看标记）⇒ 这里无需（也不该）断言它们。
+ */
 function stagedBundleComplete(dir: string, keepGenJar: string): boolean {
   if (keepGenJar.length > 0) {
     try {
@@ -233,27 +309,81 @@ function removeFile(path: string): void {
   }
 }
 
+/** 随包 oshi 覆盖清单的一条（`<目标 jar 名>=<随包 patched jar 的 rawfile 名>`）。 */
+interface OshiManifestEntry {
+  /** staging 目录里的**目标 jar 名**（= 本版本声明的同名件，覆盖后即"oshi 补丁件"）。 */
+  target: string;
+  /** 随包里那份**已打补丁**的同名 jar 的 rawfile 名。 */
+  raw: string;
+}
+
 /**
- * 按 rawfile/oshi-overrides/manifest.txt 覆盖 staged 的 oshi jar。
- * 清单缺失 / 为空 = 无覆盖（未适配的 MC 版本优雅降级为上游行为）；
- * 清单里但**本版本 classpath 未 staged** 的条目直接**跳过**（只覆盖实际存在的那一版）。
+ * 读 `rawfile/oshi-overrides/manifest.txt`。清单缺失/为空 ⇒ 空表（= 无覆盖，未适配的 MC 版本优雅
+ * 降级为上游行为），并记一条（与旧 `applyOshiOverrides` 同条件、同一句话）。
+ *
+ * 清单**列出所有支持的 oshi 版本** ⇒ 读取方必须自己按"本版本有没有这件"过滤（`applyOshiOverrides`
+ * 按目录存在性过滤；`slimDeclaredSources` 按本版本声明的库过滤）。
  */
-function applyOshiOverrides(ctx: common.UIAbilityContext, dir: string): void {
+function oshiManifestEntries(ctx: common.UIAbilityContext): OshiManifestEntry[] {
   let manifest = '';
   try {
     const raw = ctx.resourceManager.getRawFileContentSync(RAWFILE_OSHI_MANIFEST);
     manifest = util.TextDecoder.create('utf-8').decodeToString(raw);
   } catch (e) {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'no oshi override manifest');
-    return;
+    return [];
   }
+  const out: OshiManifestEntry[] = [];
   for (const line of manifest.split('\n')) {
     const entry = line.trim();
     const eq = entry.indexOf('=');
     if (eq <= 0) {
       continue;
     }
-    const target = entry.substring(0, eq);
+    const e: OshiManifestEntry = {
+      target: entry.substring(0, eq),
+      raw: entry.substring(eq + 1),
+    };
+    out.push(e);
+  }
+  return out;
+}
+
+/**
+ * **slim 形态**要物化的**声明库**件：清单点名（= 本工程有补丁件的那一版 oshi）∩ 本版本声明的库。
+ *
+ * 为什么用"清单点名"而不是"`oshi-core-*` 前缀"：清单就是"哪些件需要补丁"的既有事实源，用它可保证
+ * 物化集合与 `applyOshiOverrides` 的覆盖面**逐件一致**（不会出现"铺了一件却永不覆盖"）。
+ * 代价（与旧 flat 行为的唯一差异）：**清单里没有的** oshi 版本（将来更上游的新版）在 slim 形态不再被
+ * 平铺 —— 启动路径会因此打印 `oshi override missing … -> upstream oshi kept`，用的仍是真树里那份
+ * **同样未打补丁**的同名 jar（字节相同，只是路径从 staging 换成真树）；补丁件一就位即自动回到覆盖路径。
+ */
+function slimDeclaredSources(sources: string[], entries: OshiManifestEntry[]): string[] {
+  if (entries.length === 0) {
+    return [];
+  }
+  const want = new Set<string>();
+  for (const e of entries) {
+    want.add(e.target);
+  }
+  const out: string[] = [];
+  for (const src of sources) {
+    const name = src.substring(src.lastIndexOf('/') + 1);
+    if (want.has(name)) {
+      out.push(src);
+    }
+  }
+  return out;
+}
+
+/**
+ * 按清单覆盖 staged 的 oshi jar。
+ * 清单里但**本版本未物化过**的条目直接**跳过**（只覆盖实际存在的那一版）。
+ */
+function applyOshiOverrides(ctx: common.UIAbilityContext, dir: string,
+  entries: OshiManifestEntry[]): void {
+  for (const e of entries) {
+    const target = e.target;
     // Only override an oshi jar that THIS version's classpath actually staged.
     // The manifest lists every supported oshi version; overriding the others
     // would CREATE them (openSync CREATE) only to be pruned right after -> 8
@@ -268,8 +398,7 @@ function applyOshiOverrides(ctx: common.UIAbilityContext, dir: string): void {
     if (!present) {
       continue;
     }
-    const source = `${RAWFILE_OSHI_DIR}/${entry.substring(eq + 1)}`;
-    overrideStagedJar(ctx, dir, source, target);
+    overrideStagedJar(ctx, dir, `${RAWFILE_OSHI_DIR}/${e.raw}`, target);
   }
 }
 
@@ -305,9 +434,15 @@ function overrideStagedJar(ctx: common.UIAbilityContext, dir: string,
   }
 }
 
-/** 清理平铺目录中不属于当前期望集合的残留 jar（官方 LWJGL / 未选中世代 / 已退役的旧随包件等，
- *  防类冲突）。期望集合 = 本版本声明的库 jar + 保留的 LWJGL 世代 jar；其余 .jar 一律删除
- *  （旧 cacheDir 里遗留的 `launcher.jar` / `gson-for-launcher.jar` 由此被清掉）。 */
+/**
+ * 清理平铺目录中不属于当前期望集合的残留 jar（官方 LWJGL / 未选中世代 / 已退役的旧随包件等，防类冲突）。
+ *
+ * `sources` = **本次物化过**的那些件（调用方传 `stageSources`：flat = 整份声明库；slim = oshi 补丁件），
+ * 加上保留的 LWJGL 世代 jar（`keepJar`）；其余 `.jar` 一律删除。slim 下这条尤其重要：它负责把**上一次
+ * flat 铺下的整份库**、旧 cacheDir 里遗留的 `launcher.jar` / `gson-for-launcher.jar`、退代的
+ * `lwjgl-3.3.3.jar` / `lwjgl-2.9.x.jar` 一次清干净。`asm9/` 是**子目录**、且不匹配 `.jar`
+ * （只列平铺目录的条目）⇒ 绝不被碰。
+ */
 function pruneStaleJars(dir: string, sources: string[], keepJar: string): void {
   const keep = new Set<string>();
   for (const src of sources) {

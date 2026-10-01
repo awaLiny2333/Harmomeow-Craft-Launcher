@@ -88,7 +88,7 @@ export const PROCESSOR_TIMEOUT_MS: number = 300000;
  * 取值依据：本工程 processor 是本地 jar 变换（installertools / binarypatcher / SpecialSource 等），
  * 实测单个远小于 1s；120s 是对实测 100×+ 的余量，且 <硬上限（300s）。**误杀防护**：只要进程探针能
  * 观察到 `:neoinstall` 存活（探针可用的环境），软超时计时即被重置 ⇒ "合法慢"不会因软超时被杀，
- * 只受硬上限（300s）约束。本机探针恒不可用（见 `neoInstallProcessAlive`），故软超时在设备上生效。
+ * 只受硬上限（300s）约束。本机探针恒不可用（见 `installProcessAlive`），故软超时在设备上生效。
  */
 export const PROCESSOR_SOFT_TIMEOUT_MS: number = 120000;
 /** processor 之间：等上一次 `:neoinstall` 进程完全退出（JVM `_exit` 后仍有回收窗口，立刻再起会 16000068）。 */
@@ -1075,7 +1075,7 @@ interface NeoForgeArchive {
  * 下 NeoForge 两份库（install_profile.libraries + version.json.libraries，按 maven 树）→
  * 【processor 链】→ 写清单。
  *
- * ⚠️ processor 链（T3 待实现）会产出 patched client jar；**未完成前本函数会在写出清单之前抛错**，
+ * ⚠️ processor 链会产出 patched client jar；产物不齐（`PATCHED` 断言失败）时**在写出清单之前抛错**，
  * 以免留下"能列出但起不来"的残缺实例。
  *
  * **整条链按 `loaderSource`**（NeoForge 自己的下载源）——NeoForge 制品来自 NeoForged
@@ -1234,7 +1234,7 @@ export async function installNeoForgeVersion(ctx: common.UIAbilityContext, gameR
       files.push(newItem(e.fileName, [`${NEOFORGE_RELEASES}${e.relPath}`], dest, '', 0));
     }
   }
-await runDownloads(files, loaderSource, onCount, onCurrent, onFileProgress);
+  await runDownloads(files, loaderSource, onCount, onCurrent, onFileProgress);
 
   // 4) 资源对象（依赖已下好的索引；NeoForge 源）
   const assetId = (vanilla.assetIndex?.id ?? '').length > 0
@@ -1283,119 +1283,131 @@ await runDownloads(files, loaderSource, onCount, onCurrent, onFileProgress);
   writeText(versionJsonPath(gameRoot, instanceName), JSON.stringify(composed));
 }
 
+// ============================================================================
+// 安装期 **工具 JVM 载体**（loader 无关；`:neoinstall` 无窗进程 + headless JLI）
+// ----------------------------------------------------------------------------
+// Forge ≥1.13 与 NeoForge 两条 processor 链**共用**这一段。载体只负责"把一次工具 JVM 跑完、拿到退出码"：
+//   · 起**无窗** ability 进程：`processMode: NEW_PROCESS_ATTACH_TO_PARENT` +
+//     `startupVisibility: STARTUP_HIDE`（二者必须成对，实测无感）；ability 名 / `:neoinstall` 进程名 /
+//     job 协议都是**平台标识**（`module.json5` + 桥 + `NeoInstallAbility` 三处对齐）⇒ 本次**不改**；
+//   · 写 job 文件（`{argv, rootUri, jreId}`）：**内容**由各 loader 自己的数据层填（argv 由本层按
+//     loader 数据层给的 classpath/主类/参数组装）；
+//   · 等 `JLI_BEGIN` → `JLI_RETURNED code=N` 握手（**退出码权威**）：字节偏移式**新鲜度基线**、
+//     **软超时**（自 `JLI_BEGIN` 起算）/硬超时、判死前**重读**、进程探针、启动退避重试、等进程消失。
+//
+// **刻意不共用**（用户裁决：Forge 与 NeoForge 的安装办法/数据层分开，见 `NeoForgeInstaller.ets` /
+// `ForgeNewInstaller.ets`）：profile 解析、processor 计划构造（classpath / args / 占位符展开）、
+// `outputs` 幂等与产物校验（含 Forge 侧 `.jar` 结构降级）、内嵌 `maven/**` 解包、清单组装、ASM 替换的
+// 排除逻辑，以及各链自己的**文案装饰**（Forge 侧附 job 路径 + 工具 stdio 归档/摘录）。本段是
+// **纯搬移 + 零行为变更**：两侧日志文案（含 `forge ` 前缀与"看 .hmmcraft/logs"提示）、超时数值、
+// 退避次数、判定顺序**逐字保留**（方言见 `ToolJvmDialect`）。
+// ============================================================================
+
 /**
- * 执行 NeoForge 的 processor 链：**每个 processor 起一次无窗 UIAbility（独立进程 + headless JVM）**。
- *
- * 为什么逐次起进程：JLI_Launch 一进程只能起一次；`System.exit` 只杀该进程；工具间静态状态互不污染。
- * 退出码来自桥在 headless 模式写的 `<filesDir>/meow-neo-jvm-result.txt`（native 只有 hilog，拿不到返回值）；
- * ⚠️ 工具**多数 fail-open（参数错也退 0）** ⇒ 成败另有产物断言（调用方负责）。
- *
- * `jreId` = 工具 JVM 该用哪套 JRE（由 `confirmInstall` 经 `JavaPolicy` 解析、与启动路径同源）；
- * 写进 job 文件交给 `:neoinstall`，让该进程用**同一套**起 `startJvm`（不在本层解析）。
+ * 结果文件的**新鲜度基线**：发起本次 processor 时结果文件已有的字节数与发起时刻。
+ * 见 `waitToolJvmExit` 文档——用于在 **unlink 可能失败** 的前提下排除陈旧退出码。
  */
-async function runNeoForgeProcessors(ctx: common.UIAbilityContext, set: NeoForgeProcessorSet,
-  workDir: string, gameRootUri: string, jreId: string, onCount: (done: number, total: number) => void,
-  onCurrent: (label: string) => void): Promise<void> {
-  const resultPath = `${ctx.filesDir}/${NEO_JVM_RESULT}`;
-  const total = set.plans.length;
-  if (total === 0) {
-    throw new Error('neoforge profile has no client-side processors');
+interface ToolJvmResultBaseline {
+  /** 结果文件已有的字节数（unlink 成功/文件不存在 ⇒ 0）。 */
+  offset: number;
+  /** 发起本次 processor 的时刻（ms；仅用于日志）。 */
+  startMs: number;
+}
+
+/**
+ * 两条链的**日志/错误方言**：抽载体时逐字保留，**不统一**（设备排障时一眼可辨是哪条链在跑）。
+ */
+interface ToolJvmDialect {
+  /** 日志行前缀（`''` = NeoForge 链；`'forge '` = Forge 链）。 */
+  logPrefix: string;
+  /** 软超时**日志行**尾注（NeoForge 指向 .hmmcraft/logs；Forge 无）。 */
+  softTimeoutLogTail: string;
+  /** 软超时**异常消息**尾注（同上）。 */
+  softTimeoutErrTail: string;
+}
+
+/** NeoForge 链方言（`runNeoForgeProcessors`）。 */
+const DIALECT_NEOFORGE: ToolJvmDialect = {
+  logPrefix: '',
+  softTimeoutLogTail: ' (see hilog and the instance .hmmcraft/logs)',
+  softTimeoutErrTail: '; see .hmmcraft/logs',
+};
+
+/** Forge 链方言（`runForgeProcessors`）。 */
+const DIALECT_FORGE: ToolJvmDialect = {
+  logPrefix: 'forge ',
+  softTimeoutLogTail: '',
+  softTimeoutErrTail: '',
+};
+
+/**
+ * 一次工具 JVM 运行所需的**全部**输入（loader 无关：loader 相关的内容由调用方按自己的数据层装好）。
+ */
+interface ToolJvmRunRequest {
+  /** processor 展示标签（日志 + 错误文案）。 */
+  label: string;
+  /** job 文件绝对路径（`:neoinstall` 由 `want.parameters.job` 读它）。 */
+  jobPath: string;
+  /**
+   * job 对象（调用方**已填** `rootUri` / `jreId`；本层补 `argv` 并落盘）。
+   * 两种 job 类（`NeoForgeProcessorJob` / `ForgeProcessorJob`）字段**同名同序** ⇒ `JSON.stringify`
+   * 结果逐字一致（桥 / ability 读的是同一份 job 协议）；**字段语义**属各 loader 的数据层，本层不解释。
+   */
+  job: NeoForgeProcessorJob | ForgeProcessorJob;
+  /** 工具工作目录（= `-Djava.io.tmpdir`；job 文件与产物也落这里）。 */
+  workDir: string;
+  /** 工具 classpath（绝对路径；`:` 连接进 `-cp`）。 */
+  classpath: string[];
+  /** 工具主类（读自工具 jar 的 MANIFEST）。 */
+  mainClass: string;
+  /** 展开后的工具参数（不含 java 与主类）。 */
+  args: string[];
+  /** 日志方言（见 `ToolJvmDialect`）。 */
+  dialect: ToolJvmDialect;
+  /** 起进程失败文案的**尾注**（NeoForge 链空；Forge 链 ` job=<path>`）。 */
+  startErrorTail: string;
+}
+
+/**
+ * 工具 JVM 的完整 argv（`[java, -Dos.*, -Djava.io.tmpdir, -cp, <cp>, <mainClass>, ...args]`）。
+ *
+ * **平台伪装：工具 JVM 与游戏 JVM 必须伪装成同一个平台**。前缀 = 同源常量
+ * `TOOL_JVM_PLATFORM_SPOOF_ARGS`（定义处 `constants/LaunchDefaults.ets`，内含 `SPOOF_OS_NAME` /
+ * `SPOOF_OS_VERSION`；游戏路径的用法见 `MinecraftLauncher.buildLaunchArgv` 的「固定 JVM 参数」段；
+ * 本机真 `os.name` = HarmonyOS）。
+ *
+ * 为什么**必需**（真机 stderr 定案：2026-09-30 与 2026-10-01 两次，Forge 1.16.5 夹具）：JDK 8（legacy 套）的
+ * `sun.nio.fs.DefaultFileSystemProvider.create()` 按 `os.name` **精确匹配**（`Linux` / `SunOS` /
+ * `Darwin` / …），匹配不上**直接 `throw new AssertionError("Platform not recognized")`**。该异常发生在
+ * **类初始化期**——`java.io.FilePermission.<clinit>` → `sun.net.www.protocol.file.FileURLConnection.getPermission`
+ * → `java.net.URLClassLoader.getPermissions` → `sun.misc.Launcher$AppClassLoader.getPermissions` —— 于是
+ * `sun.launcher.LauncherHelper.checkAndLoadMain` 连**主类都加载不到**，JLI 只能退 1（stderr:
+ * `A JNI error has occurred` + `java.lang.AssertionError: Platform not recognized`）。
+ * **在 legacy（Java 8）套上这就是必炸**：现代套（26）对未知 `os.name` 宽容回退到 `UnixFileSystemProvider`，
+ * 所以此前在 26 上没暴露——**不要依赖**这一点：工具链将来落 Java 8 会同样中招。
+ *
+ * 渲染 / LWJGL / natives 参数**一律不放**：工具是 headless（桥由 `NeoInstallAbility` 传
+ * `rendererLib=''` 触发，不加载 GL、不做 glthread 失效安全），不需要这些。`cpu.name` / `meow.cpu.chip`
+ * 也不在此列：它们只服务游戏侧 oshi 的 CPU 型号显示，工具从不查询。
+ *
+ * `-Dos.*` 排在其余 `-D` 之前：平台属性须在任何类初始化用到文件系统之前生效。
+ * `-Djava.io.tmpdir` 必须指可写沙箱目录（鸿蒙无 /tmp，与游戏路径的注入保持一致）：部分工具
+ * （解压 / 落盘中间产物）会用它，默认值在设备上不可写。
+ */
+function toolJvmArgv(workDir: string, classpath: string[], mainClass: string, args: string[]): string[] {
+  const argv: string[] = ['java', ...TOOL_JVM_PLATFORM_SPOOF_ARGS,
+    `-Djava.io.tmpdir=${workDir}`, '-cp', classpath.join(':'), mainClass];
+  for (const a of args) {
+    argv.push(a);
   }
-  onCount(0, total);
-  for (let i = 0; i < total; i++) {
-    const plan: NeoForgeProcessorPlan = set.plans[i];
-    onCurrent(plan.label);
-    // job：完整 java 参数（启动器直并 JVM，无中间 Java 入口；headless 由 rendererLib='' 触发）
-    const job = new NeoForgeProcessorJob();
-    job.rootUri = gameRootUri;
-    // 工具 JVM 用哪套 JRE：与启动路径同源解析出的 id（`:neoinstall` 据此取 runtime）。
-    job.jreId = jreId;
-    // **平台伪装：工具 JVM 与游戏 JVM 必须伪装成同一个平台**。前缀 = 同源常量
-    // `TOOL_JVM_PLATFORM_SPOOF_ARGS`（定义处 `constants/LaunchDefaults.ets`，内含 `SPOOF_OS_NAME` /
-    // `SPOOF_OS_VERSION`；游戏路径的用法见 `MinecraftLauncher.buildLaunchArgv` 的「固定 JVM 参数」段；
-    // 本机真 `os.name` = HarmonyOS）。完整机理与排查要点见 `runForgeProcessors` 的同名注释。
-    //
-    // 为什么**必需**（2026-09-30 真机 stderr 定案，Forge 1.16.5 夹具）：JDK 8（legacy 套）的
-    // `sun.nio.fs.DefaultFileSystemProvider.create()` 按 `os.name` **精确匹配**（`Linux` / `SunOS` /
-    // `Darwin` / …），匹配不上直接 `AssertionError: Platform not recognized`，且发生在**类初始化期**、
-    // 连主类都加载不到 ⇒ JLI 退 1（stderr `A JNI error has occurred`）。
-    // 现代套（26）对未知 `os.name` 宽容回退 ⇒ **不要依赖**这一点。渲染 / LWJGL / natives 参数一律不放
-    // （工具 headless）。`-Dos.*` 排在其余 `-D` 之前：平台属性须在任何类初始化用到文件系统之前生效。
-    //
-    // `-Djava.io.tmpdir` 必须指可写沙箱目录（鸿蒙无 /tmp，与游戏路径的注入保持一致）：
-    // 部分工具（解压/落盘中间产物）会用它，默认值在设备上不可写。
-    job.argv = ['java', ...TOOL_JVM_PLATFORM_SPOOF_ARGS,
-      `-Djava.io.tmpdir=${workDir}`, '-cp', plan.classpath.join(':'), plan.mainClass];
-    for (const a of plan.argv) {
-      job.argv.push(a);
-    }
-    const jobPath = `${workDir}/job-${i}.json`;
-    writeText(jobPath, JSON.stringify(job));
-    // 清上一次的结果文件，避免读到陈旧退出码
-    const jobStartMs = Date.now();
-    try {
-      fileIo.unlinkSync(resultPath);
-    } catch (e) {
-      // 首次运行不存在属正常；但若因权限/IO 失败而残留，下一轮可能读到**陈旧退出码** ⇒ 记一条。
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'clear prev result file failed (ignored): %{public}s',
-        JSON.stringify(e));
-    }
-    // **新鲜度基线**：即便上面的 unlink 失败，也据「发起本 processor 时文件已有的字节数」把陈旧内容
-    // 排除在裁决之外（桥以**追加**模式写结果文件，见 meowjrebridge.cpp:WriteHeadlessResult）。
-    const baseline: ProcessorResultBaseline = {
-      offset: resultFileSize(resultPath),
-      startMs: jobStartMs,
-    };
-    const want: Want = {
-      bundleName: ctx.abilityInfo.bundleName,
-      moduleName: 'entry',
-      abilityName: NEO_INSTALL_ABILITY,
-      parameters: {
-        'job': jobPath,
-      },
-    };
-    const options: StartOptions = {
-      processMode: contextConstant.ProcessMode.NEW_PROCESS_ATTACH_TO_PARENT,
-      startupVisibility: contextConstant.StartupVisibility.STARTUP_HIDE,
-    };
-    // 上一次 processor 的进程要完全退出后才能再起（否则 16000068）；并对该码做退避重试。
-    await waitNeoInstallGone();
-    let started = false;
-    let lastStartError = '';
-    for (let attempt = 0; attempt < PROCESSOR_START_RETRY_MAX && !started; attempt++) {
-      try {
-        await ctx.startAbility(want, options);
-        started = true;
-      } catch (error) {
-        const err = error as BusinessError;
-        lastStartError = `${err.code} ${err.message ?? ''}`;
-        const retryable = (err.code === 16000068 || err.code === 16000050);
-        hilog.warn(LOG_DOMAIN, LOG_TAG, 'startAbility attempt %{public}d failed: %{public}s',
-          attempt + 1, lastStartError);
-        if (!retryable) {
-          break;
-        }
-        await new Promise<void>((resolve: () => void) => {
-          setTimeout(resolve, PROCESSOR_START_BACKOFF_MS * (attempt + 1));
-        });
-      }
-    }
-    if (!started) {
-      throw new Error(`start install ability failed (${plan.label}): ${lastStartError}`);
-    }
-    const code = await waitProcessorExit(resultPath, PROCESSOR_TIMEOUT_MS, plan.label, baseline);
-    if (code !== 0) {
-      throw new Error(`processor failed (${plan.label}) exit=${code}`);
-    }
-    onCount(i + 1, total);
-  }
+  return argv;
 }
 
 /**
  * `:neoinstall` 进程是否存活（`appManager` 只看本应用进程，无需权限）。
  * 探测失败按「存活」处理——宁可慢，也不要因为探测不到就误判失败。
  */
-async function neoInstallProcessAlive(): Promise<boolean> {
+async function installProcessAlive(): Promise<boolean> {
   try {
     const list = await appManager.getRunningProcessInformation();
     for (const info of list) {
@@ -1414,11 +1426,11 @@ async function neoInstallProcessAlive(): Promise<boolean> {
  * 立刻再 `startAbility` 会得到 16000068 "The ability is already running"）。
  * 只在**已看到过该进程**时才等待；探测失败按"已退出"处理（重试逻辑兜底）。
  */
-async function waitNeoInstallGone(): Promise<void> {
+async function waitInstallProcessGone(): Promise<void> {
   const deadline = Date.now() + PROCESSOR_GONE_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    // `neoInstallProcessAlive()` 内部已吞异常并**按存活**返回（宁可慢也不误判退出）⇒ 无 catch 分支。
-    if (!(await neoInstallProcessAlive())) {
+    // `installProcessAlive()` 内部已吞异常并**按存活**返回（宁可慢也不误判退出）⇒ 无 catch 分支。
+    if (!(await installProcessAlive())) {
       return;
     }
     await new Promise<void>((resolve: () => void) => {
@@ -1428,24 +1440,13 @@ async function waitNeoInstallGone(): Promise<void> {
 }
 
 /**
- * `waitProcessorExit` 的**新鲜度基线**：发起本次 processor 时结果文件已有的字节数与发起时刻。
- * 见 `waitProcessorExit` 文档——用于在 **unlink 可能失败** 的前提下排除陈旧退出码。
- */
-interface ProcessorResultBaseline {
-  /** 结果文件已有的字节数（unlink 成功/文件不存在 ⇒ 0）。 */
-  offset: number;
-  /** 发起本次 processor 的时刻（ms；仅用于日志）。 */
-  startMs: number;
-}
-
-/**
  * 结果文件当前字节数（缺失/读取失败 ⇒ 0）。
  *
  * 用**字节数**（而非 mtime）作新鲜度门限：`fileIo.statSync().mtime` 是**秒级**整数，同一秒内先后
  * 两次 processor 的写入无法区分；而桥对结果文件是**追加**写（`fopen(..., "a")`，见 meowjrebridge.cpp），
  * 每次运行新增的内容必然落在既有字节之后 ⇒ "本次是否新增了 `JLI_RETURNED`" 可用精确、单调的偏移判定。
  */
-function resultFileSize(path: string): number {
+function toolJvmResultFileSize(path: string): number {
   try {
     if (!fileIo.accessSync(path)) {
       return 0;
@@ -1457,7 +1458,7 @@ function resultFileSize(path: string): number {
 }
 
 /**
- * 轮询结果文件，等出 `JLI_RETURNED code=N`；超时抛错。
+ * 轮询结果文件，等出 `JLI_RETURNED code=N`；超时抛错。（Forge 与 NeoForge 两条链的**唯一**实现。）
  *
  * 裁决顺序（**返回码权威**）：文件里一旦出现 `JLI_RETURNED code=N` 就按 N 返回（0 成功；非 0
  * 交调用方判失败，**绝不吞**）；只有 `JLI_BEGIN` 而无返回码时，才允许用「进程探测」兜底判异常终结；
@@ -1468,8 +1469,12 @@ function resultFileSize(path: string): number {
  * 结果当本轮**。这里只认**基线偏移之后**出现的返回码（`baseline.offset` = 发起本轮时文件已有字节数）：
  * unlink 成功 ⇒ 基线 0（整份都是新的）；unlink 失败 ⇒ 基线 = 残留长度，头部旧内容一律不看。文件长度
  * 若小于基线（被截断/重写，正常不该发生）则视为整份新鲜，避免误挂到硬超时。选偏移而非 mtime 的理由
- * 见 `resultFileSize`（mtime 秒级精度不够）。握手文本固定为全 ASCII（`JLI_BEGIN args=N` /
+ * 见 `toolJvmResultFileSize`（mtime 秒级精度不够）。握手文本固定为全 ASCII（`JLI_BEGIN args=N` /
  * `JLI_RETURNED code=N`）⇒ 字节偏移与字符下标一致。
+ *
+ * **软超时**（`PROCESSOR_SOFT_TIMEOUT_MS`，见该常量文档）：自**首次** `JLI_BEGIN` 起算；其间只要探针
+ * 观察到存活即重置起点（探针可用的环境里"合法慢"不会被误杀）。到点仍无返回码 ⇒ 判工具崩溃/被杀，
+ * 提前抛**可诊断**错误，别让界面挂满硬上限。
  *
  * 【2026-09-30 设备取证 → 为什么这样改】NeoForge 安装报 `processor terminated without exit code
  * (installertools)`，但握手文件
@@ -1483,9 +1488,11 @@ function resultFileSize(path: string): number {
  * 「code=0 其实已写出」时误判「无退出码」。
  * 现改为：返回码权威、**抛错前重读一次**、进程探测只在**确实见过该进程存活**时才可信
  * （否则一律继续轮询到 deadline —— 2026-09-30 的事故正说明「没列出来」≠「没在跑」）。
+ *
+ * `dialect` 只影响**文案**（前缀 + 两处崩溃提示尾注），判定与数值两条链完全一致。
  */
-async function waitProcessorExit(resultPath: string, timeoutMs: number, label: string,
-  baseline: ProcessorResultBaseline): Promise<number> {
+async function waitToolJvmExit(resultPath: string, timeoutMs: number, label: string,
+  baseline: ToolJvmResultBaseline, dialect: ToolJvmDialect): Promise<number> {
   const startMs = Date.now();
   const deadline = startMs + timeoutMs;
   const marker = 'JLI_RETURNED code=';
@@ -1537,8 +1544,8 @@ async function waitProcessorExit(resultPath: string, timeoutMs: number, label: s
     const code = freshReturnedCode(text);
     if (code !== undefined) {
       hilog.info(LOG_DOMAIN, LOG_TAG,
-        'processor %{public}s handshake returned code=%{public}d elapsedMs=%{public}d',
-        label, code, Date.now() - startMs);
+        '%{public}sprocessor %{public}s handshake returned code=%{public}d elapsedMs=%{public}d',
+        dialect.logPrefix, label, code, Date.now() - startMs);
       return code;
     }
     // 2) 无返回码：只有看到 `JLI_BEGIN`（JVM 确已起）才允许进程探测兜底；否则继续轮询。
@@ -1556,13 +1563,13 @@ async function waitProcessorExit(resultPath: string, timeoutMs: number, label: s
       const sinceBegin = Date.now() - beginMs;
       const sinceJob = Date.now() - baseline.startMs;
       hilog.error(LOG_DOMAIN, LOG_TAG,
-        'processor %{public}s soft timeout: no exit code %{public}d ms after JLI_BEGIN and never'
-        + ' observed alive (sinceJobStart=%{public}d ms) -> treating as crashed'
-        + ' (see hilog and the instance .hmmcraft/logs)', label, sinceBegin, sinceJob);
+        '%{public}sprocessor %{public}s soft timeout: no exit code %{public}d ms after JLI_BEGIN and never'
+        + ' observed alive (sinceJobStart=%{public}d ms) -> treating as crashed%{public}s',
+        dialect.logPrefix, label, sinceBegin, sinceJob, dialect.softTimeoutLogTail);
       throw new Error(`processor appears crashed (${label}): no exit code ${sinceBegin} ms after tool`
-        + ` JVM start (${sinceJob} ms since job start) and no liveness signal; see .hmmcraft/logs`);
+        + ` JVM start (${sinceJob} ms since job start) and no liveness signal${dialect.softTimeoutErrTail}`);
     }
-    if (await neoInstallProcessAlive()) {
+    if (await installProcessAlive()) {
       processEverAlive = true;
       missedPolls = 0;
       beginMs = Date.now();   // 探针看到存活 ⇒ 重置软超时起点（合法慢不误杀）
@@ -1572,8 +1579,8 @@ async function waitProcessorExit(resultPath: string, timeoutMs: number, label: s
     if (!processEverAlive) {
       if (missedPolls === 0) {
         hilog.warn(LOG_DOMAIN, LOG_TAG,
-          'processor %{public}s never observed alive; ignoring probe-gone and waiting for handshake (elapsedMs=%{public}d)',
-          label, Date.now() - startMs);
+          '%{public}sprocessor %{public}s never observed alive; ignoring probe-gone and waiting for handshake (elapsedMs=%{public}d)',
+          dialect.logPrefix, label, Date.now() - startMs);
       }
       missedPolls++;
       continue;
@@ -1588,13 +1595,13 @@ async function waitProcessorExit(resultPath: string, timeoutMs: number, label: s
     const recheckCode = freshReturnedCode(recheck);
     if (recheckCode !== undefined) {
       hilog.info(LOG_DOMAIN, LOG_TAG,
-        'processor %{public}s handshake returned code=%{public}d (on re-read) elapsedMs=%{public}d',
-        label, recheckCode, Date.now() - startMs);
+        '%{public}sprocessor %{public}s handshake returned code=%{public}d (on re-read) elapsedMs=%{public}d',
+        dialect.logPrefix, label, recheckCode, Date.now() - startMs);
       return recheckCode;
     }
     hilog.error(LOG_DOMAIN, LOG_TAG,
-      'processor %{public}s ended without exit code: handshake=%{public}s probeAlive=false elapsedMs=%{public}d',
-      label, handshakeDigest(recheck), Date.now() - startMs);
+      '%{public}sprocessor %{public}s ended without exit code: handshake=%{public}s probeAlive=false elapsedMs=%{public}d',
+      dialect.logPrefix, label, handshakeDigest(recheck), Date.now() - startMs);
     throw new Error(`processor terminated without exit code (${label})`);
   }
   // 到 deadline：再重读一次（返回码可能刚好落盘），拿到就用。
@@ -1602,15 +1609,145 @@ async function waitProcessorExit(resultPath: string, timeoutMs: number, label: s
   const finalCode = freshReturnedCode(finalText);
   if (finalCode !== undefined) {
     hilog.info(LOG_DOMAIN, LOG_TAG,
-      'processor %{public}s handshake returned code=%{public}d (at timeout) elapsedMs=%{public}d',
-      label, finalCode, Date.now() - startMs);
+      '%{public}sprocessor %{public}s handshake returned code=%{public}d (at timeout) elapsedMs=%{public}d',
+      dialect.logPrefix, label, finalCode, Date.now() - startMs);
     return finalCode;
   }
   hilog.error(LOG_DOMAIN, LOG_TAG,
-    'processor %{public}s timeout after %{public}d ms: handshake=%{public}s probeAlive=%{public}s elapsedMs=%{public}d',
-    label, timeoutMs, handshakeDigest(finalText),
-    (await neoInstallProcessAlive()) ? 'true' : 'false', Date.now() - startMs);
+    '%{public}sprocessor %{public}s timeout after %{public}d ms: handshake=%{public}s probeAlive=%{public}s elapsedMs=%{public}d',
+    dialect.logPrefix, label, timeoutMs, handshakeDigest(finalText),
+    (await installProcessAlive()) ? 'true' : 'false', Date.now() - startMs);
   throw new Error(`processor timeout (${label}) after ${timeoutMs} ms`);
+}
+
+/**
+ * 起一次无窗 `:neoinstall`（等上一次进程消失 → 退避重试 `startAbility`）；起不来就抛（带 job 路径）。
+ *
+ * `16000068`（"The ability is already running"）与 `16000050` 属**可重试**：上一次 processor 的能力实例
+ * 还在回收窗口里。退避 `PROCESSOR_START_BACKOFF_MS × (attempt+1)`，上限 `PROCESSOR_START_RETRY_MAX`。
+ */
+async function startToolJvmAbility(ctx: common.UIAbilityContext, jobPath: string, label: string,
+  dialect: ToolJvmDialect, startErrorTail: string): Promise<void> {
+  const want: Want = {
+    bundleName: ctx.abilityInfo.bundleName,
+    moduleName: 'entry',
+    abilityName: NEO_INSTALL_ABILITY,
+    parameters: {
+      'job': jobPath,
+    },
+  };
+  const options: StartOptions = {
+    processMode: contextConstant.ProcessMode.NEW_PROCESS_ATTACH_TO_PARENT,
+    startupVisibility: contextConstant.StartupVisibility.STARTUP_HIDE,
+  };
+  // 上一次 processor 的进程要完全退出后才能再起（否则 16000068）；并对该码做退避重试。
+  await waitInstallProcessGone();
+  let started = false;
+  let lastStartError = '';
+  for (let attempt = 0; attempt < PROCESSOR_START_RETRY_MAX && !started; attempt++) {
+    try {
+      await ctx.startAbility(want, options);
+      started = true;
+    } catch (error) {
+      const err = error as BusinessError;
+      lastStartError = `${err.code} ${err.message ?? ''}`;
+      const retryable = (err.code === 16000068 || err.code === 16000050);
+      hilog.warn(LOG_DOMAIN, LOG_TAG, '%{public}sstartAbility attempt %{public}d failed: %{public}s',
+        dialect.logPrefix, attempt + 1, lastStartError);
+      if (!retryable) {
+        break;
+      }
+      await new Promise<void>((resolve: () => void) => {
+        setTimeout(resolve, PROCESSOR_START_BACKOFF_MS * (attempt + 1));
+      });
+    }
+  }
+  if (!started) {
+    throw new Error(`start install ability failed (${label}): ${lastStartError}${startErrorTail}`);
+  }
+}
+
+/**
+ * 跑**一次**工具 JVM 并等它的退出码（0 = 成功；非 0 交调用方判失败）。
+ *
+ * 顺序（与重构前逐条一致）：组装 argv → 写 job → **清上一次的结果文件**（清不掉也不当失败，靠基线兜底）
+ * → 记新鲜度基线 → 起无窗进程（等旧进程消失 + 退避重试）→ 轮询握手到退出码。
+ * 产物断言与失败文案装饰**不在这里**（属各 loader 的数据层/文案面，见 `runNeoForgeProcessors` /
+ * `runForgeProcessors`）。
+ */
+async function runToolJvmOnce(ctx: common.UIAbilityContext, req: ToolJvmRunRequest): Promise<number> {
+  const resultPath = `${ctx.filesDir}/${NEO_JVM_RESULT}`;
+  // job：完整 java 参数（启动器直并 JVM，无中间 Java 入口；headless 由 rendererLib='' 触发）
+  req.job.argv = toolJvmArgv(req.workDir, req.classpath, req.mainClass, req.args);
+  writeText(req.jobPath, JSON.stringify(req.job));
+  // 清上一次的结果文件，避免读到陈旧退出码
+  const jobStartMs = Date.now();
+  try {
+    fileIo.unlinkSync(resultPath);
+  } catch (e) {
+    // 首次运行不存在属正常；但若因权限/IO 失败而残留，下一轮可能读到**陈旧退出码** ⇒ 记一条。
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'clear prev result file failed (ignored): %{public}s',
+      JSON.stringify(e));
+  }
+  // **新鲜度基线**：即便上面的 unlink 失败，也据「发起本 processor 时文件已有的字节数」把陈旧内容
+  // 排除在裁决之外（桥以**追加**模式写结果文件，见 meowjrebridge.cpp:WriteHeadlessResult）。
+  const baseline: ToolJvmResultBaseline = {
+    offset: toolJvmResultFileSize(resultPath),
+    startMs: jobStartMs,
+  };
+  await startToolJvmAbility(ctx, req.jobPath, req.label, req.dialect, req.startErrorTail);
+  return waitToolJvmExit(resultPath, PROCESSOR_TIMEOUT_MS, req.label, baseline, req.dialect);
+}
+
+/**
+ * 执行 NeoForge 的 processor 链：**每个 processor 起一次无窗 UIAbility（独立进程 + headless JVM）**。
+ *
+ * 为什么逐次起进程：JLI_Launch 一进程只能起一次；`System.exit` 只杀该进程；工具间静态状态互不污染。
+ * 退出码来自桥在 headless 模式写的 `<filesDir>/meow-neo-jvm-result.txt`（native 只有 hilog，拿不到返回值）；
+ * ⚠️ 工具**多数 fail-open（参数错也退 0）** ⇒ 成败另有产物断言（调用方负责）。
+ *
+ * `jreId` = 工具 JVM 该用哪套 JRE（由 `confirmInstall` 经 `JavaPolicy` 解析、与启动路径同源）；
+ * 写进 job 文件交给 `:neoinstall`，让该进程用**同一套**起 `startJvm`（不在本层解析）。
+ *
+ * 本函数只保留**本条链**的东西：进度回调、明文文案、`outputs`/产物断言（NeoForge 侧无 outputs）。
+ * 起无窗进程 / job 落盘 / 握手裁决 / 超时与退避全在共用载体（见本文件「安装期工具 JVM 载体」
+ * 的 `runToolJvmOnce`）。
+ */
+async function runNeoForgeProcessors(ctx: common.UIAbilityContext, set: NeoForgeProcessorSet,
+  workDir: string, gameRootUri: string, jreId: string, onCount: (done: number, total: number) => void,
+  onCurrent: (label: string) => void): Promise<void> {
+  const total = set.plans.length;
+  if (total === 0) {
+    throw new Error('neoforge profile has no client-side processors');
+  }
+  onCount(0, total);
+  for (let i = 0; i < total; i++) {
+    const plan: NeoForgeProcessorPlan = set.plans[i];
+    onCurrent(plan.label);
+    // job：完整 java 参数（启动器直并 JVM，无中间 Java 入口；headless 由 rendererLib='' 触发）
+    const job = new NeoForgeProcessorJob();
+    job.rootUri = gameRootUri;
+    // 工具 JVM 用哪套 JRE：与启动路径同源解析出的 id（`:neoinstall` 据此取 runtime）。
+    job.jreId = jreId;
+    // 载体机制（平台伪装前缀 / tmpdir / job 落盘 / 起无窗进程 / 握手裁决）全在 `runToolJvmOnce`
+    // —— 两条链**共用同一段**（见本文件顶部的「安装期工具 JVM 载体」）。本链方言：无日志前缀、
+    // 起进程失败文案不带 job 尾注（与重构前逐字一致）。
+    const code = await runToolJvmOnce(ctx, {
+      label: plan.label,
+      jobPath: `${workDir}/job-${i}.json`,
+      job: job,
+      workDir: workDir,
+      classpath: plan.classpath,
+      mainClass: plan.mainClass,
+      args: plan.argv,
+      dialect: DIALECT_NEOFORGE,
+      startErrorTail: '',
+    });
+    if (code !== 0) {
+      throw new Error(`processor failed (${plan.label}) exit=${code}`);
+    }
+    onCount(i + 1, total);
+  }
 }
 
 // ---- Forge（**零 JVM 面 = MC 1.7–1.12.2；processor 链面 = 1.13–1.20.1**）----
@@ -2294,25 +2431,19 @@ export async function installForgeVersion(ctx: common.UIAbilityContext, gameRoot
   writeText(versionJsonPath(gameRoot, instanceName), JSON.stringify(composed));
 }
 
-// ---- Forge 新格式 processor 链（**MC 1.13–1.20.1**；与 NeoForge 链代码独立）----
+// ---- Forge 新格式 processor 链（**MC 1.13–1.20.1**；数据层与 NeoForge 链独立）----
 // 依据：真 installer 实测（1.13.2 / 1.14.4 / 1.15.2 / 1.16.5 / 1.17.1 / 1.18.2 / 1.19.4 / 1.20.1）+
 // notes `Forge-1.13至1.20.1-安装实施方案.md`、`Forge-1.13及以上-调研与方案.md` §2。
-// 本段**不复用** `NeoForgeInstaller` / `installNeoForgeVersion` / `runNeoForgeProcessors` 的任何符号，
+// 本段的**数据层**（profile 解析 / processor 计划 / `outputs` 幂等与校验）**不复用** `NeoForgeInstaller` /
+// `installNeoForgeVersion` / `runNeoForgeProcessors` 的任何符号（用户裁决：两侧安装办法刻意分开），
 // 只复用 loader 无关的落盘原语（`downloadFile`/`runDownloads`/`libraryItem`/`writeText`/`copyFromUnzip`/
-// `forgeLibraryRelPath`/`mergeLibsByCoordinate`/`composeForgeManifest`）与**平台载体**（`:neoinstall` + job 文件协议）。
+// `forgeLibraryRelPath`/`mergeLibsByCoordinate`/`composeForgeManifest`）与**平台载体**（`:neoinstall` 无窗
+// 进程 + job 文件协议 + 握手裁决 = 本文件顶部「安装期工具 JVM 载体」的 `runToolJvmOnce`，两条链共用）。
 
 /** Forge 新格式 installer 的解包结果：`install_profile.json`（含 `data`/`outputs`）与内嵌启动清单。 */
 interface ForgeNewArchive {
   profile: ForgeNewInstallProfileJson;
   launch: VersionJson;
-}
-
-/** `runForgeProcessors` / `forgeWaitProcessorExit` 的**新鲜度基线**：发起本次 processor 时结果文件已有的字节数与发起时刻。 */
-interface ForgeProcessorBaseline {
-  /** 结果文件已有的字节数（unlink 成功/文件不存在 ⇒ 0）。 */
-  offset: number;
-  /** 发起本次 processor 的时刻（ms；仅用于日志）。 */
-  startMs: number;
 }
 
 /**
@@ -2615,11 +2746,13 @@ function forgeToolLogExcerpt(path: string, maxLen: number): string {
  * ZIP 结构降级**，对齐 HMCL Forge 侧，见 `forgeVerifyOutputsOrThrow`），不符先删再抛。
  *
  * `jreId` 写进 job 交给 `:neoinstall`，让工具进程用与启动路径**同源**的那套 JRE 起 `startJvm`（不在本层解析）。
+ *
+ * 本函数只保留**本条链**的东西：`outputs` 幂等/清理/校验、工具 stdio 归档与失败文案装饰。起无窗进程 /
+ * job 落盘 / 握手裁决 / 超时与退避全在共用载体（见本文件「安装期工具 JVM 载体」的 `runToolJvmOnce`）。
  */
 async function runForgeProcessors(ctx: common.UIAbilityContext, set: ForgeProcessorSet,
   workDir: string, gameRootUri: string, jreId: string, onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void): Promise<void> {
-  const resultPath = `${ctx.filesDir}/${NEO_JVM_RESULT}`;
   const total = set.plans.length;
   if (total === 0) {
     throw new Error('forge profile has no client-side processors');
@@ -2640,90 +2773,27 @@ async function runForgeProcessors(ctx: common.UIAbilityContext, set: ForgeProces
     const job = new ForgeProcessorJob();
     job.rootUri = gameRootUri;
     job.jreId = jreId;
-    // **平台伪装：工具 JVM 与游戏 JVM 必须伪装成同一个平台**（前缀 = 同源常量
-    // `TOOL_JVM_PLATFORM_SPOOF_ARGS`，定义处 `constants/LaunchDefaults.ets`，内含 `SPOOF_OS_NAME` /
-    // `SPOOF_OS_VERSION`，游戏路径的用法见 `MinecraftLauncher.buildLaunchArgv` 的「固定 JVM 参数」段；
-    // 本机真 `os.name` = HarmonyOS）。
-    //
-    // 为什么**必需**（2026-10-01 真机 stderr 定案，Forge 1.16.5 夹具）：JDK 8 的
-    // `sun.nio.fs.DefaultFileSystemProvider.create()` 按 `os.name` **精确匹配**（`Linux` / `SunOS` /
-    // `Darwin` / …），匹配不上**直接 `throw new AssertionError("Platform not recognized")`**。
-    // 该异常发生在**类初始化期**——`java.io.FilePermission.<clinit>`
-    // → `sun.net.www.protocol.file.FileURLConnection.getPermission` → `java.net.URLClassLoader.getPermissions`
-    // → `sun.misc.Launcher$AppClassLoader.getPermissions` —— 于是 `sun.launcher.LauncherHelper.checkAndLoadMain`
-    // 连**主类都加载不到**，JLI 只能退 1（stderr: `A JNI error has occurred` + `java.lang.AssertionError:
-    // Platform not recognized`）。**在 legacy（Java 8）套上这就是必炸**：本机 `os.name` 是 HarmonyOS，
-    // 而工具 JVM 此前不带任何平台伪装（游戏侧那一段则一直带）。
-    // 现代套（26）对未知 `os.name` 宽容回退到 `UnixFileSystemProvider`，所以此前在 26 上没暴露——
-    // **不要依赖**这一点：工具链将来落 Java 8 会同样中招。
-    // 渲染 / LWJGL / natives 参数**一律不放**：工具是 headless（桥由 `NeoInstallAbility` 传
-    // `rendererLib=''` 触发，不加载 GL、不做 glthread 失效安全），它不需要这些。
-    // `-Dos.*` 排在 `-cp` 之前：与游戏路径同一形态，且平台属性必须在任何类初始化使用文件系统之前生效。
-    // `cpu.name` / `meow.cpu.chip` 不在此列：它们只服务游戏侧 oshi 的 CPU 型号显示，工具从不查询。
-    //
-    // `-Djava.io.tmpdir` 必须指可写沙箱目录（鸿蒙无 /tmp；部分工具会用它落中间产物）。
-    job.argv = ['java', ...TOOL_JVM_PLATFORM_SPOOF_ARGS,
-      `-Djava.io.tmpdir=${workDir}`, '-cp', plan.classpath.join(':'), plan.mainClass];
-    for (const a of plan.argv) {
-      job.argv.push(a);
-    }
     const jobPath = `${workDir}/job-${i}.json`;
-    writeText(jobPath, JSON.stringify(job));
     // **工具 stdio 归零**：桥以追加写 `<filesDir>/meow-neo-jvm-tool.log`，不清会把上一轮的内容
-    // 归到本轮（会让失败诊断指向错误的工具）。与 resultPath 的清空同一时机、同一目的。
+    // 归到本轮（会让失败诊断指向错误的工具）。时机 = 起 `:neoinstall` **之前**（该文件只由那个进
+    // 程写）⇒ 与"job 落盘 / 结果文件清空"的先后**无语义差别**，两者都在起进程之前。
     forgeClearToolLog(forgeToolLogPath(ctx));
-    // 清上一次的结果文件（避免读到陈旧退出码）
-    const jobStartMs = Date.now();
-    try {
-      fileIo.unlinkSync(resultPath);
-    } catch (e) {
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'clear prev result file failed (ignored): %{public}s', JSON.stringify(e));
-    }
-    // **新鲜度基线**：即便上面的 unlink 失败，也据"发起本 processor 时文件已有的字节数"把陈旧内容排除裁决之外。
-    const baseline: ForgeProcessorBaseline = {
-      offset: forgeResultFileSize(resultPath),
-      startMs: jobStartMs,
-    };
-    const want: Want = {
-      bundleName: ctx.abilityInfo.bundleName,
-      moduleName: 'entry',
-      abilityName: NEO_INSTALL_ABILITY,
-      parameters: {
-        'job': jobPath,
-      },
-    };
-    const options: StartOptions = {
-      processMode: contextConstant.ProcessMode.NEW_PROCESS_ATTACH_TO_PARENT,
-      startupVisibility: contextConstant.StartupVisibility.STARTUP_HIDE,
-    };
-    // 上一次 processor 的进程要完全退出后才能再起（否则 16000068）；并对该码做退避重试。
-    await forgeWaitInstallGone();
-    let started = false;
-    let lastStartError = '';
-    for (let attempt = 0; attempt < PROCESSOR_START_RETRY_MAX && !started; attempt++) {
-      try {
-        await ctx.startAbility(want, options);
-        started = true;
-      } catch (error) {
-        const err = error as BusinessError;
-        lastStartError = `${err.code} ${err.message ?? ''}`;
-        const retryable = (err.code === 16000068 || err.code === 16000050);
-        hilog.warn(LOG_DOMAIN, LOG_TAG, 'forge startAbility attempt %{public}d failed: %{public}s',
-          attempt + 1, lastStartError);
-        if (!retryable) {
-          break;
-        }
-        await new Promise<void>((resolve: () => void) => {
-          setTimeout(resolve, PROCESSOR_START_BACKOFF_MS * (attempt + 1));
-        });
-      }
-    }
-    if (!started) {
-      throw new Error(`start install ability failed (${plan.label}): ${lastStartError} job=${jobPath}`);
-    }
+    // 载体机制（平台伪装前缀 / tmpdir / job 落盘 / 起无窗进程 / 握手裁决）全在 `runToolJvmOnce`
+    // —— 两条链**共用同一段**（见本文件顶部的「安装期工具 JVM 载体」）。本链方言：`forge ` 日志前缀 +
+    // 起进程失败文案带 job 尾注（与重构前逐字一致）。
     let code = 0;
     try {
-      code = await forgeWaitProcessorExit(resultPath, PROCESSOR_TIMEOUT_MS, plan.label, baseline);
+      code = await runToolJvmOnce(ctx, {
+        label: plan.label,
+        jobPath: jobPath,
+        job: job,
+        workDir: workDir,
+        classpath: plan.classpath,
+        mainClass: plan.mainClass,
+        args: plan.argv,
+        dialect: DIALECT_FORGE,
+        startErrorTail: ` job=${jobPath}`,
+      });
     } catch (error) {
       // 「软超时判崩/硬超时」同样是**工具侧**故障（崩溃/被杀/JLI 未返回）⇒ 工具 stdio 与 job 一并给出。
       const err = error as BusinessError;
@@ -2757,187 +2827,3 @@ async function runForgeProcessors(ctx: common.UIAbilityContext, set: ForgeProces
   }
 }
 
-/**
- * `:neoinstall` 进程是否存活（`appManager` 只看本应用进程，无需权限）。
- * 探测失败按「存活」处理——宁可慢，也不要因为探测不到就误判失败。
- */
-async function forgeInstallProcessAlive(): Promise<boolean> {
-  try {
-    const list = await appManager.getRunningProcessInformation();
-    for (const info of list) {
-      if (info.processName.includes(NEO_INSTALL_PROCESS_SUFFIX)) {
-        return true;
-      }
-    }
-    return false;
-  } catch {
-    return true;
-  }
-}
-
-/**
- * 等 `:neoinstall` 进程完全消失（上一次 processor 的 JVM 刚 `_exit`，能力实例仍在回收窗口中；
- * 立刻再 `startAbility` 会得到 16000068）。只在**已看到过该进程**时才等待；探测失败按"已退出"处理。
- */
-async function forgeWaitInstallGone(): Promise<void> {
-  const deadline = Date.now() + PROCESSOR_GONE_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    if (!(await forgeInstallProcessAlive())) {
-      return;
-    }
-    await new Promise<void>((resolve: () => void) => {
-      setTimeout(resolve, PROCESSOR_POLL_MS);
-    });
-  }
-}
-
-/**
- * 结果文件当前字节数（缺失/读取失败 ⇒ 0）。
- * 用**字节数**（而非 mtime）作新鲜度门限：`statSync().mtime` 是秒级整数，`resultFileSize` 与桥的
- * **追加**写（`fopen(..., "a")`）配合可做精确、单调的偏移判定。
- */
-function forgeResultFileSize(path: string): number {
-  try {
-    if (!fileIo.accessSync(path)) {
-      return 0;
-    }
-    return fileIo.statSync(path).size;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * 轮询结果文件，等出 `JLI_RETURNED code=N`；超时抛错。
- *
- * 裁决顺序（**返回码权威**）：一旦出现 `JLI_RETURNED code=N` 就按 N 返回（0 成功；非 0 交调用方判失败，
- * **绝不吞**）；只有 `JLI_BEGIN` 而无返回码时，才允许用「进程探测」兜底判异常终结；两样都没写 = 尚未开始，
- * 继续轮询到 deadline。
- *
- * **陈旧退出码防护（`baseline`）**：只认**基线偏移之后**出现的返回码；文件长度若小于基线（被截断/重写，
- * 正常不该发生）则视为整份新鲜，避免误挂到硬超时。握手文本固定为全 ASCII ⇒ 字节偏移与字符下标一致。
- *
- * **软超时**（`PROCESSOR_SOFT_TIMEOUT_MS`）：自**首次** `JLI_BEGIN` 起算；其间只要探针观察到存活即重置起点
- * （探针可用的环境里"合法慢"不会被误杀）。到点仍无返回码 ⇒ 判工具崩溃/被杀，提前抛**可诊断**错误。
- * 判死前**重读一次**（返回码可能刚好落盘），且**仅在确实见过该进程存活时**才信"探测不到 = 已退出"
- * （进程列表是瞬时快照，单次漏列不该误杀正在干活的 processor）。
- *
- * 本函数为 Forge 链**独立实现**（语义与 NeoForge 链已验证的 `waitProcessorExit` 一致，但代码独立）。
- */
-async function forgeWaitProcessorExit(resultPath: string, timeoutMs: number, label: string,
-  baseline: ForgeProcessorBaseline): Promise<number> {
-  const startMs = Date.now();
-  const deadline = startMs + timeoutMs;
-  const marker = 'JLI_RETURNED code=';
-  const readHandshake = (): string => {
-    try {
-      if (fileIo.accessSync(resultPath)) {
-        return fileIo.readTextSync(resultPath);
-      }
-    } catch {
-      // 读失败按空处理（空串 ≠ 成功，绝不会误判）。
-    }
-    return '';
-  };
-  const returnedCode = (text: string): number | undefined => {
-    const at = text.lastIndexOf(marker);
-    if (at < 0) {
-      return undefined;
-    }
-    const n = parseInt(text.substring(at + marker.length).split('\n')[0].trim(), 10);
-    return Number.isNaN(n) ? -1 : n;
-  };
-  const freshReturnedCode = (text: string): number | undefined => {
-    const base = text.length < baseline.offset ? 0 : baseline.offset;
-    return returnedCode(base > 0 ? text.substring(base) : text);
-  };
-  const handshakeDigest = (text: string): string => {
-    const t = text.trim();
-    if (t.length === 0) {
-      return 'absent';
-    }
-    const body = t.split('\n').join(' | ');
-    return returnedCode(text) === undefined ? `partial(${body})` : `complete(${body})`;
-  };
-  let missedPolls = 0;
-  let processEverAlive = false;
-  // 软超时起点：**首次**观察到 `JLI_BEGIN`（工具 JVM 确已起）的时刻；0 = 尚未观察到。
-  let beginMs = 0;
-  while (Date.now() < deadline) {
-    await new Promise<void>((resolve: () => void) => {
-      setTimeout(resolve, PROCESSOR_POLL_MS);
-    });
-    const text = readHandshake();
-    // 1) 返回码权威（只认基线之后的**新鲜**码）：0 与非 0 都原样返回（绝不吞非 0）。
-    const code = freshReturnedCode(text);
-    if (code !== undefined) {
-      hilog.info(LOG_DOMAIN, LOG_TAG,
-        'forge processor %{public}s handshake returned code=%{public}d elapsedMs=%{public}d',
-        label, code, Date.now() - startMs);
-      return code;
-    }
-    // 2) 无返回码：只有看到 `JLI_BEGIN`（JVM 确已起）才允许进程探测兜底；否则继续轮询。
-    if (!text.includes('JLI_BEGIN')) {
-      continue;
-    }
-    if (beginMs === 0) {
-      beginMs = Date.now();
-    }
-    if (Date.now() - beginMs >= PROCESSOR_SOFT_TIMEOUT_MS) {
-      const sinceBegin = Date.now() - beginMs;
-      const sinceJob = Date.now() - baseline.startMs;
-      hilog.error(LOG_DOMAIN, LOG_TAG,
-        'forge processor %{public}s soft timeout: no exit code %{public}d ms after JLI_BEGIN and never'
-        + ' observed alive (sinceJobStart=%{public}d ms) -> treating as crashed', label, sinceBegin, sinceJob);
-      throw new Error(`processor appears crashed (${label}): no exit code ${sinceBegin} ms after tool`
-        + ` JVM start (${sinceJob} ms since job start) and no liveness signal`);
-    }
-    if (await forgeInstallProcessAlive()) {
-      processEverAlive = true;
-      missedPolls = 0;
-      beginMs = Date.now();   // 探针看到存活 ⇒ 重置软超时起点（合法慢不误杀）
-      continue;
-    }
-    // 3) 探测不到：**仅在确实见过它存活时**才当「已退出」用（否则「没列出来」可能只是快照漏列）。
-    if (!processEverAlive) {
-      if (missedPolls === 0) {
-        hilog.warn(LOG_DOMAIN, LOG_TAG,
-          'forge processor %{public}s never observed alive; ignoring probe-gone and waiting for handshake (elapsedMs=%{public}d)',
-          label, Date.now() - startMs);
-      }
-      missedPolls++;
-      continue;
-    }
-    missedPolls++;
-    if (missedPolls < 2) {
-      continue;
-    }
-    // 4) 决定前**重读一次**：此刻若返回码已补上就以它为准 —— 探测绝不覆盖已写出的退出码。
-    const recheck = readHandshake();
-    const recheckCode = freshReturnedCode(recheck);
-    if (recheckCode !== undefined) {
-      hilog.info(LOG_DOMAIN, LOG_TAG,
-        'forge processor %{public}s handshake returned code=%{public}d (on re-read) elapsedMs=%{public}d',
-        label, recheckCode, Date.now() - startMs);
-      return recheckCode;
-    }
-    hilog.error(LOG_DOMAIN, LOG_TAG,
-      'forge processor %{public}s ended without exit code: handshake=%{public}s probeAlive=false elapsedMs=%{public}d',
-      label, handshakeDigest(recheck), Date.now() - startMs);
-    throw new Error(`processor terminated without exit code (${label})`);
-  }
-  // 到 deadline：再重读一次（返回码可能刚好落盘），拿到就用。
-  const finalText = readHandshake();
-  const finalCode = freshReturnedCode(finalText);
-  if (finalCode !== undefined) {
-    hilog.info(LOG_DOMAIN, LOG_TAG,
-      'forge processor %{public}s handshake returned code=%{public}d (at timeout) elapsedMs=%{public}d',
-      label, finalCode, Date.now() - startMs);
-    return finalCode;
-  }
-  hilog.error(LOG_DOMAIN, LOG_TAG,
-    'forge processor %{public}s timeout after %{public}d ms: handshake=%{public}s probeAlive=%{public}s elapsedMs=%{public}d',
-    label, timeoutMs, handshakeDigest(finalText),
-    (await forgeInstallProcessAlive()) ? 'true' : 'false', Date.now() - startMs);
-  throw new Error(`processor timeout (${label}) after ${timeoutMs} ms`);
-}

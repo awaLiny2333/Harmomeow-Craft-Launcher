@@ -70,7 +70,7 @@ Harmomeow Craft Launcher 面向**鸿蒙（HarmonyOS）PC**：不依赖 Android �
 - **1.16.5 首屏无文字** 这个真的不知道为什么了，非常诡异。
 - 平台 `libGLv4` 为 **Mesa Zink**（GL-on-Vulkan），偶发 20–70ms 尖刺，非应用层可解。
 - 更老（1.4.x / 1.5.x）未验证，**不在**支持窗口。
-- **我们安装并支持 Fabric、Forge（MC ≤ 1.12.2）与 NeoForge（MC 1.20.2+）**。这些范围之外的其它启动器装的实例（**其它版本的 Forge / NeoForge、Quilt / …**）会显示为「未知」，不保证能启动。
+- **我们安装并支持 Fabric、Forge（MC 1.7 – 1.20.1）与 NeoForge（MC 1.20.2+）**。这些范围之外的其它启动器装的实例（**其它版本的 Forge / NeoForge、Quilt / …**）会显示为「未知」，不保证能启动。
 
 ## 获取与安装
 
@@ -136,7 +136,8 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 | gl4es | v1.1.7 | MIT | ✅ | ≤ 1.16 / legacy 固定管线翻译层 |
 | libffi | 3.8.0 | MIT | （链接进 lwjgl） | LWJGL ≥ 3.4 依赖 |
 | oshi | 5.7–6.9 + 1.1 | MIT | ✅ | CPU 信息补丁 |
-| gson | 2.13.1 | Apache-2.0 | ✅ | MC / Fabric / Forge 清单声明的依赖 |
+| ASM | 9.9.1（`org.ow2.asm` ×5） | BSD-3 | ✅ | 启动期 ASM 覆盖：让「声明的 ASM 读不懂随包 JRE 类文件」的 Forge 世代也能启动（见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) §7） |
+| gson | 2.13.1 | Apache-2.0 | — | MC / Fabric / Forge 清单声明的依赖；**不再随包** |
 
 > 完整第三方声明： [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)；许可全文： [`LICENSES/`](LICENSES/)；源码要约： [`SOURCE-OFFER.md`](SOURCE-OFFER.md)。
 
