@@ -59,7 +59,7 @@ static int meow_fog_force_radial(void) {
  * 咬过三次（liblwjgl、gl4es×2），而 env 照样会传进去 ⇒ **只看 env 无法判断装机件新旧** ✗。
  * 有了这一行，任何一次 .logs 都能直接回答"设备上到底跑的是哪一版 gl4es、哪些开关是开的"。 */
 static int g_meowBuildLogged = 0;
-#define MEOW_GL4ES_BUILD_TAG "2026-09-29-fogfix-reentrant"
+#define MEOW_GL4ES_BUILD_TAG "2026-10-01-ctxlistid2"
 
 static int meow_fog_trace(void) {
     static int on = -1;
