@@ -102,7 +102,8 @@ export const EXTRAS_VERSION: string = '20261001-drop-meow-launcher';
 // `MinecraftLauncher` 的 `needsAsmOverride` / `rewriteAsmList`）。
 /** 随包 ASM 版本（5 件同版；模块名在 9.7.1→9.9.1 间不变，故 `--add-modules ALL-MODULE-PATH` 解析不受影响）。 */
 export const ASM_BUNDLED_VERSION: string = '9.9.1';
-/** 随包 ASM 在**实例 staging 目录下的子目录名**（`<cache>/mc-cp/<实例>/asm9/`）。
+/** 随包 ASM 在**实例 staging 目录下的子目录名**（`<cache>/mc-cp/<key>-<id>/asm9/`；
+ *  `<key>` = gameRoot 短哈希、`<id>` = 实例名）。
  *  **必须放在子目录**：平铺模式（vanilla/Fabric/legacy）的 `-cp "<dir>/*"` 通配不递归，平铺进去
  *  会让我们的 ASM 混进它们的 classpath、可能与 Fabric 自己的 ASM 互相遮蔽。 */
 export const ASM_STAGE_SUBDIR: string = 'asm9';

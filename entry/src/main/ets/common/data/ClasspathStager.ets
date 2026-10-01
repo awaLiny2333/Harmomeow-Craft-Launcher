@@ -2,8 +2,8 @@ import { common } from '@kit.AbilityKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
-import { MC_CP_DIR, RAWFILE_MEOWCRAFT_EXTRAS, MEOWCRAFT_EXTRAS_DONE, RAWFILE_OSHI_DIR,
-  RAWFILE_OSHI_MANIFEST } from '../constants/Paths';
+import { RAWFILE_MEOWCRAFT_EXTRAS, MEOWCRAFT_EXTRAS_DONE, RAWFILE_OSHI_DIR,
+  RAWFILE_OSHI_MANIFEST, mcCpRoot, mcCpInstanceDir, instanceCacheName } from '../constants/Paths';
 import { EXTRAS_VERSION, LWJGL_JAR_PREFIX,
   LWJGL_GEN_JARS, ASM_STAGE_SUBDIR, EXPECTED_ASM_JARS } from '../constants/LaunchDefaults';
 // 真树 classpath 的**主类形态表**（与 `MinecraftLauncher.needsRealClasspath` 同一份常量 ⇒ 同一事实源）。
@@ -54,7 +54,8 @@ function classpathUsesWildcard(gameRoot: string, jsonPath: string): boolean {
 }
 
 /**
- * 把某版本的运行 jar **按 classpath 形态**物化到 `cacheDir/mc-cp/<id>/`（超长 -cp 在本 JLI 移植会失效）。
+ * 把某版本的运行 jar **按 classpath 形态**物化到 `cacheDir/mc-cp/<key>-<id>/`（超长 -cp 在本 JLI
+ * 移植会失效；`<key>` = gameRoot 短哈希、`<id>` = 实例名 —— 按游戏根隔离同名实例，见 `Paths.gameRootKey`）。
  *
  * 形态分流（判据见 `classpathUsesWildcard`；**行为上唯一允许的差异 = 不再多铺无用的库**）：
  *  - **flat**（vanilla / Fabric）：`-cp "<dir>/*"` ⇒ 把整份声明库**逐件**平铺（缺一件就起不来）；
@@ -69,8 +70,10 @@ function classpathUsesWildcard(gameRoot: string, jsonPath: string): boolean {
 export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string,
   jsonPath: string, versionId: string): string {
   const cacheDir = ctx.cacheDir;
-  const base = `${cacheDir}/${MC_CP_DIR}`;
-  const dir = `${base}/${versionId}`;
+  // 目录名带 gameRoot 短哈希前缀（`<key>-<id>`）⇒ 同名而不同根的实例不共享 staging 目录。
+  const instance = instanceCacheName(gameRoot, versionId);
+  const base = mcCpRoot(cacheDir);
+  const dir = mcCpInstanceDir(cacheDir, gameRoot, versionId);
   // 随包**只有一代** LWJGL jar（`lwjgl-3.4.3.jar`，其 overlay 带 3.4.x 兼容 shim，
   // 服务 MC 1.13–1.21.x 与 ≥1.22）。平铺目录里必须只留它一份（-cp "<dir>/*" 不能同时
   // 装两份 org.lwjgl.*；旧代残留由 pruneStaleJars 兜底清）。natives 现也只剩 liblwjgl_343* +
@@ -109,7 +112,7 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
       upToDate = false;
     }
     hilog.info(LOG_DOMAIN, LOG_TAG, 'extras %{public}s: stamp=%{public}s reextract=%{public}s',
-      versionId, stamp, upToDate ? 'no' : 'yes');
+      instance, stamp, upToDate ? 'no' : 'yes');
     if (!upToDate) {
       if (native.extractRawTar(ctx.resourceManager, RAWFILE_MEOWCRAFT_EXTRAS, dir) as boolean) {
         const f = fileIo.openSync(doneMark, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE |
@@ -178,10 +181,10 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
   // 形态自证（上机验证"这次到底铺了什么"先看这一行）：sources = 本次**有资格被物化**的件数
   // （flat = 整份声明库；slim = 清单点名的 oshi 件）。
   hilog.info(LOG_DOMAIN, LOG_TAG, 'stage %{public}s: mode=%{public}s sources=%{public}d',
-    versionId, flat ? STAGE_FLAT : STAGE_SLIM, stageSources.length);
+    instance, flat ? STAGE_FLAT : STAGE_SLIM, stageSources.length);
   hilog.info(LOG_DOMAIN, LOG_TAG,
     'stage %{public}s: gen=%{public}s keep=%{public}s(%{public}d) checked=%{public}d copied=%{public}d',
-    versionId, gen, keepGenJar.length > 0 ? keepGenJar : '(none)',
+    instance, gen, keepGenJar.length > 0 ? keepGenJar : '(none)',
     keepGenJar.length > 0 ? jarBytes(`${dir}/${keepGenJar}`) : -1, checked, copied);
   return dir;
 }

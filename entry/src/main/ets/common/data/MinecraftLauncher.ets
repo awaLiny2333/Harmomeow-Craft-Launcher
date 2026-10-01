@@ -416,9 +416,10 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   if (opts.activeProcessorCount !== undefined && opts.activeProcessorCount > 0) {
     argv.push(`-XX:ActiveProcessorCount=${opts.activeProcessorCount}`);
   }
-  // 崩喷落点统一到实例的 `.hmmcraft/logs`：`-XX:ErrorFile` 是**产品**参数（可直接用），
-  // JVM 的 hs_err 默认落 cwd（= 游戏目录）⇒ 指到这里。沿用本文件「用户额外参数优先」的约定：
-  // 用户自己给了 `-XX:ErrorFile` 就不覆盖。
+  // 崩喷落点由调用方给的 `opts.logsDir` 决定：**首选**是实例内 `<gameRoot>/versions/<id>/.hmmcraft/logs`，
+  // 该目录建不出来时退沙箱 `mc-run/<key>-<id>/logs-fallback`（见 GameLauncher / Paths.mcRunLogsFallbackDir）。
+  // `-XX:ErrorFile` 是**产品**参数（可直接用），JVM 的 hs_err 默认落 cwd（= 游戏目录）⇒ 指到这里。
+  // 沿用本文件「用户额外参数优先」的约定：用户自己给了 `-XX:ErrorFile` 就不覆盖。
   // ⚠️ 这里**不要**加 `-XX:LogFile=`：它是**诊断**参数，未开 `-XX:+UnlockDiagnosticVMOptions`
   //    会让 JVM 直接拒启（2026-09-16 实测："VM option 'LogFile' is diagnostic …" → 启动失败，
   //    且**没有** hs_err、MC 的 latest.log 也不更新）。需要 Log* 时由用户自己在额外参数里连 unlock 一起给。
@@ -1609,7 +1610,7 @@ export function lwjglGeneration(jsonPath: string): string {
 
 /**
  * 收集该版本运行所需的全部 jar 源路径（规则过滤后本地存在的库 + 版本 jar）。
- * 供 `ClasspathStager` 把它们平铺拷贝到沙箱目录 `<cache>/mc-cp/<id>/`。
+ * 供 `ClasspathStager` 把它们平铺拷贝到沙箱目录 `<cache>/mc-cp/<key>-<id>/`（`<key>` = gameRoot 短哈希）。
  *
  * 谁还在用平铺目录（2026-10-01 方案 A 之后的现状）：
  *  - **原版 / Fabric**：`-cp "<dir>/*"` 通配（平铺 classpath 自足）；

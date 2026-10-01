@@ -23,12 +23,31 @@ export function ensureInstanceLogsDir(dir: string): string {
     return '';
   }
   const logs = `${root}/${INSTANCE_SETTINGS_DIR}/logs`;
-  try {
-    fileIo.mkdirSync(logs, true);
+  if (ensureDirUsable(logs)) {
     return logs;
+  }
+  hilog.warn(LOG_DOMAIN, LOG_TAG, 'logs dir unusable: %{public}s', logs);
+  return '';
+}
+
+/** 确保目录存在，并返回它**最终是否可用**（幂等建目录的唯一判据）。
+ *
+ *  ⚠️ 幂等是硬要求：`fileIo.mkdirSync(dir, true)` 对**已存在**的目录同样抛 `File exists`
+ *  （13900015）。把"抛错"当作"建不出"就会在**第二次启动起**误判（实机曾长期如此：日志成片的
+ *  `mkdir … failed: File exists` ⇒ 日志目录判空 ⇒ 不注入 `-XX:ErrorFile` ⇒ hs_err 落回游戏目录）。
+ *  因此判据只认 `accessSync` 复核结果，与 mkdir 抛不抛无关。 */
+export function ensureDirUsable(dir: string): boolean {
+  try {
+    if (!fileIo.accessSync(dir)) {
+      fileIo.mkdirSync(dir, true);
+    }
   } catch (e) {
-    hilog.warn(LOG_DOMAIN, LOG_TAG, 'mkdir %{public}s failed: %{public}s', logs, (e as BusinessError).message);
-    return '';
+    // 建不出来（不可写 / 被占）：交给下面的复核判定，不在此处下结论。
+  }
+  try {
+    return fileIo.accessSync(dir);
+  } catch (e) {
+    return false;
   }
 }
 /** 实例设置文件名（一个文件装全部逐版本设置）。 */

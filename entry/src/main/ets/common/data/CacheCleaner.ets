@@ -1,6 +1,6 @@
 import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { MC_CP_DIR, MC_RUN_DIR_PREFIX, NEO_INSTALLER_DIR, FORGE_INSTALLER_DIR } from '../constants/Paths';
+import { MC_CP_DIR, MC_RUN_DIR, NEO_INSTALLER_DIR, FORGE_INSTALLER_DIR } from '../constants/Paths';
 import { removeTreeBestEffort } from './VersionTools';
 
 const LOG_DOMAIN = 0x0001;
@@ -11,9 +11,13 @@ const LOG_TAG = 'CacheCleaner';
  *
  * 只动 `ctx.cacheDir` 下**本项目写出来的**条目（见 `Paths` 常量）——cacheDir 里可能还有系统
  * 自己的东西（rawheap 等），故**逐个点名**删除、绝不清空整个 cacheDir：
- *   - `mc-cp/`（`MC_CP_DIR`）：各版本 classpath 平铺暂存（含 meowcraft_extras 解压与 done 标记）；
- *   - `mc-run-<id>` 与 `mc-run-<id>-logs`（`MC_RUN_DIR_PREFIX`）：运行目录（java.io.tmpdir / natives 解压）
- *     与兜底运行日志目录；
+ *   - `mc-cp/`（`MC_CP_DIR`）：**整个一级目录**删除 ⇒ 各实例的 `mc-cp/<key>-<id>` 与旧形态孤儿
+ *     （无 key 的 `mc-cp/<id>`）一并清掉（classpath 平铺暂存，含 meowcraft_extras 解压与 done 标记）；
+ *   - `mc-run/`（`MC_RUN_DIR`）：**整个一级目录**删除 ⇒ 各实例的 `mc-run/<key>-<id>`（含其下
+ *     `logs-fallback/` 与 `natives/`）连同旧形态孤儿一起清掉；
+ *   - **旧形态孤儿（顶层点名）**：早期 `mc-run-<id>` / `mc-run-<id>-logs`（无 key）与布局改进前的
+ *     `mc-run-<key>-<id>` / `-logs`（前缀式）都在 cacheDir **顶层**、不落在 `mc-run/` 之下；
+ *     整棵删 `mc-run/` 清不到 ⇒ 仍按 `mc-run-` 前缀逐个点名清扫（见 `topLevelTargets`）；
  *   - `neo-installer/`（`NEO_INSTALLER_DIR`）、`forge-installer/`（`FORGE_INSTALLER_DIR`）：安装器解包工作目录。
  *
  * **绝不触碰**游戏根（libraries / assets / versions / config / 存档 / 日志）与 `<filesDir>` 下的
@@ -81,10 +85,15 @@ function sizeOf(path: string): number {
 function topLevelTargets(cacheDir: string): string[] {
   const targets: string[] = [
     `${cacheDir}/${MC_CP_DIR}`,
+    `${cacheDir}/${MC_RUN_DIR}`,
     `${cacheDir}/${NEO_INSTALLER_DIR}`,
     `${cacheDir}/${FORGE_INSTALLER_DIR}`,
   ];
-  // 运行目录与运行日志目录共用 `mc-run-` 前缀（`mc-run-<id>` 与 `mc-run-<id>-logs`）→ 按前缀一并收集。
+  // 旧形态孤儿清扫：早期 `mc-run-<id>` / `mc-run-<id>-logs`（无 gameRoot key）与布局改进前的
+  // `mc-run-<key>-<id>` / `mc-run-<key>-<id>-logs`（`mc-run-` 前缀式）都在 cacheDir **顶层**、
+  // 不落在 `mc-run/` 之下 ⇒ 整棵删 `mc-run/` 清不到它们，须按 `mc-run-` 前缀逐个点名。
+  // （`mc-run` 建根不以 `mc-run-` 开头，不会与上面的 `mc-run/` 重复。）
+  const legacyRunPrefix = `${MC_RUN_DIR}-`;
   let names: string[] = [];
   try {
     names = fileIo.listFileSync(cacheDir);
@@ -92,7 +101,7 @@ function topLevelTargets(cacheDir: string): string[] {
     names = [];
   }
   for (const n of names) {
-    if (n.startsWith(MC_RUN_DIR_PREFIX)) {
+    if (n.startsWith(legacyRunPrefix)) {
       targets.push(`${cacheDir}/${n}`);
     }
   }

@@ -7,8 +7,8 @@ import { startJvm } from '../state/JvmLauncher';
 import { stageClasspathDir } from './ClasspathStager';
 import { Account, AccountsTools, ACCOUNT_TYPE_MICROSOFT } from './AccountsTools';
 import { readAppGlobalSettings } from './AppSettings';
-import { readInstanceSettings, ensureInstanceLogsDir } from './InstanceSettings';
-import { MEOW_HOME_DIR, MC_RUN_DIR_PREFIX, NATIVES_DIR, versionDir } from '../constants/Paths';
+import { readInstanceSettings, ensureInstanceLogsDir, ensureDirUsable } from './InstanceSettings';
+import { MEOW_HOME_DIR, NATIVES_DIR, versionDir, mcRunDir, mcRunLogsFallbackDir } from '../constants/Paths';
 import { WINDOW_DEFAULT_W, WINDOW_DEFAULT_H, RENDERER_ENV, RENDERER_ENV_GL4ES } from '../constants/LaunchDefaults';
 import { rendererForVersion, guardNeedsSync, vulkanBackendRequested } from './RendererPolicy';
 import { resolveVersionByPath } from './VersionResolver';
@@ -112,7 +112,10 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   //  - slim（`-cp` 是显式列表：launchwrapper 系 ordered / Forge ≥1.13 与 NeoForge 的 real-tree）：
   //    只铺**随包件 + oshi 补丁件**（下面传的 `classpath`/`classpathDir` 里，slim 形态只用到
   //    `classpathDir` —— 启动路径按绝对路径从它取那几件；`classpath` 通配只在 flat 形态被采用）。
-  const runDir = `${ctx.cacheDir}/${MC_RUN_DIR_PREFIX}${versionId}`;
+  // 运行目录 = `<cacheDir>/mc-run/<key>-<id>`（与 `mc-cp/` 对等的一级目录，按游戏根分区）⇒ 同名而不同
+  // 根的实例不共享 run 目录（java.io.tmpdir / jna.tmpdir / SharedLibraryExtractPath / natives 解压目标；
+  // 见 `Paths.gameRootKey`）。
+  const runDir = mcRunDir(ctx.cacheDir, gameRoot, versionId);
   for (const d of [runDir, `${runDir}/${NATIVES_DIR}`]) {
     try {
       fileIo.mkdirSync(d);
@@ -155,16 +158,15 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   // 绝不退回游戏目录（否则 JVM 又会把 hs_err 写到 cwd）。见 ensureInstanceLogsDir 的注释。
   let logsDir = ensureInstanceLogsDir(versionDir(gameRoot, versionId));
   if (logsDir.length === 0) {
-    logsDir = `${runDir}-logs`;
-    try {
-      fileIo.mkdirSync(logsDir, true);
-    } catch (e) {
+    // 兜底：实例内 `.hmmcraft/logs` 建不出来时，退到 runDir 内的 `logs-fallback/`（不写游戏目录、不退化到 cwd）。
+    logsDir = mcRunLogsFallbackDir(runDir);
+    if (!ensureDirUsable(logsDir)) {
       hilog.warn(LOG_DOMAIN, LOG_TAG, 'fallback logs dir unavailable: %{public}s', logsDir);
       logsDir = '';
     }
   }
-  hilog.info(LOG_DOMAIN, LOG_TAG, 'version %{public}s isolation=%{public}s',
-    versionId, isolated ? 'on' : 'off');
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'version %{public}s isolation=%{public}s runDir=%{public}s',
+    versionId, isolated ? 'on' : 'off', runDir);
   const cpuChip = readCpuChip();
   // 渲染后端按**版本 json 的内部 id**（真 MC 版本号）选（≤1.16 → gl4es/GLES；≥1.17 → 桌面 GL）。
   // 注意：versionId 现在是实例名（目录名，玩家可任取），不能拿它判版本。

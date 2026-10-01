@@ -9,6 +9,9 @@
  * **数据令牌**（JRE_DATA_TOKEN）体现 → 升级时 HSP 原地替换、filesDir 走「须升级」，不产生残留。
  */
 
+import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import { util } from '@kit.ArkTS';
+
 /** JRE 数据根目录（filesDir 下）。 */
 export const JRES_ROOT: string = 'meow-jres';
 
@@ -51,12 +54,22 @@ export const TOUCH_CONTROLS_FILE: string = 'touch-controls.json';
 /** 解析失败文件的后缀（原文件改名加此后缀备份，供用户找回手改内容）。 */
 export const BAD_FILE_SUFFIX: string = '.bad';
 
-/** 版本 jar 平铺目录（cacheDir 下）。 */
+/** 版本 jar 平铺目录（cacheDir 下）。**每实例**的实际目录为 `mc-cp/<key>-<id>`
+ *  （`<key>` = gameRoot 短哈希，见 `gameRootKey`；`<id>` = 实例名）—— 按游戏根隔离同名实例。 */
 export const MC_CP_DIR: string = 'mc-cp';
 
-/** 运行目录前缀（cacheDir 下，后接 versionId）。运行日志目录亦共用此前缀（`mc-run-<id>-logs`），
- *  故「按前缀收集沙箱缓存」时可一并覆盖两者（见 CacheCleaner）。 */
-export const MC_RUN_DIR_PREFIX: string = 'mc-run-';
+/** 运行目录根（cacheDir 下，与 `mc-cp` **对等**的一级目录）。**每实例**的实际目录为
+ *  `mc-run/<key>-<id>`（`<key>` = gameRoot 短哈希，见 `gameRootKey`；`<id>` = 实例名）
+ *  —— 与 `mc-cp/` 同一分区规则，按游戏根隔离同名实例。 */
+export const MC_RUN_DIR: string = 'mc-run';
+
+/** 运行目录内的**兜底日志子目录名**（实际为 `mc-run/<key>-<id>/logs-fallback`）：仅当实例内日志目录
+ *  （`<gameRoot>/versions/<id>/.hmmcraft/logs`）**建不出来 / 不可用**时，`-XX:ErrorFile` 的落点兜底。
+ *  名字即语义（`logs-fallback` = 兜底日志），与 runDir 其它子目录（`natives/`）平级。 */
+export const MC_RUN_LOGS_FALLBACK_SUBDIR: string = 'logs-fallback';
+
+/** 实例沙箱缓存目录名里 gameRoot 短哈希的**长度**（十六进制字符数；见 `gameRootKey`）。 */
+export const GAME_ROOT_KEY_LENGTH: number = 8;
 
 /** NeoForge 安装工作目录名（cacheDir 下，实际为 `neo-installer/<loaderSource>/<loaderVersion>`；带源＝切源不静默复用另一源下过的 installer）：installer jar / 解包 / job / mainclass 缓存。 */
 export const NEO_INSTALLER_DIR: string = 'neo-installer';
@@ -201,4 +214,87 @@ export function assetsIndexesDir(gameRoot: string): string {
 export function assetObjectPath(gameRoot: string, hash: string): string {
   const prefix = hash.substring(0, ASSET_HASH_PREFIX_LENGTH);
   return `${assetsDir(gameRoot)}/${MC_ASSETS_OBJECTS_DIR}/${prefix}/${hash}`;
+}
+
+// ---- 实例沙箱缓存目录（cacheDir 下，`mc-cp/` 与 `mc-run/` 两个对等一级目录，均按游戏根分区）----
+// 为什么需要 gameRoot 维度：早期按**实例名**命名的缓存目录（如 `mc-cp/<id>`、`mc-run/<id>`）只含实例名
+// ⇒ **同名而不同游戏根**的两个实例会共享同一份 staging/run 目录（实测已发生：同一实例名跑过多个根）。
+// 加 gameRoot 短哈希前缀即可隔离；`mc-cp/` 与 `mc-run/` 采用**同一** `<key>-<id>` 分区规则，
+// CacheCleaner 只需整棵删除这两个一级目录即可（旧形态孤儿由 CacheCleaner 兜底清扫）。
+
+/**
+ * 规范化 gameRoot 路径，供 `gameRootKey` 取哈希（**唯一**规范化口径）。
+ *
+ * 规则（刻意保守——HarmonyOS 文件系统一般**区分大小写**，故**不**动大小写）：
+ *  1. 折叠连续斜杠（`a//b` → `a/b`）；
+ *  2. 去尾部斜杠（保留根 `/` 本身）。
+ * 不做其它重写（不解析 `.` / `..`、不做 unicode 归一、不降大小写）。
+ */
+export function normalizeGameRoot(gameRoot: string): string {
+  let s = gameRoot.replace(/\/{2,}/g, '/');
+  while (s.length > 1 && s.endsWith('/')) {
+    s = s.substring(0, s.length - 1);
+  }
+  return s;
+}
+
+/**
+ * gameRoot 的**短哈希 key**（`GAME_ROOT_KEY_LENGTH` 个十六进制字符）。
+ *
+ * 稳定性依据：**同一路径的任何一次运行都得到同一个 key** —— 输入 = `normalizeGameRoot` 的
+ * **确定性**规范化结果 + **纯函数**哈希（SHA-256）；不含时间 / 随机数 / 环境量，故跨进程、跨启动一致。
+ * 取字节用 `util.TextEncoder`（UTF-8）⇒ 非 ASCII 路径（如含中文的游戏目录）按**字节**哈希，与字符宽度无关。
+ * 失败（理论不可达）退化为一串 `0`，**绝不**返回空串（否则目录名会退化成 `-<id>`，破坏命名规则）。
+ */
+export function gameRootKey(gameRoot: string): string {
+  try {
+    const md = cryptoFramework.createMd('SHA256');
+    md.updateSync({ data: new util.TextEncoder().encodeInto(normalizeGameRoot(gameRoot)) });
+    const bytes = new Uint8Array(md.digestSync().data);
+    let hex = '';
+    for (let i = 0; i < bytes.length; i++) {
+      const h = bytes[i].toString(16);
+      hex += h.length === 1 ? `0${h}` : h;
+    }
+    return hex.substring(0, GAME_ROOT_KEY_LENGTH);
+  } catch (e) {
+    let zeros = '';
+    for (let i = 0; i < GAME_ROOT_KEY_LENGTH; i++) {
+      zeros += '0';
+    }
+    return zeros;
+  }
+}
+
+/**
+ * 按实例名命名的沙箱缓存条目的**唯一分区名**：`<key>-<id>`（`<key>` = `gameRootKey(gameRoot)`）。
+ * `mc-cp/` 与 `mc-run/` 两个一级目录下都用它做子目录名（同名而不同游戏根 ⇒ 不同子目录）。
+ */
+export function instanceCacheName(gameRoot: string, versionId: string): string {
+  return `${gameRootKey(gameRoot)}-${versionId}`;
+}
+
+/** `<cacheDir>/mc-cp`（classpath 平铺根目录）。 */
+export function mcCpRoot(cacheDir: string): string {
+  return `${cacheDir}/${MC_CP_DIR}`;
+}
+
+/** `<cacheDir>/mc-cp/<key>-<id>`（某游戏根下某实例的 classpath 平铺目录）。 */
+export function mcCpInstanceDir(cacheDir: string, gameRoot: string, versionId: string): string {
+  return `${mcCpRoot(cacheDir)}/${instanceCacheName(gameRoot, versionId)}`;
+}
+
+/** `<cacheDir>/mc-run`（运行目录根；与 `mc-cp` 对等的一级目录）。 */
+export function mcRunRoot(cacheDir: string): string {
+  return `${cacheDir}/${MC_RUN_DIR}`;
+}
+
+/** `<cacheDir>/mc-run/<key>-<id>`（某游戏根下某实例的沙箱运行目录；`java.io.tmpdir` / natives 解压）。 */
+export function mcRunDir(cacheDir: string, gameRoot: string, versionId: string): string {
+  return `${mcRunRoot(cacheDir)}/${instanceCacheName(gameRoot, versionId)}`;
+}
+
+/** `<runDir>/logs-fallback`（`-XX:ErrorFile` 的**兜底**目录；首选仍是实例内 `<gameRoot>/versions/<id>/.hmmcraft/logs`）。 */
+export function mcRunLogsFallbackDir(runDir: string): string {
+  return `${runDir}/${MC_RUN_LOGS_FALLBACK_SUBDIR}`;
 }
