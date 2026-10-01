@@ -42,12 +42,13 @@ Harmomeow Craft Launcher targets **HarmonyOS PCs**. It does not rely on an Andro
 **Version management**
 - **Download / install vanilla versions online** (BMCLAPI / official mirror switching; release/snapshot/other filtering).
 - Per-version **"version isolation"** toggle: saves / options / logs live inside the version folder, isolated from other versions (same model as HMCL / PCL — so `.minecraft` folders are mutually compatible!).
-- Per-version **rendering backend** selection (Recommended by version / Desktop OpenGL / GL4ES (compatible)).
+- Per-version **rendering backend** selection (Recommended by version / Desktop OpenGL / GL4ES (compatible) / Vulkan (MC ≥ 26.2, experimental)).
 
 **Mod loaders**
 - **Install Fabric**: next to a vanilla version, pick **Fabric** and a loader version (the list is fetched live from FabricMC metadata — any game version Fabric publishes loaders for). Fabric metadata / libraries come from FabricMC with the **BMCLAPI mirror supported**, and the **mod-loader download source is independent of the game download source**.
+- **Install Forge / NeoForge**: next to a vanilla version, install **Forge (MC 1.7 – 1.20.1)** or **NeoForge (MC 1.20.2+)**; each has its own loader version list and a download source independent of the game download source.
 - Instances are written in the **HMCL patch-style single-instance layout** (top-level flatten + `patches[]`), so `.minecraft` folders stay **interoperable with HMCL** — HMCL can read instances installed here, and this launcher can launch HMCL-installed Fabric instances.
-- Both profile shapes (`inheritsFrom` and HMCL `patches`) are read; each version card shows the detected type: **Vanilla / Fabric / Legacy Fabric / Unknown**.
+- Both profile shapes (`inheritsFrom` and HMCL `patches`) are read; each version card shows the detected type: **Vanilla / Forge / NeoForge / Fabric / Legacy Fabric / Unknown**.
 
 **Accounts**
 - **Offline accounts**: multiple accounts; UUID and other info shown instantly.
@@ -67,10 +68,14 @@ Harmomeow Craft Launcher targets **HarmonyOS PCs**. It does not rely on an Andro
 - **Mouse grab sampling = display frame rate**: while grabbing (cursor locked) the mouse sampling is tied to the UI frame rate; when not grabbing, native ~500 Hz absolute coordinates pass through (a bit more responsive).
 - **Physical F-keys**: the F row may behave oddly; we've done our best 🤪.
 - **Native Vulkan backend on MC ≥ 26.2**: the stock KirinX90 Vulkan driver under-reports several extensions MC requires; we route it through our own loader shim (`libmeowvulkan.so`), so the native Vulkan backend is usable (verified on 26.3).
+- **The Vulkan backend is still an experimental tier**: MC ≥ 26.2 only, and optional; GL remains the default and the fallback.
 - **1.16.5 first screen has no text** — honestly no idea why, very bizarre.
 - The platform `libGLv4` is **Mesa Zink** (GL-on-Vulkan); occasional 20–70 ms spikes, not solvable at the app layer.
 - Older versions (1.4.x / 1.5.x) are unverified and **outside** the support window.
 - **We install and support Fabric, Forge (MC 1.7 – 1.20.1) and NeoForge (MC 1.20.2+).** Instances from other launchers outside these ranges (**other Forge / NeoForge versions, Quilt / …**) are shown as “Unknown”, with no promise that they launch.
+- **Standalone OptiFine is out of scope** — we support OptiFine only **alongside Forge / LiteLoader**; a standalone OptiFine install (no Forge / LiteLoader) is not supported.
+- **On phones, in-app install of Forge ≥ 1.13 and NeoForge 1.20.2+ is unavailable** — installing them needs a tool JVM in a separate process, which `phone` cannot provide; instances installed elsewhere still launch fine.
+- **Forge 1.17 – 1.17.1 runs on the bundled Java 26** — HMCL recommends ≤ 17 for this range and we ship no JRE 17 tier, so any trouble in this range on a real device is a known deviation.
 
 ## Getting & installing
 
@@ -128,6 +133,7 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
 | Component | Version | License | Bundled | Notes |
 |---|---|---|---|---|
 | OpenJDK / JRE | 26.0.2.1 (official glibc; our binary patches + self-built `libjli`/`libjvm`) | GPL-2.0 + Classpath-Exception | ✅ | Runtime; **fully self-held (zero black box)** — see `tools/jre26/` |
+| OpenJDK / JRE (legacy) | 8u504-b01 (Eclipse Adoptium Temurin 8, glibc; our binary patches + self-built `libjli`/`libjvm`) | GPL-2.0 + Classpath-Exception | ✅ | **second bundled JRE (Java 8)** for the legacy segment (Forge ≤ 1.16); **fully self-held (zero black box)** — see `tools/jre8/` |
 | LWJGL | 3.4.3 / 2.9.3 | BSD-3 | ✅ | **one modern generation (3.4.3, with the 3.4.x compat shims) + legacy LWJGL2**, selected per MC version |
 | OpenAL Soft | 1.24.3 | LGPL-2.0+ | ✅ | OHAudio backend |
 | FreeType | 2.13.3 | FTL | ✅ | font rendering |
@@ -139,7 +145,7 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
 | ASM | 9.9.1 (`org.ow2.asm` ×5) | BSD-3 | ✅ | startup-time ASM override so a Forge generation whose *declared* ASM cannot read the bundled JRE's class files still launches (see [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) §7) |
 | gson | 2.13.1 | Apache-2.0 | — | dependency declared by the MC / Fabric / Forge manifests; **no longer shipped in the bundle** |
 
-> Full third-party attributions: [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md); full license texts: [`LICENSES/`](LICENSES/); source offer: [`SOURCE-OFFER.md`](SOURCE-OFFER.md).
+> Full third-party attributions: [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md); full license texts: [`entry/src/main/resources/rawfile/licenses/`](entry/src/main/resources/rawfile/licenses/); source offer: [`SOURCE-OFFER.md`](SOURCE-OFFER.md).
 
 ## Build guide
 
@@ -149,8 +155,11 @@ ArkTS (entry HAP)                       :game process (separate UIAbility / proc
 
 | Tool | Artifact |
 |---|---|
-| [`tools/lwjgl/`](tools/lwjgl/) | LWJGL single modern generation jar (3.4.3) + 3 natives + `libffi` + extras packing |
+| [`tools/lwjgl/`](tools/lwjgl/) | LWJGL single modern generation jar (3.4.3) + 4 natives (incl. `liblwjgl_vma.so`) + `libffi` + extras packing |
 | [`tools/lwjgl2/`](tools/lwjgl2/) | legacy LWJGL2 `liblwjgl.so` (MC 1.6–1.12) |
+| [`tools/jre26/`](tools/jre26/) | bundled JRE 26 set (`libs/*.so` + `java.home` data image) |
+| [`tools/jre8/`](tools/jre8/) | **second** bundled JRE (legacy, Java 8) for Forge ≤ 1.16 |
+| [`tools/jre25/`](tools/jre25/) | — (historical recipe: the JRE 25 era; the bundled JRE is now 26 — do not use for the current bundle) |
 | [`tools/openal/`](tools/openal/) [`tools/freetype/`](tools/freetype/) [`tools/gl4es/`](tools/gl4es/) [`tools/sdl/`](tools/sdl/) [`tools/shaderc/`](tools/shaderc/) [`tools/oshi/`](tools/oshi/) | OpenAL / FreeType / gl4es / SDL3 / shaderc / oshi |
 
 - Index: [`tools/README.md`](tools/README.md)

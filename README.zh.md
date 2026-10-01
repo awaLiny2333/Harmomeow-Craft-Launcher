@@ -42,12 +42,13 @@ Harmomeow Craft Launcher 面向**鸿蒙（HarmonyOS）PC**：不依赖 Android �
 **版本管理**
 - **在线下载 / 安装原版**任意版本（BMCLAPI／官方源切换、正式版/快照/其他过滤）。
 - **逐版本「版本隔离」**开关：存档 / 选项 / 日志落版本目录，与其它版本互不干扰（与 HMCL / PCL 同构，所以 `.minecraft` 目录互相兼容！）。
-- 逐版本**渲染后端**选择（根据版本推荐 / 桌面 OpenGL / GL4ES(兼容)）。
+- 逐版本**渲染后端**选择（根据版本推荐 / 桌面 OpenGL / GL4ES(兼容) / Vulkan（MC ≥ 26.2，实验））。
 
 **Mod loader（模组加载器）**
 - **安装 Fabric**：在原版版本旁选 **Fabric** 并挑 loader 版本（列表实时取自 FabricMC 元数据 —— Fabric 官方提供 loader 的游戏版本都能装）。Fabric 元数据 / 库取自 FabricMC、**支持 BMCLAPI 镜像**；且 **mod loader 下载源与游戏下载源相互独立**。
+- **安装 Forge / NeoForge**：在原版版本旁安装 **Forge（MC 1.7 – 1.20.1）** 或 **NeoForge（MC 1.20.2+）**；各自有独立的 loader 版本列表与独立于游戏源的下载源。
 - 实例写盘为 **HMCL 补丁式单实例布局**（顶层扁平化 + `patches[]`），因此 `.minecraft` 目录与 **HMCL 互通** —— HMCL 能读本启动器装的实例，本启动器也能启动 HMCL 装的 Fabric 实例。
-- 两种清单形态（`inheritsFrom` 与 HMCL `patches`）都能读取；版本卡片会显示识别出的类型：**原版 / Fabric / Legacy Fabric / 未知**。
+- 两种清单形态（`inheritsFrom` 与 HMCL `patches`）都能读取；版本卡片会显示识别出的类型：**原版 / Forge / NeoForge / Fabric / Legacy Fabric / 未知**。
 
 **账户**
 - **离线账户**：多账户、UUID 等信息即时展示。
@@ -67,10 +68,14 @@ Harmomeow Craft Launcher 面向**鸿蒙（HarmonyOS）PC**：不依赖 Android �
 - **鼠标抓取采样 = 显示帧率**：grab（鼠标锁定）时鼠标采样与 UI 帧率同步；非 grab 走原生约 500Hz 绝对坐标直通（跟手一些）。
 - **物理键盘 F 键**：F 行为可能会有一些问题，我们已经尽力优化 🤪。
 - **MC ≥ 26.2 的原生 Vulkan 后端**：KirinX90 的 Vulkan 驱动确实少报了几个 MC 需要的扩展；我们让它走自研 loader shim（`libmeowvulkan.so`），因此原生 Vulkan 后端可用（26.3 已实机验证）。
+- **Vulkan 后端仍是实验档**：仅 MC ≥ 26.2、可选；GL 仍是默认档，也是回退档。
 - **1.16.5 首屏无文字** 这个真的不知道为什么了，非常诡异。
 - 平台 `libGLv4` 为 **Mesa Zink**（GL-on-Vulkan），偶发 20–70ms 尖刺，非应用层可解。
 - 更老（1.4.x / 1.5.x）未验证，**不在**支持窗口。
 - **我们安装并支持 Fabric、Forge（MC 1.7 – 1.20.1）与 NeoForge（MC 1.20.2+）**。这些范围之外的其它启动器装的实例（**其它版本的 Forge / NeoForge、Quilt / …**）会显示为「未知」，不保证能启动。
+- **独立 OptiFine 不在支持范围** —— 我们只支持 OptiFine **与 Forge / LiteLoader 共存**的情形；无 Forge / LiteLoader 的独立 OptiFine 实例不受支持。
+- **手机上不能在应用内安装 Forge ≥ 1.13 与 NeoForge 1.20.2+** —— 安装期需要一个独立进程里的工具 JVM，而 `phone` 不提供该能力；外部装好的实例可以正常启动。
+- **Forge 1.17 – 1.17.1 使用随包的 Java 26** —— 该段 HMCL 建议 ≤ 17，而我们没有 JRE 17 档，故这段若在真机上出问题属已知偏差。
 
 ## 获取与安装
 
@@ -128,6 +133,7 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 | 组件 | 版本 | 许可 | 随包 | 说明 |
 |---|---|---|---|---|
 | OpenJDK / JRE | 26.0.2.1（官方 glibc 件；二进制魔改 + 自编 `libjli`/`libjvm`） | GPL-2.0 + Classpath-Exception | ✅ | 运行时；**全自持（零黑箱）**——见 `tools/jre26/` |
+| OpenJDK / JRE（legacy） | 8u504-b01（Eclipse Adoptium Temurin 8，glibc；二进制魔改 + 自编 `libjli`/`libjvm`） | GPL-2.0 + Classpath-Exception | ✅ | **随包第二套 JRE（Java 8）**，服务 legacy 段（Forge ≤ 1.16）；**全自持（零黑箱）**——见 `tools/jre8/` |
 | LWJGL | 3.4.3 / 2.9.3 | BSD-3 | ✅ | **现代单代（3.4.3，含 3.4.x 兼容 shim）+ legacy LWJGL2**，按 MC 版本选代 |
 | OpenAL Soft | 1.24.3 | LGPL-2.0+ | ✅ | OHAudio 后端 |
 | FreeType | 2.13.3 | FTL | ✅ | 字体渲染 |
@@ -139,7 +145,7 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 | ASM | 9.9.1（`org.ow2.asm` ×5） | BSD-3 | ✅ | 启动期 ASM 覆盖：让「声明的 ASM 读不懂随包 JRE 类文件」的 Forge 世代也能启动（见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) §7） |
 | gson | 2.13.1 | Apache-2.0 | — | MC / Fabric / Forge 清单声明的依赖；**不再随包** |
 
-> 完整第三方声明： [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)；许可全文： [`LICENSES/`](LICENSES/)；源码要约： [`SOURCE-OFFER.md`](SOURCE-OFFER.md)。
+> 完整第三方声明： [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)；许可全文： [`entry/src/main/resources/rawfile/licenses/`](entry/src/main/resources/rawfile/licenses/)；源码要约： [`SOURCE-OFFER.md`](SOURCE-OFFER.md)。
 
 ## 构建指南
 
@@ -149,8 +155,11 @@ ArkTS (entry HAP)                       :game 进程（独立 UIAbility / 进程
 
 | 工具 | 产物 |
 |---|---|
-| [`tools/lwjgl/`](tools/lwjgl/) | LWJGL 现代单代 jar（3.4.3）+ 3 native + `libffi` + extras 组包 |
+| [`tools/lwjgl/`](tools/lwjgl/) | LWJGL 现代单代 jar（3.4.3）+ 4 native（含 `liblwjgl_vma.so`）+ `libffi` + extras 组包 |
 | [`tools/lwjgl2/`](tools/lwjgl2/) | legacy LWJGL2 `liblwjgl.so`（MC 1.6–1.12） |
+| [`tools/jre26/`](tools/jre26/) | 随包 JRE 26 集（`libs/*.so` + `java.home` 数据镜像） |
+| [`tools/jre8/`](tools/jre8/) | **第二套**随包 JRE（legacy，Java 8），服务 Forge ≤ 1.16 |
+| [`tools/jre25/`](tools/jre25/) | —（历史配方：JRE 25 时代；随包 JRE 已升级到 26，**勿用于当前随包**） |
 | [`tools/openal/`](tools/openal/) [`tools/freetype/`](tools/freetype/) [`tools/gl4es/`](tools/gl4es/) [`tools/sdl/`](tools/sdl/) [`tools/shaderc/`](tools/shaderc/) [`tools/oshi/`](tools/oshi/) | OpenAL / FreeType / gl4es / SDL3 / shaderc / oshi |
 
 - 总索引：[`tools/README.md`](tools/README.md)
