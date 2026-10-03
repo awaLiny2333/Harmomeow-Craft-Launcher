@@ -83,6 +83,8 @@ export class GameInputController {
    * 不随 surface resize 变化 ⇒ resize 无需重注册。
    */
   private touchFilterWinId: number = 0;
+  /** 窗口级按键 filter 已注册到的窗口 id（Tab 接管用；0 = 未注册，与触屏同生命周期）。 */
+  private keyFilterWinId: number = 0;
   /** 触屏当鼠标（高级选项，应用级设置；窗口存活期内固定，改后下次开窗生效）。 */
   private touchAsMouse: boolean = false;
   /** 触屏转视角倍率（高级选项百分比 / 100；独立于鼠标手感）。 */
@@ -235,6 +237,38 @@ export class GameInputController {
     this.winId = 0;
     this.winIdPending = undefined;
     this.touchFilterWinId = 0;
+    this.keyFilterWinId = 0;
+  }
+
+  /**
+   * 注册窗口级按键 filter（**Tab 由 native 接管**）。平台从不下发 Tab 的 UP（窗口层实测
+   * 只有 DOWN，其它键成对）⇒ MC 的玩家列表松手不消失。native 侧消费 Tab、按 GLFW 语义
+   * 转发 press/repeat，并用 `OH_Input_GetKeyState` 判松手（见 `tabWatchdogTick`）；
+   * 其它键不拦截。窗口 id / 幂等门 / 注销时机与既有两个 filter 完全一致。
+   */
+  private ensureKeyFilter(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.ensureWindowId().then((wid: number) => {
+      if (this.disposed || wid <= 0 || this.keyFilterWinId === wid) {
+        return;
+      }
+      const b = this.bridge;
+      if (b === undefined || b.keyFilterStart === undefined) {
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'key filter start skipped: bridge/entry unavailable');
+        return;
+      }
+      try {
+        const rc: number = b.keyFilterStart(wid);
+        if (rc === 0) {
+          this.keyFilterWinId = wid;
+        }
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'key filter start: win=%{public}d rc=%{public}d', wid, rc);
+      } catch (e) {
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'key filter start err: %{public}s', JSON.stringify(e));
+      }
+    });
   }
 
   /**
@@ -333,6 +367,7 @@ export class GameInputController {
         return;
       }
       this.ensureTouchFilter();
+      this.ensureKeyFilter(); // 窗口级按键 filter：Tab 由 native 接管
     }).catch((e: Error) => {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'touch register bridge err: %{public}s',
         JSON.stringify(e.message));
@@ -748,6 +783,9 @@ export class GameInputController {
       this.scheduleImeForMenu();
     }
     this.pollImePending();
+    /* Tab 松手检测：平台不下发 Tab 的 UP，由 native 查 OH_Input_GetKeyState 补发 RELEASE。
+     * 未持有 Tab 时是空操作（一次标志位读）。 */
+    b.tabWatchdogTick?.();
   }
 
   /** 焦点回到 XComponent：若 MC 仍想 grab，按需重锁光标。 */
@@ -1258,10 +1296,14 @@ export class GameInputController {
     if (wid <= 0 || b === undefined) {
       return;
     }
-    /* 两个窗口级 filter 一起收尾：只停一个会留下不对称，窗口重开时的行为不可预期。 */
+    /* 三个窗口级 filter 一起收尾：只停一个会留下不对称，窗口重开时的行为不可预期。 */
     try {
       if (b.mouseFilterStop !== undefined) {
         b.mouseFilterStop(wid);
+      }
+      if (b.keyFilterStop !== undefined) {
+        const krc: number = b.keyFilterStop(wid);
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'keyFilterStop win=%{public}d -> %{public}d', wid, krc);
       }
       if (b.touchFilterStop !== undefined) {
         const rc: number = b.touchFilterStop(wid);

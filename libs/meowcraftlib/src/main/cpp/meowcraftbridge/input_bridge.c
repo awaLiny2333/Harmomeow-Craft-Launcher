@@ -26,6 +26,7 @@
  */
 #include <jni.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -282,11 +283,24 @@ int meowGlfwRequestClose(void) {
 /* SPSC ring producer                                                        */
 /* ------------------------------------------------------------------------- */
 
+/*
+ * Producers do NOT all live on the ArkTS UI thread: the window-level
+ * mouse/touch/key filters (see below) are invoked from whichever input thread
+ * the platform picks - measured for the key filter: five distinct thread ids
+ * within one session, only one of which is the ArkTS producer. A leaf lock
+ * therefore guards the slot write + the release increment; it holds no GL
+ * state and calls nothing, so it cannot deadlock against the render thread
+ * (which only ever reads on its own side of the counter).
+ */
+static pthread_mutex_t g_ringLock = PTHREAD_MUTEX_INITIALIZER;
+
 static void meow_ring_push(int type, int i1, int i2, int i3, int i4) {
     struct meow_environ_s *env = meow_environ;
     if (env == NULL) {
         return;
     }
+
+    pthread_mutex_lock(&g_ringLock);
     MeowInputEvent *event = &env->events[env->inEventIndex];
     event->type = type;
     event->i1 = i1;
@@ -300,6 +314,7 @@ static void meow_ring_push(int type, int i1, int i2, int i3, int i4) {
     }
     env->inEventIndex = next;
     atomic_fetch_add_explicit(&env->eventCounter, 1, memory_order_release);
+    pthread_mutex_unlock(&g_ringLock);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1105,6 +1120,135 @@ int meowMouseFilterStop(int32_t windowId) {
     g_filterRegistered = 0;
     g_filterWindowId = 0;
     MEOWLOGI("mouse filter stop rc=%{public}d", (int)rc);
+    return (int)rc;
+}
+
+/* ------------------------------------------------------------------------- */
+/* window-level key event filter: Tab is taken over here                     */
+/*                                                                           */
+/* MC's player list is hold-to-show on Tab, but the platform never delivers    */
+/* Tab's UP to the application: this filter - which sits below app-internal    */
+/* dispatch - sees the DOWN (plus auto-repeats every ~52 ms) and not a single  */
+/* UP, while ESC / W / letters all pair up. Consuming the DOWN does not bring  */
+/* the UP back, so the release has to be *asked for* rather than observed.     */
+/*                                                                           */
+/* Tab is therefore consumed here (the app-internal path, focus traversal      */
+/* included, never sees it) and re-sent through the normal ring:               */
+/*   press / auto-repeat  <- this filter (platform 1=DOWN 2=UP 0=CANCEL)       */
+/*   release              <- OH_Input_GetKeyState(KEYCODE_TAB), i.e. the       */
+/*                           multimodal-input service's own key state          */
+/*                           (API 12, no permission), polled by the ArkTS       */
+/*                           game-window timer via meowTabWatchdogTick.         */
+/* Every other key returns false and keeps the plain ArkUI path.               */
+/* ------------------------------------------------------------------------- */
+
+static int g_keyFilterRegistered;
+static int32_t g_keyFilterWindowId;
+static int g_keyTabPending;           /* our own Tab press is outstanding */
+static int g_keyTabQueryLogged;       /* failed state query already reported */
+static Input_KeyState *g_keyTabState; /* lazily created, used from one thread */
+
+/* 1 = pressed per the service, 0 = released, -1 = cannot answer. */
+static int meow_tab_state(void) {
+    int32_t state;
+
+    if (g_keyTabState == NULL) {
+        g_keyTabState = OH_Input_CreateKeyState();
+        if (g_keyTabState == NULL) {
+            return -1;
+        }
+    }
+    OH_Input_SetKeyCode(g_keyTabState, 2049 /* KEYCODE_TAB */);
+    if (OH_Input_GetKeyState(g_keyTabState) != INPUT_SUCCESS) {
+        return -1;
+    }
+    state = OH_Input_GetKeyPressed(g_keyTabState);
+    if (state == 0 /* KEY_PRESSED */) {
+        return 1;
+    }
+    if (state == 1 /* KEY_RELEASED */) {
+        return 0;
+    }
+    return -1;
+}
+
+/* Called from the ArkTS game-window timer (16 ms); one flag read when idle. */
+void meowTabWatchdogTick(void) {
+    struct meow_environ_s *env = meow_environ;
+    int state;
+
+    if (!g_keyTabPending || env == NULL || !env->isInputReady) {
+        return;
+    }
+
+    state = meow_tab_state();
+    if (state > 0) {
+        return; /* still held per the service */
+    }
+    if (state < 0) {
+        /* The service will not answer, so there is nothing left to detect the
+         * release with: Tab simply stays down until it answers again. Reported
+         * once per press, because a silent failure here looks exactly like the
+         * symptom this mechanism exists to fix. */
+        if (!g_keyTabQueryLogged) {
+            g_keyTabQueryLogged = 1;
+            MEOWLOGW("KEYFILTER TAB: GetKeyState unavailable, release not detected");
+        }
+        return;
+    }
+
+    g_keyTabPending = 0;
+    critical_send_key(258, 0, 0, 0); /* GLFW_RELEASE */
+}
+
+static bool meow_key_filter(Input_KeyEvent *event) {
+    int32_t action;
+    int glfwAction;
+
+    if (event == NULL) {
+        return false;
+    }
+    if (OH_Input_GetKeyEventKeyCode(event) != 2049 /* KEYCODE_TAB */) {
+        return false; /* every other key keeps the plain ArkUI path */
+    }
+
+    /* Platform 1 = DOWN, 2 = UP, 0 = CANCEL vs GLFW 1 = PRESS, 0 = RELEASE, and a
+     * DOWN while our press is still outstanding is the platform's auto-repeat ->
+     * GLFW REPEAT (2). mods = 0: Input_KeyEvent carries no meta state and MC's
+     * player list does not mod-combine Tab. */
+    action = OH_Input_GetKeyEventAction(event);
+    glfwAction = (action == 1) ? (g_keyTabPending ? 2 : 1) : 0;
+
+    g_keyTabPending = (glfwAction != 0) ? 1 : 0;
+    if (glfwAction == 1) {
+        g_keyTabQueryLogged = 0; /* fresh press: report a failed query again */
+    }
+    critical_send_key(258, 0, glfwAction, 0);
+    return true; /* consumed: the focus system and 走焦 never see Tab */
+}
+
+int meowKeyFilterStart(int32_t windowId) {
+    if (g_keyFilterRegistered && g_keyFilterWindowId == windowId) {
+        return 0;
+    }
+    int32_t rc = OH_NativeWindowManager_RegisterKeyEventFilter(windowId, meow_key_filter);
+    if (rc == 0) {
+        g_keyFilterRegistered = 1;
+        g_keyFilterWindowId = windowId;
+        g_keyTabPending = 0; /* nothing can be outstanding across a (re)registration */
+        MEOWLOGI("KEYFILTER start window=%{public}d", windowId);
+    } else {
+        MEOWLOGE("KEYFILTER start failed rc=%{public}d", (int)rc);
+    }
+    return (int)rc;
+}
+
+int meowKeyFilterStop(int32_t windowId) {
+    int32_t rc = OH_NativeWindowManager_UnregisterKeyEventFilter(windowId);
+    g_keyFilterRegistered = 0;
+    g_keyFilterWindowId = 0;
+    g_keyTabPending = 0;
+    MEOWLOGI("KEYFILTER stop rc=%{public}d", (int)rc);
     return (int)rc;
 }
 

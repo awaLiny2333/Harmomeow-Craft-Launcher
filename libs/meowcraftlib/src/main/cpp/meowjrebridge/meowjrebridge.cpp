@@ -1140,6 +1140,70 @@ static napi_value MouseFilterStop(napi_env env, napi_callback_info info) {
     return MkInt32(env, rc);
 }
 
+/* 窗口级按键过滤器：**Tab 由 native 接管**（压平台不下发 Tab 的 UP 这一行为）。
+ * 参数 windowId，返回 native rc。 */
+static napi_value KeyFilterStart(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t windowId = 0;
+    if (argc >= 1) {
+        napi_get_value_int32(env, args[0], &windowId);
+    }
+    int rc = -1;
+    void* lib = MeowCraftBridgeLib();
+    if (lib != nullptr) {
+        typedef int (*Fn)(int32_t);
+        auto* fn = reinterpret_cast<Fn>(dlsym(lib, "meowKeyFilterStart"));
+        if (fn != nullptr) {
+            rc = fn(windowId);
+        }
+    }
+    if (rc != 0) {
+        OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG,
+                     "keyFilterStart(win=%{public}d) -> %{public}d", windowId, rc);
+    }
+    return MkInt32(env, rc);
+}
+
+static napi_value KeyFilterStop(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t windowId = 0;
+    if (argc >= 1) {
+        napi_get_value_int32(env, args[0], &windowId);
+    }
+    int rc = -1;
+    void* lib = MeowCraftBridgeLib();
+    if (lib != nullptr) {
+        typedef int (*Fn)(int32_t);
+        auto* fn = reinterpret_cast<Fn>(dlsym(lib, "meowKeyFilterStop"));
+        if (fn != nullptr) {
+            rc = fn(windowId);
+        }
+    }
+    OH_LOG_Print(LOG_APP, LOG_INFO, LOG_DOMAIN, LOG_TAG,
+                 "keyFilterStop(win=%{public}d) -> %{public}d", windowId, rc);
+    return MkInt32(env, rc);
+}
+
+/* Tab 松手检测：平台不下发 Tab 的 UP，native 侧查 OH_Input_GetKeyState 判松手并补发
+ * GLFW RELEASE。ArkTS 的游戏窗 16 ms 定时器每次调一次；未持有 Tab 时是空操作。 */
+static napi_value TabWatchdogTick(napi_env env, napi_callback_info info) {
+    (void)env;
+    (void)info;
+    void* lib = MeowCraftBridgeLib();
+    if (lib != nullptr) {
+        typedef void (*Fn)(void);
+        auto* fn = reinterpret_cast<Fn>(dlsym(lib, "meowTabWatchdogTick"));
+        if (fn != nullptr) {
+            fn();
+        }
+    }
+    return nullptr;
+}
+
 /* 触屏 → 鼠标：窗口级 touch filter（与 MouseFilter* 同一套 原点/缩放 口径）。
  * 开关与灵敏度由 ArkTS 以参数传入（启动器「高级选项」的设置），不看任何 env。 */
 static napi_value TouchFilterStart(napi_env env, napi_callback_info info) {
@@ -1437,6 +1501,12 @@ napi_value Init(napi_env env, napi_value exports) {
         {"touchFilterStart", nullptr, TouchFilterStart, nullptr, nullptr, nullptr, napi_default,
          nullptr},
         {"touchFilterStop", nullptr, TouchFilterStop, nullptr, nullptr, nullptr, napi_default,
+         nullptr},
+        {"keyFilterStart", nullptr, KeyFilterStart, nullptr, nullptr, nullptr, napi_default,
+         nullptr},
+        {"keyFilterStop", nullptr, KeyFilterStop, nullptr, nullptr, nullptr, napi_default,
+         nullptr},
+        {"tabWatchdogTick", nullptr, TabWatchdogTick, nullptr, nullptr, nullptr, napi_default,
          nullptr},
         {"touchSetExcludeRects", nullptr, TouchSetExcludeRects, nullptr, nullptr, nullptr,
          napi_default, nullptr},

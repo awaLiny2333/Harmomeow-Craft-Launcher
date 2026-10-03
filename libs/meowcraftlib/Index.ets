@@ -28,6 +28,11 @@ export const mouseFilterStop = bridge.mouseFilterStop;
 // 触屏 -> 鼠标：窗口级 touch filter（与 mouseFilter* 同一套原点/缩放口径）。
 export const touchFilterStart = bridge.touchFilterStart;
 export const touchFilterStop = bridge.touchFilterStop;
+// 窗口级按键过滤器：Tab 由 native 接管（平台不下发 Tab 的 UP），其它键不拦截。
+export const keyFilterStart = bridge.keyFilterStart;
+export const keyFilterStop = bridge.keyFilterStop;
+// Tab 松手检测（查 OH_Input_GetKeyState）：由游戏窗 16 ms 定时器驱动。
+export const tabWatchdogTick = bridge.tabWatchdogTick;
 // 虚拟按键排除区（display px CSV）：命中区内的手指只按按钮，不驱动光标/点击。
 export const touchSetExcludeRects = bridge.touchSetExcludeRects;
 // 原生鼠标增量输入：挂 NDK 覆盖节点收 NODE_ON_MOUSE（grab 视角驱动）。

@@ -132,6 +132,22 @@ export const touchFilterStart: (windowId: number, ox: number, oy: number, scale:
 export const touchFilterStop: (windowId: number) => number;
 
 /**
+ * 窗口级按键过滤器：**Tab 由此接管**。平台从不下发 Tab 的 UP（窗口层实测只有 DOWN，
+ * 其它键成对），且消费 DOWN 也不能让它恢复 ⇒ 松手只能向系统查：native 用
+ * `OH_Input_GetKeyState(KEYCODE_TAB)`（API 12，无权限）判，并按 GLFW 语义自己转发
+ * press/repeat/release。**其它键一律不拦截**（返回 false），行为不变。
+ * @param windowId 游戏窗口 id。
+ */
+export const keyFilterStart: (windowId: number) => number;
+export const keyFilterStop: (windowId: number) => number;
+
+/**
+ * Tab 松手检测：由游戏窗 16 ms 定时器每次调用一次，native 侧查 `OH_Input_GetKeyState`
+ * 判松手并补发 GLFW RELEASE（仅在持有 Tab 时工作，空闲即一次标志位读）。
+ */
+export const tabWatchdogTick: () => void;
+
+/**
  * 上报虚拟按键排除区：CSV（display px，"x,y,w,h;x,y,w,h"）；空串清空。
  * 命中这些矩形的触点只按虚拟按键，不驱动 MC 光标/点击。
  */
