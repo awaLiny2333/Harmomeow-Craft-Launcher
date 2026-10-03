@@ -50,11 +50,11 @@ export interface JreLibModule {
   touchFilterStart?: (windowId: number, ox: number, oy: number, scale: number,
     enable: boolean, sens: number) => number;
   touchFilterStop?: (windowId: number) => number;
-  /** 窗口级按键过滤器：Tab 在 native 接管并自行转发（平台不下发 Tab 的 UP）。 */
+  /** 窗口级按键过滤器：Tab 与 F 行由 native 接管（平台对这两者的边沿不可靠）。 */
   keyFilterStart?: (windowId: number) => number;
   keyFilterStop?: (windowId: number) => number;
-  /** Tab 松手检测：平台不下发 Tab 的 UP，由 native 查 OH_Input_GetKeyState 补发 RELEASE。 */
-  tabWatchdogTick?: () => void;
+  /** 键状态轮询：结算 native 欠 MC 的 RELEASE（16 ms 定时器驱动）。 */
+  inputKeyTick?: () => void;
   /** 虚拟按键排除区（display px CSV "x,y,w,h;..."）；命中区内的手指只按按钮，空串清空。 */
   touchSetExcludeRects?: (csv: string) => void;
   /** 原生鼠标增量输入：挂 NDK 覆盖节点，grab 时按 rawDelta 驱动虚拟光标。 */

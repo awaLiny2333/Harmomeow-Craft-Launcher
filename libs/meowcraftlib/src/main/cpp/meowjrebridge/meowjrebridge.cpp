@@ -1188,15 +1188,15 @@ static napi_value KeyFilterStop(napi_env env, napi_callback_info info) {
     return MkInt32(env, rc);
 }
 
-/* Tab 松手检测：平台不下发 Tab 的 UP，native 侧查 OH_Input_GetKeyState 判松手并补发
- * GLFW RELEASE。ArkTS 的游戏窗 16 ms 定时器每次调一次；未持有 Tab 时是空操作。 */
-static napi_value TabWatchdogTick(napi_env env, napi_callback_info info) {
+/* 键状态轮询：由游戏窗 16 ms 定时器调用，结算 native 欠 MC 的 RELEASE（Tab 全程、
+ * F 行的和弦假按住与未收到 Up 的键）。空闲时是一次空遍历。 */
+static napi_value InputKeyTick(napi_env env, napi_callback_info info) {
     (void)env;
     (void)info;
     void* lib = MeowCraftBridgeLib();
     if (lib != nullptr) {
         typedef void (*Fn)(void);
-        auto* fn = reinterpret_cast<Fn>(dlsym(lib, "meowTabWatchdogTick"));
+        auto* fn = reinterpret_cast<Fn>(dlsym(lib, "meowInputKeyTick"));
         if (fn != nullptr) {
             fn();
         }
@@ -1506,7 +1506,7 @@ napi_value Init(napi_env env, napi_value exports) {
          nullptr},
         {"keyFilterStop", nullptr, KeyFilterStop, nullptr, nullptr, nullptr, napi_default,
          nullptr},
-        {"tabWatchdogTick", nullptr, TabWatchdogTick, nullptr, nullptr, nullptr, napi_default,
+        {"inputKeyTick", nullptr, InputKeyTick, nullptr, nullptr, nullptr, napi_default,
          nullptr},
         {"touchSetExcludeRects", nullptr, TouchSetExcludeRects, nullptr, nullptr, nullptr,
          napi_default, nullptr},

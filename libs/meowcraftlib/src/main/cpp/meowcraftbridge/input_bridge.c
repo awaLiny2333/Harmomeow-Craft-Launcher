@@ -8,15 +8,21 @@
  *   - the exported plain-C critical_send_* producers and meow* helpers that the
  *     ArkTS side reaches through libmeowjrebridge;
  *   - the render-thread event pump driven by glfwPollEvents:
- *         meowStartPumping -> meowPumpEvents (once per window) -> meowStopPumping.
+ *         meowStartPumping -> meowPumpEvents (once per window) -> meowStopPumping;
+ *   - the window-level mouse / touch / key event filters
+ *     (oh_window_event_filter.h) used by the game window: the first two bypass
+ *     ArkUI's pointer throttling, and the key filter takes Tab and the F row
+ *     over completely (see the key takeover kernel below).
  *
- * Event delivery uses an SPSC ring of MEOW_RING_CAPACITY 20-byte entries. One
- * producer thread (any ArkTS/UI thread) appends at inEventIndex and publishes
- * with a release increment of eventCounter. The single consumer (the render
- * thread) snapshots the counter at StartPumping, drains
- * [outEventIndex, outTargetIndex) during PumpEvents, and commits in
- * StopPumping. Pointer motion additionally uses latest-value slots
- * (cursorX/cursorY + a dirty flag) so that only the newest position is sent.
+ * Event delivery uses an SPSC ring of MEOW_RING_CAPACITY 20-byte entries,
+ * appended at inEventIndex and published with a release increment of
+ * eventCounter; meow_ring_push serialises the appenders with a leaf lock,
+ * because the window-level filters are invoked on their own threads rather than
+ * on the ArkTS one. The single consumer (the render thread) snapshots the
+ * counter at StartPumping, drains [outEventIndex, outTargetIndex) during
+ * PumpEvents, and commits in StopPumping. Pointer motion additionally uses
+ * latest-value slots (cursorX/cursorY + a dirty flag) so that only the newest
+ * position is sent.
  *
  * Window resizes are discovered by the pump from the width/height mirrors that
  * meowSetSurfaceId / meowResizeSurface / critical_send_screen_size write. The
@@ -1124,45 +1130,88 @@ int meowMouseFilterStop(int32_t windowId) {
 }
 
 /* ------------------------------------------------------------------------- */
-/* window-level key event filter: Tab is taken over here                     */
+/* key takeover kernel: Tab and the F row                                    */
 /*                                                                           */
-/* MC's player list is hold-to-show on Tab, but the platform never delivers    */
-/* Tab's UP to the application: this filter - which sits below app-internal    */
-/* dispatch - sees the DOWN (plus auto-repeats every ~52 ms) and not a single  */
-/* UP, while ESC / W / letters all pair up. Consuming the DOWN does not bring  */
-/* the UP back, so the release has to be *asked for* rather than observed.     */
+/* The platform reports key *edges* unreliably, while its key *state* is      */
+/* accurate and queryable (OH_Input_GetKeyState, API 12, no permission). This */
+/* filter sits below app-internal dispatch, so it is the lowest place the app */
+/* can watch. Two measured facts, one shape:                                 */
 /*                                                                           */
-/* Tab is therefore consumed here (the app-internal path, focus traversal      */
-/* included, never sees it) and re-sent through the normal ring:               */
-/*   press / auto-repeat  <- this filter (platform 1=DOWN 2=UP 0=CANCEL)       */
-/*   release              <- OH_Input_GetKeyState(KEYCODE_TAB), i.e. the       */
-/*                           multimodal-input service's own key state          */
-/*                           (API 12, no permission), polled by the ArkTS       */
-/*                           game-window timer via meowTabWatchdogTick.         */
-/* Every other key returns false and keeps the plain ArkUI path.               */
+/*   - Tab: its UP is never delivered. This filter sees the DOWN plus its     */
+/*     auto-repeats and not one UP, while ESC / W / letters all pair up, and  */
+/*     consuming the DOWN does not bring the UP back. So Tab is consumed here */
+/*     (no focus traversal either) and re-sent by us, its release taken from  */
+/*     the key state.                                                        */
+/*   - The F row cannot express a hold inside a chord: pressing any second F  */
+/*     key makes the firmware drop the first one (measured: Fa UP -> 2-4 ms -> */
+/*     Fb DOWN, and no real Fa UP ever follows). MC's F3-held combinations    */
+/*     (the F3+F4 game-mode switcher) would end the moment that UP is         */
+/*     forwarded, so an F-key UP is held back briefly and, if another F-row   */
+/*     key follows, becomes a fabricated hold.                                */
+/*                                                                           */
+/* Every key whose release we owe MC is one entry in the tracked set, settled */
+/* by meowInputKeyTick: by a deadline (a fabricated chord hold) or by the     */
+/* service state (Tab, and any F key the platform has not released yet).      */
+/* The rest of the keyboard returns false and keeps the plain ArkUI path.     */
 /* ------------------------------------------------------------------------- */
+
+#define MEOW_KEYCODE_TAB 2049
+#define MEOW_GLFW_KEY_TAB 258
+#define MEOW_MAX_TRACKED 8
+
+/* How long an F-key UP is held back to see whether another F-row key follows.
+ * The measured serialisation gap is 2-4 ms, so this is pure margin (the tick
+ * that settles it only runs every 16 ms anyway). */
+#define MEOW_FN_UP_LOOKAHEAD_MS 20
+/* Once a chord is recognised the first key stays down until the F row has been
+ * quiet for this long. This is the single tunable of the F-row policy: the
+ * platform cannot tell us when F3 is really released - its own key state reports
+ * "released" the moment the firmware drops the key - so the quiet period is what
+ * stands in for "the user let go". */
+#define MEOW_FN_CHORD_HOLD_MS 400
 
 static int g_keyFilterRegistered;
 static int32_t g_keyFilterWindowId;
-static int g_keyTabPending;           /* our own Tab press is outstanding */
-static int g_keyTabQueryLogged;       /* failed state query already reported */
-static Input_KeyState *g_keyTabState; /* lazily created, used from one thread */
+static Input_KeyState *g_keyState; /* lazily created, used from one thread */
+
+struct meow_tracked_key {
+    int32_t keyCode;     /* multimodal key code (the key the service knows) */
+    int glfwKey;         /* what MC must be told when the release finally comes */
+    int warned;          /* state query already reported as unavailable */
+    int upSeen;          /* the platform sent its own UP: the next DOWN is a new press */
+    int chord;           /* this release is a fabricated chord hold */
+    int64_t releaseAtMs; /* >0 = deadline mode; 0 = settle by the service state */
+};
+
+static struct meow_tracked_key g_tracked[MEOW_MAX_TRACKED];
+static int g_trackedCount;
+static int g_keyTrackWarned; /* tracked-table overflow already reported */
+
+/*
+ * The tracked table is touched from two sides: the window filter callbacks (on
+ * their own threads) mutate it, while the ArkTS game-window timer walks it in
+ * meowInputKeyTick. Everything that reads or writes the table therefore runs
+ * under this leaf lock, and the critical_send_key() calls happen *after*
+ * unlocking - the lock is never held while the ring lock or a Java upcall is
+ * taken, so it stays a leaf and cannot deadlock.
+ */
+static pthread_mutex_t g_keyLock = PTHREAD_MUTEX_INITIALIZER;
 
 /* 1 = pressed per the service, 0 = released, -1 = cannot answer. */
-static int meow_tab_state(void) {
+static int meow_key_state(int32_t keyCode) {
     int32_t state;
 
-    if (g_keyTabState == NULL) {
-        g_keyTabState = OH_Input_CreateKeyState();
-        if (g_keyTabState == NULL) {
+    if (g_keyState == NULL) {
+        g_keyState = OH_Input_CreateKeyState();
+        if (g_keyState == NULL) {
             return -1;
         }
     }
-    OH_Input_SetKeyCode(g_keyTabState, 2049 /* KEYCODE_TAB */);
-    if (OH_Input_GetKeyState(g_keyTabState) != INPUT_SUCCESS) {
+    OH_Input_SetKeyCode(g_keyState, keyCode);
+    if (OH_Input_GetKeyState(g_keyState) != INPUT_SUCCESS) {
         return -1;
     }
-    state = OH_Input_GetKeyPressed(g_keyTabState);
+    state = OH_Input_GetKeyPressed(g_keyState);
     if (state == 0 /* KEY_PRESSED */) {
         return 1;
     }
@@ -1172,58 +1221,274 @@ static int meow_tab_state(void) {
     return -1;
 }
 
-/* Called from the ArkTS game-window timer (16 ms); one flag read when idle. */
-void meowTabWatchdogTick(void) {
-    struct meow_environ_s *env = meow_environ;
-    int state;
-
-    if (!g_keyTabPending || env == NULL || !env->isInputReady) {
-        return;
-    }
-
-    state = meow_tab_state();
-    if (state > 0) {
-        return; /* still held per the service */
-    }
-    if (state < 0) {
-        /* The service will not answer, so there is nothing left to detect the
-         * release with: Tab simply stays down until it answers again. Reported
-         * once per press, because a silent failure here looks exactly like the
-         * symptom this mechanism exists to fix. */
-        if (!g_keyTabQueryLogged) {
-            g_keyTabQueryLogged = 1;
-            MEOWLOGW("KEYFILTER TAB: GetKeyState unavailable, release not detected");
+/* Caller holds g_keyLock. */
+static int meow_track_find(int32_t keyCode) {
+    for (int i = 0; i < g_trackedCount; i++) {
+        if (g_tracked[i].keyCode == keyCode) {
+            return i;
         }
+    }
+    return -1;
+}
+
+/*
+ * Remember that MC has the key down and the release is still owed to it.
+ * Returns 0 when the key is tracked, -1 when the table is full: the caller must
+ * not pretend MC has the key in that case, because a key without an entry would
+ * never be released. Caller holds g_keyLock.
+ */
+static int meow_key_track(int32_t keyCode, int glfwKey) {
+    struct meow_tracked_key *entry;
+
+    if (meow_track_find(keyCode) >= 0) {
+        return 0;
+    }
+    if (g_trackedCount >= MEOW_MAX_TRACKED) {
+        if (!g_keyTrackWarned) {
+            g_keyTrackWarned = 1;
+            MEOWLOGW("KEYFILTER: tracked-key table full, key kc=%{public}d dropped", keyCode);
+        }
+        return -1;
+    }
+    entry = &g_tracked[g_trackedCount++];
+    entry->keyCode = keyCode;
+    entry->glfwKey = glfwKey;
+    entry->warned = 0;
+    entry->upSeen = 0;
+    entry->chord = 0;
+    entry->releaseAtMs = 0;
+    return 0;
+}
+
+/* Caller holds g_keyLock. */
+static void meow_key_untrack(int32_t keyCode) {
+    int idx = meow_track_find(keyCode);
+
+    if (idx < 0) {
         return;
     }
+    g_tracked[idx] = g_tracked[--g_trackedCount];
+}
 
-    g_keyTabPending = 0;
-    critical_send_key(258, 0, 0, 0); /* GLFW_RELEASE */
+/* Drop every entry, releasing what MC still has down: nothing may stay pressed
+ * across a (re)registration. */
+static void meow_key_release_all(void) {
+    int release[MEOW_MAX_TRACKED];
+    int releaseCount = 0;
+
+    pthread_mutex_lock(&g_keyLock);
+    for (int i = 0; i < g_trackedCount; i++) {
+        release[releaseCount++] = g_tracked[i].glfwKey;
+    }
+    g_trackedCount = 0;
+    pthread_mutex_unlock(&g_keyLock);
+
+    for (int i = 0; i < releaseCount; i++) {
+        critical_send_key(release[i], 0, 0 /* GLFW_RELEASE */, 0);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* the F row                                                                 */
+/* ------------------------------------------------------------------------- */
+
+/* Key codes verified against oh_key_code.h; the GLFW sides match GlfwInput.ets. */
+static int meow_is_fn_key(int32_t keyCode) {
+    return (keyCode >= 2090 && keyCode <= 2101) || (keyCode >= 2816 && keyCode <= 2827);
+}
+
+static int meow_fn_glfw_key(int32_t keyCode) {
+    if (keyCode >= 2090 && keyCode <= 2101) {
+        return keyCode - 1800; /* F1..F12  -> 290..301 */
+    }
+    if (keyCode >= 2816 && keyCode <= 2827) {
+        return keyCode - 2514; /* F13..F24 -> 302..313 */
+    }
+    return 0;
+}
+
+/* Any F-row event counts as chord activity: a held partner keeps the fabricated
+ * hold alive. */
+static void meow_fn_chord_refresh(int64_t now) {
+    for (int i = 0; i < g_trackedCount; i++) {
+        struct meow_tracked_key *entry = &g_tracked[i];
+
+        if (entry->chord) {
+            entry->releaseAtMs = now + MEOW_FN_CHORD_HOLD_MS;
+        }
+    }
+}
+
+/* A second F-row key went down: any partner that is still held only because its
+ * UP was held back is now recognised as a chord and kept down. The key that just
+ * went down is the chord's other half, never a candidate itself. */
+static void meow_fn_chord_promote(int32_t chordKeyCode, int64_t now) {
+    for (int i = 0; i < g_trackedCount; i++) {
+        struct meow_tracked_key *entry = &g_tracked[i];
+
+        if (entry->keyCode == chordKeyCode || entry->chord || !entry->upSeen) {
+            continue;
+        }
+        if (!meow_is_fn_key(entry->keyCode)) {
+            continue;
+        }
+        entry->chord = 1;
+        entry->releaseAtMs = now + MEOW_FN_CHORD_HOLD_MS;
+        MEOWLOGI("KEYFILTER fn chord kc=%{public}d partner=%{public}d hold=%{public}dms",
+                 entry->keyCode, chordKeyCode, MEOW_FN_CHORD_HOLD_MS);
+    }
+}
+
+/*
+ * One F-row event. DOWN is forwarded as PRESS or REPEAT (the platform's own
+ * auto-repeat and its duplicate DOWNs both land in the same place, since MC only
+ * acts on PRESS); UP is not forwarded yet - it only arms the lookahead deadline
+ * that meow_fn_chord_promote may turn into a chord hold.
+ */
+static void meow_fn_key_event(int32_t keyCode, int32_t action, int64_t now) {
+    int glfwKey = meow_fn_glfw_key(keyCode);
+    int sendAction = -1; /* -1 = nothing to forward */
+
+    pthread_mutex_lock(&g_keyLock);
+    {
+        int idx = meow_track_find(keyCode);
+
+        meow_fn_chord_refresh(now);
+
+        if (action == 1) { /* DOWN */
+            meow_fn_chord_promote(keyCode, now);
+            if (idx < 0) {
+                if (meow_key_track(keyCode, glfwKey) == 0) {
+                    sendAction = 1 /* GLFW_PRESS */;
+                }
+            } else {
+                struct meow_tracked_key *entry = &g_tracked[idx];
+
+                if (entry->upSeen) { /* a genuine new press: the platform sent its UP first */
+                    entry->upSeen = 0;
+                    entry->chord = 0;
+                    entry->releaseAtMs = 0;
+                    sendAction = 1 /* GLFW_PRESS */;
+                } else {
+                    sendAction = 2 /* GLFW_REPEAT */;
+                }
+            }
+        } else if (idx < 0) {
+            sendAction = 0; /* UP of a key we never pressed: pass the release through */
+        } else {
+            struct meow_tracked_key *entry = &g_tracked[idx];
+
+            entry->upSeen = 1;
+            entry->releaseAtMs = now + MEOW_FN_UP_LOOKAHEAD_MS;
+        }
+    }
+    pthread_mutex_unlock(&g_keyLock);
+
+    if (sendAction >= 0) {
+        critical_send_key(glfwKey, 0, sendAction, 0);
+    }
+}
+
+/*
+ * Polled from the ArkTS game-window timer (16 ms). Settles every key whose
+ * release we owe MC: deadline entries when their deadline passes (fabricated
+ * chord holds), everything else as soon as the service reports it released.
+ */
+void meowInputKeyTick(void) {
+    struct meow_environ_s *env = meow_environ;
+    int release[MEOW_MAX_TRACKED];
+    int releaseCount = 0;
+    int64_t now;
+    int i = 0;
+
+    if (env == NULL || !env->isInputReady) {
+        return;
+    }
+    now = meow_now_ms();
+
+    pthread_mutex_lock(&g_keyLock);
+    while (i < g_trackedCount) {
+        struct meow_tracked_key *entry = &g_tracked[i];
+        int state;
+
+        if (entry->releaseAtMs > 0) {
+            if (now >= entry->releaseAtMs) {
+                release[releaseCount++] = entry->glfwKey;
+                meow_key_untrack(entry->keyCode);
+                continue; /* the slot i now holds the swapped-in entry */
+            }
+            i++;
+            continue;
+        }
+        state = meow_key_state(entry->keyCode);
+        if (state < 0) {
+            if (!entry->warned) {
+                entry->warned = 1;
+                MEOWLOGW("KEYFILTER kc=%{public}d: GetKeyState unavailable, release not detected",
+                         entry->keyCode);
+            }
+            i++;
+            continue;
+        }
+        if (state == 0) {
+            release[releaseCount++] = entry->glfwKey;
+            meow_key_untrack(entry->keyCode);
+            continue;
+        }
+        i++;
+    }
+    pthread_mutex_unlock(&g_keyLock);
+
+    for (i = 0; i < releaseCount; i++) {
+        critical_send_key(release[i], 0, 0 /* GLFW_RELEASE */, 0);
+    }
+}
+
+/*
+ * Tab's state machine. Platform 1 = DOWN, 2 = UP, 0 = CANCEL vs GLFW 1 = PRESS,
+ * 0 = RELEASE, and a DOWN while we already owe a release is the platform's
+ * auto-repeat -> GLFW REPEAT (2); a full table means "drop it rather than leave
+ * it stuck" (-1). Caller holds g_keyLock and sends whatever comes back.
+ */
+static int meow_tab_action_locked(int32_t action) {
+    if (action != 1) {
+        meow_key_untrack(MEOW_KEYCODE_TAB); /* the release goes out right away */
+        return 0;                           /* GLFW_RELEASE */
+    }
+    if (meow_track_find(MEOW_KEYCODE_TAB) >= 0) {
+        return 2; /* GLFW_REPEAT */
+    }
+    return (meow_key_track(MEOW_KEYCODE_TAB, MEOW_GLFW_KEY_TAB) == 0) ? 1 : -1;
 }
 
 static bool meow_key_filter(Input_KeyEvent *event) {
+    int32_t keyCode;
     int32_t action;
     int glfwAction;
 
     if (event == NULL) {
         return false;
     }
-    if (OH_Input_GetKeyEventKeyCode(event) != 2049 /* KEYCODE_TAB */) {
+    keyCode = OH_Input_GetKeyEventKeyCode(event);
+    action = OH_Input_GetKeyEventAction(event);
+
+    if (meow_is_fn_key(keyCode)) {
+        meow_fn_key_event(keyCode, action, meow_now_ms());
+        return true; /* consumed: the F row is ours from here on */
+    }
+    if (keyCode != MEOW_KEYCODE_TAB) {
         return false; /* every other key keeps the plain ArkUI path */
     }
 
-    /* Platform 1 = DOWN, 2 = UP, 0 = CANCEL vs GLFW 1 = PRESS, 0 = RELEASE, and a
-     * DOWN while our press is still outstanding is the platform's auto-repeat ->
-     * GLFW REPEAT (2). mods = 0: Input_KeyEvent carries no meta state and MC's
-     * player list does not mod-combine Tab. */
-    action = OH_Input_GetKeyEventAction(event);
-    glfwAction = (action == 1) ? (g_keyTabPending ? 2 : 1) : 0;
+    /* mods = 0: Input_KeyEvent carries no meta state, and MC's player list does
+     * not mod-combine Tab. */
+    pthread_mutex_lock(&g_keyLock);
+    glfwAction = meow_tab_action_locked(action);
+    pthread_mutex_unlock(&g_keyLock);
 
-    g_keyTabPending = (glfwAction != 0) ? 1 : 0;
-    if (glfwAction == 1) {
-        g_keyTabQueryLogged = 0; /* fresh press: report a failed query again */
+    if (glfwAction >= 0) {
+        critical_send_key(MEOW_GLFW_KEY_TAB, 0, glfwAction, 0);
     }
-    critical_send_key(258, 0, glfwAction, 0);
     return true; /* consumed: the focus system and 走焦 never see Tab */
 }
 
@@ -1235,7 +1500,7 @@ int meowKeyFilterStart(int32_t windowId) {
     if (rc == 0) {
         g_keyFilterRegistered = 1;
         g_keyFilterWindowId = windowId;
-        g_keyTabPending = 0; /* nothing can be outstanding across a (re)registration */
+        meow_key_release_all(); /* nothing may stay down across a (re)registration */
         MEOWLOGI("KEYFILTER start window=%{public}d", windowId);
     } else {
         MEOWLOGE("KEYFILTER start failed rc=%{public}d", (int)rc);
@@ -1247,7 +1512,7 @@ int meowKeyFilterStop(int32_t windowId) {
     int32_t rc = OH_NativeWindowManager_UnregisterKeyEventFilter(windowId);
     g_keyFilterRegistered = 0;
     g_keyFilterWindowId = 0;
-    g_keyTabPending = 0;
+    meow_key_release_all();
     MEOWLOGI("KEYFILTER stop rc=%{public}d", (int)rc);
     return (int)rc;
 }

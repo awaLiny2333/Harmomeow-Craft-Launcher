@@ -35,18 +35,13 @@ const IME_COOLDOWN_MS: number = 600;
 const IME_REFOCUS_AFTER_CLICK_MS: number = 10;
 /** 采样率 overlay 刷新间隔（ms）。 */
 const RATE_POLL_MS: number = 500;
-/**
- * 功能键释放延迟（ms）。平台在"按住功能键 + 按其它键"时会先发一个 spurious Up
- * （实测 F3+F6：F3 提前 1-3ms 被抬起）。F 键的 Up 延迟提交且**必发**（不因其它键取消），
- * 既让紧随的键仍看到 F3 按住（组合键成立），又不会粘键（到期即释放）。
- */
-const FKEY_RELEASE_GRACE_MS: number = 20;
 
 /**
  * 游戏输入控制器（与 GameWindow 页面解耦的纯逻辑类）。
  *
- * 职责：键鼠/滚轮透传、隐形 IME 状态机、光标 grab 锁、窗口级鼠标 filter、
- * 采样率统计。页面只保留 UI 响应式字段（imeText/mouseRate/showInputRate）与 build()。
+ * 职责：键鼠/滚轮透传、隐形 IME 状态机、光标 grab 锁、窗口级三个 filter
+ * （鼠标 / 触屏 / 按键——按键 filter 把 Tab 与 F 行交给 native 接管）、键状态
+ * 轮询、采样率统计。页面只保留 UI 响应式字段（imeText/mouseRate/showInputRate）与 build()。
  *
  * 与页面的四个回调：
  * - focus(id)：请求焦点（'ime-input' / 'game-xc'）。
@@ -127,8 +122,6 @@ export class GameInputController {
 
   // ---- 键盘 / 尺寸 ----
   private pressed: Set<number> = new Set<number>();
-  /** 功能键延迟释放定时器（kc -> timer）。见 FKEY_RELEASE_GRACE_MS。 */
-  private pendingRelease: Map<number, number> = new Map<number, number>();
   private frameW: number = WINDOW_DEFAULT_W;
   private frameH: number = WINDOW_DEFAULT_H;
   private xcVpW: number = WINDOW_DEFAULT_W;
@@ -241,10 +234,10 @@ export class GameInputController {
   }
 
   /**
-   * 注册窗口级按键 filter（**Tab 由 native 接管**）。平台从不下发 Tab 的 UP（窗口层实测
-   * 只有 DOWN，其它键成对）⇒ MC 的玩家列表松手不消失。native 侧消费 Tab、按 GLFW 语义
-   * 转发 press/repeat，并用 `OH_Input_GetKeyState` 判松手（见 `tabWatchdogTick`）；
-   * 其它键不拦截。窗口 id / 幂等门 / 注销时机与既有两个 filter 完全一致。
+   * 注册窗口级按键 filter（**Tab 与 F 行由 native 接管**）。平台从不下发 Tab 的 UP（窗口层实测
+   * 只有 DOWN，其它键成对）；F 行按下第二个 F 键时固件会立刻放掉前一个，也没有真 Up。native
+   * 侧消费这两类键、按 GLFW 语义自转发，并用 `OH_Input_GetKeyState` 与和弦 deadline 结算
+   * 释放（见 `inputKeyTick`）；其它键不拦截。窗口 id / 幂等门 / 注销时机与既有两个 filter 一致。
    */
   private ensureKeyFilter(): void {
     if (this.disposed) {
@@ -395,7 +388,6 @@ export class GameInputController {
   /** 页面销毁：清定时器 + 兜底解锁/补键 + 注销窗口级触屏 filter。 */
   dispose(): void {
     this.disposed = true;
-    this.clearPendingReleases();
     if (this.grabPollTimer >= 0) {
       clearInterval(this.grabPollTimer);
       this.grabPollTimer = -1;
@@ -457,42 +449,6 @@ export class GameInputController {
 
   private isDown(kc: number): boolean {
     return this.pressed.has(kc);
-  }
-
-  /** 功能键（F1-F24）：平台会在按住时按其它键前先发 spurious Up，需延迟释放兜底。 */
-  private isFunctionKey(kc: number): boolean {
-    return (kc >= KeyCode.KEYCODE_F1 && kc <= KeyCode.KEYCODE_F12) ||
-      (kc >= KeyCode.KEYCODE_F13 && kc <= KeyCode.KEYCODE_F24);
-  }
-
-  /** 取消某键的待释放（仅同一键重新按下时调用；其它键不影响，避免粘键）。 */
-  private cancelPendingReleaseFor(kc: number): void {
-    const t = this.pendingRelease.get(kc);
-    if (t !== undefined) {
-      clearTimeout(t);
-      this.pendingRelease.delete(kc);
-    }
-  }
-
-  /** 延迟提交功能键释放（kc 保持在 pressed 直到定时器触发，到点必发）。 */
-  private scheduleDeferredRelease(kc: number, gk: number): void {
-    this.cancelPendingReleaseFor(kc);
-    const timer = setTimeout(() => {
-      this.pendingRelease.delete(kc);
-      if (this.pressed.has(kc)) {
-        this.pressed.delete(kc);
-        this.sendKey(gk, GLFW_RELEASE);
-      }
-    }, FKEY_RELEASE_GRACE_MS);
-    this.pendingRelease.set(kc, timer);
-  }
-
-  /** 清空所有待释放定时器（页面销毁）。 */
-  private clearPendingReleases(): void {
-    this.pendingRelease.forEach((t: number) => {
-      clearTimeout(t);
-    });
-    this.pendingRelease.clear();
   }
 
   private sendKey(glfwKey: number, action: number): void {
@@ -783,9 +739,9 @@ export class GameInputController {
       this.scheduleImeForMenu();
     }
     this.pollImePending();
-    /* Tab 松手检测：平台不下发 Tab 的 UP，由 native 查 OH_Input_GetKeyState 补发 RELEASE。
-     * 未持有 Tab 时是空操作（一次标志位读）。 */
-    b.tabWatchdogTick?.();
+    /* 键状态轮询：结算 native 欠 MC 的 RELEASE（Tab 全程、F 行的和弦假按住）。空操作时
+     * 只是一次空遍历。 */
+    b.inputKeyTick?.();
   }
 
   /** 焦点回到 XComponent：若 MC 仍想 grab，按需重锁光标。 */
@@ -872,20 +828,11 @@ export class GameInputController {
     const modBit: number = keyModFlag(kc);
     const down: boolean = event.type === KeyType.Down;
     if (down) {
-      this.cancelPendingReleaseFor(kc);
       if (kc === KeyCode.KEYCODE_ESCAPE && this.grabApplied) {
         this.setGrab(false);
       }
       let action: number = GLFW_PRESS;
       if (this.pressed.has(kc)) {
-        // 功能键（F1..F24）在本机物理键盘上会重复投递 Down（历史坑）。F 键多是"开关型"
-        // （F3/F5/F11…），MC 对任何一次 Down（含 REPEAT）都会再执行一次动作 —— 实测 F11
-        // 一次按下被送两遍 → MC toggle 两次 → 全屏刚进就被弹回。故功能键的重复 Down 直接丢弃。
-        if (this.isFunctionKey(kc)) {
-          hilog.info(LOG_DOMAIN, LOG_TAG, 'fkey dup down dropped kc=%{public}d', kc);
-          event.stopPropagation();
-          return;
-        }
         action = GLFW_REPEAT;
       } else {
         this.pressed.add(kc);
@@ -907,13 +854,9 @@ export class GameInputController {
       const wasDown: boolean = this.pressed.has(kc);
       if (wasDown) {
         const gk: number = toGlfwKey(kc);
-        if (gk !== 0 && this.isFunctionKey(kc)) {
-          this.scheduleDeferredRelease(kc, gk);
-        } else {
-          this.pressed.delete(kc);
-          if (gk !== 0) {
-            this.sendKey(gk, GLFW_RELEASE);
-          }
+        this.pressed.delete(kc);
+        if (gk !== 0) {
+          this.sendKey(gk, GLFW_RELEASE);
         }
       }
       if (modBit !== 0) {
@@ -985,17 +928,8 @@ export class GameInputController {
       kc === KeyCode.KEYCODE_DPAD_LEFT || kc === KeyCode.KEYCODE_DPAD_RIGHT ||
       kc === KeyCode.KEYCODE_MOVE_HOME || kc === KeyCode.KEYCODE_MOVE_END;
     if (down) {
-      this.cancelPendingReleaseFor(kc);
       let action: number = GLFW_PRESS;
       if (this.pressed.has(kc)) {
-        // 功能键（F1..F24）在本机物理键盘上会重复投递 Down（历史坑）。F 键多是"开关型"
-        // （F3/F5/F11…），MC 对任何一次 Down（含 REPEAT）都会再执行一次动作 —— 实测 F11
-        // 一次按下被送两遍 → MC toggle 两次 → 全屏刚进就被弹回。故功能键的重复 Down 直接丢弃。
-        if (this.isFunctionKey(kc)) {
-          hilog.info(LOG_DOMAIN, LOG_TAG, 'fkey dup down dropped kc=%{public}d', kc);
-          event.stopPropagation();
-          return;
-        }
         action = GLFW_REPEAT;
       } else {
         this.pressed.add(kc);
@@ -1014,9 +948,7 @@ export class GameInputController {
       const combo: boolean = (mods & (GLFW_MOD_CTRL | GLFW_MOD_ALT | GLFW_MOD_SUPER)) !== 0;
       const plainText: boolean = !combo && gk >= 32 && gk <= 126;
       const forward: boolean = gk !== 0 && !editingKey && !plainText;
-      if (wasDown && forward && this.isFunctionKey(kc)) {
-        this.scheduleDeferredRelease(kc, gk);
-      } else if (wasDown) {
+      if (wasDown) {
         this.pressed.delete(kc);
         if (forward) {
           this.sendKey(gk, GLFW_RELEASE);
