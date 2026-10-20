@@ -88,7 +88,7 @@ export function stageClasspathDir(ctx: common.UIAbilityContext, gameRoot: string
   const flat = classpathUsesWildcard(gameRoot, jsonPath);
   for (const d of [base, dir]) {
     try {
-      fileIo.mkdirSync(d);
+      fileIo.mkdirSync(d, true);
     } catch (e) {
       // 已存在则忽略
     }

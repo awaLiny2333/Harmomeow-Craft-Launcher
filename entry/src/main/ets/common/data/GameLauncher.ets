@@ -118,7 +118,10 @@ export async function launchGame(ctx: common.UIAbilityContext, gameRoot: string,
   const runDir = mcRunDir(ctx.cacheDir, gameRoot, versionId);
   for (const d of [runDir, `${runDir}/${NATIVES_DIR}`]) {
     try {
-      fileIo.mkdirSync(d);
+      // 递归：`<cacheDir>/mc-run` 可能尚不存在；非递归 mkdir 会失败并被下面的 catch 吞掉，
+      // 结果 java.io.tmpdir / natives 解压目录整场都不存在（启动日志里的 “java.io.tmpdir
+      // directory does not exist”）。
+      fileIo.mkdirSync(d, true);
     } catch (e) {
       // 已存在则忽略
     }
