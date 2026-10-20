@@ -177,6 +177,10 @@ interface LibraryJson {
   downloads?: LibraryDownloadsJson;
   rules?: RuleJson[];
   natives?: Record<string, string>;
+  // Fabric meta 把校验信息放在**库对象顶层**（而不是 downloads.artifact 里）；
+  // 不读它的话，Fabric 库的 expectedSha1 恒为空 => 下载后不校验，镜像返回的错误页会被当成 jar。
+  sha1?: string;
+  size?: number;
 }
 
 interface LibraryDownloadsJson {
@@ -417,14 +421,16 @@ function libraryItem(gameRoot: string, lib: LibraryJson): DownloadItem | null {
     }
   }
 
-  // 无 downloads：按库 url / 缺省仓库 + Maven 路径拼接
+  // 无 downloads：按库 url / 缺省仓库 + Maven 路径拼接。
+  // 顶层 sha1/size（Fabric meta 的写法）必须一并传给下载层，否则这一族的文件完全不做校验。
   const rel = mavenPath(name);
   if (rel.length === 0) {
     return null;
   }
   const base = lib.url ?? DEFAULT_LIBRARY_URL;
   const full = base.endsWith('/') ? `${base}${rel}` : `${base}/${rel}`;
-  return newItem(name, [full], `${librariesDir(gameRoot)}/${rel}`, '', 0);
+  return newItem(name, [full], `${librariesDir(gameRoot)}/${rel}`,
+    lib.sha1 ?? '', lib.size ?? 0);
 }
 
 /** 资源索引下载项。 */
@@ -489,6 +495,25 @@ function ensureParent(filePath: string): void {
 function exists(path: string): boolean {
   try {
     return fileIo.accessSync(path);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 目标文件是否已经是“完整的成品”。
+ *
+ * 只看存在性不够：镜像返回的错误页、上次中断留下的半截文件都会让 `exists()` 为真，
+ * 于是重装永远跳过它们。声明了 `size` 时额外比对大小（一次 stat，代价可忽略）；
+ * `size <= 0`（旧版资源/服务端未给）退回纯存在性判断。
+ */
+function isDownloaded(item: DownloadItem): boolean {
+  try {
+    const st = fileIo.statSync(item.destPath);
+    if (item.size > 0 && st.size !== item.size) {
+      return false;
+    }
+    return true;
   } catch {
     return false;
   }
@@ -562,7 +587,7 @@ async function runDownloads(items: DownloadItem[], source: string,
       }
       const item = unique[index];
       onCurrent(item.label);
-      if (!exists(item.destPath)) {
+      if (!isDownloaded(item)) {
         ensureParent(item.destPath);
         try {
           await downloadFile(fileCandidates(item.urls[0], source), item.destPath, item.sha1,
