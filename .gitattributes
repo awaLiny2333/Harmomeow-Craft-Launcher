@@ -1,0 +1,21 @@
+# 统一行尾：仓库内存 LF，checkout 也用 LF。
+# 仓库里的 Windows 拷贝曾让整棵树看起来全被修改（实际只是 CRLF）。
+* text=auto eol=lf
+
+# 二进制：禁止行尾转换与文本 diff（auto 通常能识别，这里显式兜底）。
+*.so binary
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.hap binary
+*.hsp binary
+*.har binary
+*.p12 binary
+*.cer binary
+*.p7b binary
