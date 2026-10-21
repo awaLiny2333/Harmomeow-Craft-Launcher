@@ -1,4 +1,5 @@
 #include "../glx/hardext.h"
+#include <stdlib.h>
 #include "array.h"
 #include "debug.h"
 #include "enum_info.h"
@@ -158,10 +159,46 @@ void APIENTRY_GL4ES fpe_ReleventState_DefaultVertex(fpe_state_t *dest, fpe_state
         dest->fragment_prg_id = 0;
 }
 
+/* Meowcraft: EXP/EXP2 fog with density==0 is the identity transform (FogF==1), so the
+ * fog block is pure overhead there and is the reported source of the MC 1.16 GUI text
+ * being painted with gl_Fog.color. The decision cannot live in the shader generator:
+ * programs are cached by fpe_state_t (fpe_cache.c), and fpe_state_t has no density field
+ * (fpe.h), so a generator-side test would freeze on whichever density happened to be
+ * current when that state combination was first compiled. Fold it into the state here
+ * instead -- this is the single funnel every fixed-pipeline draw goes through
+ * (fpe_program -> fpe_ReleventState), and the normalized state is what keys the cache
+ * (memory and PSA alike) and what the generator receives. Collapsing to the existing
+ * fog-off variant is spec-equivalent: density==0 means no visible fog at all.
+ * MEOW_FOG_NOOP=0 restores the exact upstream behaviour for A/B. */
+static int meow_identity_fog_enabled(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("MEOW_FOG_NOOP");
+        on = (e != NULL && e[0] == '0' && e[1] == '\0') ? 0 : 1;
+    }
+    return on;
+}
+
 void APIENTRY_GL4ES fpe_ReleventState(fpe_state_t *dest, fpe_state_t *src, int fixed)
 {
     // filter out some non relevant state (like texture stuff if texture is disabled)
     memcpy(dest, src, sizeof(fpe_state_t));
+    // Meowcraft: identity fog -> fog-off variant (see meow_identity_fog_enabled above)
+    // 仅纯固定管线：ARB/oldprogram 路径的 `need_fogcoord` 会强制发雾（fpe_shader.c:181/850），
+    // 归一化会把 fogmode/source/dist 清零而雾代码仍生成 ⇒ 可能改掉 FogSrc 来源，故不动。
+    if(fixed && dest->fog
+        && !dest->vertex_prg_enable && !dest->fragment_prg_enable
+        && (dest->fogmode==FPE_FOG_EXP || dest->fogmode==FPE_FOG_EXP2)
+        && glstate && glstate->fog.density==0.0f
+        && meow_identity_fog_enabled()) {
+        static int reported = 0;
+        dest->fog = 0;
+        if(!reported) {
+            reported = 1;
+            fprintf(stderr, "[fog] identity fog collapsed to fog-off variant (mode=%d density=0)\n",
+                (int)dest->fogmode);
+        }
+    }
     // alpha test
     if(!dest->alphatest) {
         dest->alphafunc = FPE_ALWAYS;
@@ -401,26 +438,26 @@ void APIENTRY_GL4ES fpe_program(int ispoint) {
                 GLint status;
                 // no old program, using regular FPE
                 glstate->fpe->vert = gl4es_glCreateShader(GL_VERTEX_SHADER);
-                gl4es_glShaderSource(glstate->fpe->vert, 1, fpe_VertexShader(NULL, glstate->fpe_state), NULL);
+                gl4es_glShaderSource(glstate->fpe->vert, 1, fpe_VertexShader(NULL, &state), NULL);
                 gl4es_glCompileShader(glstate->fpe->vert);
                 gl4es_glGetShaderiv(glstate->fpe->vert, GL_COMPILE_STATUS, &status);
                 if(status!=GL_TRUE) {
                     char buff[1000];
                     gles_glGetShaderInfoLog(glstate->fpe->vert, 1000, NULL, buff);
                     if(globals4es.logshader)
-                        printf("LIBGL: FPE Vertex shader compile failed: source is\n%s\n\nError is: %s\n", fpe_VertexShader(NULL, glstate->fpe_state)[0], buff);
+                        printf("LIBGL: FPE Vertex shader compile failed: source is\n%s\n\nError is: %s\n", fpe_VertexShader(NULL, &state)[0], buff);
                     else
                         printf("LIBGL: FPE Vertex shader compile failed: %s\n", buff);
                 }
                 glstate->fpe->frag = gl4es_glCreateShader(GL_FRAGMENT_SHADER);
-                gl4es_glShaderSource(glstate->fpe->frag, 1, fpe_FragmentShader(NULL, glstate->fpe_state), NULL);
+                gl4es_glShaderSource(glstate->fpe->frag, 1, fpe_FragmentShader(NULL, &state), NULL);
                 gl4es_glCompileShader(glstate->fpe->frag);
                 gl4es_glGetShaderiv(glstate->fpe->frag, GL_COMPILE_STATUS, &status);
                 if(status!=GL_TRUE) {
                     char buff[1000];
                     gles_glGetShaderInfoLog(glstate->fpe->frag, 1000, NULL, buff);
                     if(globals4es.logshader)
-                        printf("LIBGL: FPE Fragment shader compile failed: source is\n%s\n\nError is: %s\n", fpe_FragmentShader(NULL, glstate->fpe_state)[0], buff);
+                        printf("LIBGL: FPE Fragment shader compile failed: source is\n%s\n\nError is: %s\n", fpe_FragmentShader(NULL, &state)[0], buff);
                     else
                         printf("LIBGL: FPE Fragment shader compile failed: %s\n", buff);
                 }
@@ -433,8 +470,8 @@ void APIENTRY_GL4ES fpe_program(int ispoint) {
                     char buff[1000];
                     gles_glGetProgramInfoLog(glstate->fpe->prog, 1000, NULL, buff);
                     if(globals4es.logshader) {
-                        printf("LIBGL: FPE Program link failed: source of vertex shader is\n%s\n\n", fpe_VertexShader(NULL, glstate->fpe_state)[0]);
-                        printf("source of fragment shader is \n%s\n\nError is: %s\n", fpe_FragmentShader(NULL, glstate->fpe_state)[0], buff);
+                        printf("LIBGL: FPE Program link failed: source of vertex shader is\n%s\n\n", fpe_VertexShader(NULL, &state)[0]);
+                        printf("source of fragment shader is \n%s\n\nError is: %s\n", fpe_FragmentShader(NULL, &state)[0], buff);
                     } else
                         printf("LIBGL: FPE Program link failed: %s\n", buff);
                 }
@@ -1192,8 +1229,8 @@ void realize_glenv(int ispoint, int first, int count, GLenum type, const void* i
     /* Meowcraft diagnostic (MEOW_FPE_TRACE=1)：把"这个变体真正编译进 GPU 的雾代码"打出来（每个程序一次）。
      * 背景：状态/取值/scale 已被 `[fogreadback]` 证全部正确 ⇒ 只剩 shader 侧；这里能看到 `FogSrc` 到底取自
      * `vertex.z`（平面）/ `vertex.xyz`（径向）/ `gl_FogCoord`，以及 `fog_c`/`FogF` 的表达式与精度限定符。
-     * 调用姿势与 gl4es 自己在编译失败时一致（fpe.c:411/418/431：need=NULL + glstate->fpe_state）。 */
-    if (meow_fpe_trace_on()) {
+     * 调用姿势与真正编译时一致（need=NULL + 归一化后的 `fpe_ReleventState(...,1)` 结果）。 */
+    if (meow_fpe_trace_on() && glprogram) {
         static int dumped[32];
         static int stage[32];
         static int ndump = 0;
@@ -1205,8 +1242,12 @@ void realize_glenv(int ispoint, int first, int count, GLenum type, const void* i
          *    每次只 dump 一个 stage。 */
         if (slot >= 0 && stage[slot] < 2) {
             int isVtx = (stage[slot] == 0);
-            const char *p = isVtx ? fpe_VertexShader(NULL, glstate->fpe_state)[0]
-                                  : fpe_FragmentShader(NULL, glstate->fpe_state)[0];
+            /* 用与编译同源的"相关状态"重新生成，否则 dump 会和真正编进 GPU 的代码不一致
+             * （恒等雾归一化只改 key 的话，这里拿原始状态就会多出一段雾代码，误导判断）。 */
+            fpe_state_t dump_state;
+            fpe_ReleventState(&dump_state, glstate->fpe_state, 1);
+            const char *p = isVtx ? fpe_VertexShader(NULL, &dump_state)[0]
+                                  : fpe_FragmentShader(NULL, &dump_state)[0];
             int printed = 0;
             stage[slot] = isVtx ? 1 : 2;
             /* Meowcraft diagnostic：顶点侧额外打印"程序实际属性 location + VAO 顶点指针/步长"。
@@ -1241,9 +1282,9 @@ void realize_glenv(int ispoint, int first, int count, GLenum type, const void* i
                     (int)glstate->vao->vertexattrib[ATT_VERTEX].enabled);
             }
             fprintf(stderr, "[fogshader] prog=%d ---- %s (.fog=%d dist=0x%X mode=0x%X src=%d) ----\n",
-                glprogram->id, isVtx ? "VERTEX" : "FRAGMENT", (int)glstate->fpe_state->fog,
-                (unsigned)glstate->fpe_state->fogdist, (unsigned)glstate->fpe_state->fogmode,
-                (int)glstate->fpe_state->fogsource);
+                glprogram->id, isVtx ? "VERTEX" : "FRAGMENT", (int)dump_state.fog,
+                (unsigned)dump_state.fogdist, (unsigned)dump_state.fogmode,
+                (int)dump_state.fogsource);
             while (p != NULL && *p != '\0') {
                 const char *nl = strchr(p, '\n');
                 size_t len = nl ? (size_t)(nl - p) : strlen(p);

@@ -62,7 +62,7 @@ sh tools/lwjgl/install_natives.sh --native libgl4es.so=stuffs/research/gl4es/out
 - 构建期断言（`build_gl4es_meow.sh`）：导出含固定管线入口（`glMatrixMode/glEnableClientState/glFogfv/glBegin/glGetString/glViewport`）**与运行期 dlsym 目标**（`glXGetProcAddress/initialize_gl4es/set_getmainfbsize/set_getprocaddress`）；`DT_NEEDED` 仅 `libc.so` 等白名单。
 - ⚠️ **不带 `--delta` 的上游配方不可逐字节复现**：`ref/gl4es/src/gl/build_info.c` 把 `__DATE__`/`__TIME__` 编进二进制，且本机 clang **不认** `SOURCE_DATE_EPOCH`（实测无效；`-D__DATE__="…"` 因 `CMAKE_C_FLAGS` 按空格切分亦不可行）⇒ 每次构建只差日期/时间串。另：**裸配方按上游 CMake 行为把产物写进 `<src>/lib/`**（即 `ref/gl4es/lib/libGL.so.1`，该目录 gitignore）⇒ **"从不改 `ref/`" 只对带 `--delta` 的配方成立**。
 - **带 `--delta` 的配方逐字节可复现（⚠️ 前提：同命令、同 `--src`/`--out`/`--build` 路径 —— 跨路径不可，见文末实测边界）**：`deltas/glcore` 覆盖 `build_info.c`（去掉时间戳）并加入 **GL3 核心后端**；另加 `-DCMAKE_SKIP_RPATH=ON`（否则产物会带一条指向**临时副本目录**的 `RUNPATH` —— 开发路径泄漏）。**当前基准 = r16**：digest `f96d54a573772bdd1330c1ccdfe51b324188bcd54f89034758fbf05303769d04`，**1,255,704 B**（r13/r14/r15 中间基准 `24cd5f33…`/`3e152749…`/`0c2075e7…`，同为 1,255,704 B；r11/r12 = `aac4a628…`/`7babd51c…`；上一稳定基准 r10 = `2c2b6f09…`，1,251,608 B；再早 r9 = `2fbf08bc…`，1,251,608 B；r6/r7/r8 = `6c9065bb…`/`7f0fa55a…`/`637c033d…`，均 1,247,512 B）——**digest 随 delta 变化而变，换装时同步更新**（随包件 `libs/meowlwjgls/libs/natives.manifest` 同步）。⚠️ 本配方**逐字节可复现但与"注释放多少行"有关**（RelWithDebInfo ⇒ 行号/调试信息进产物）⇒ 改注释也会换 digest，须一并重装。
-- **构建 tag 记录（★2026-09-29 更正：实际有**三个** tag）**：tag 由**三处头文件各定义一处**（构建脚本都不写 tag）—— ① `deltas/glcore/src/gl/meowcore/meowcore.h` 的 **`MC_BUILD_TAG`**（gl4es init 日志打印）= `2026-09-27-r16 (multidraw: core base-vertex loop; ext diag)`（**雾改动前基准**）；② `deltas/glcore/src/gl/fog.c` 的 **`MEOW_GL4ES_BUILD_TAG`**（首次 `glFogfv` 的 `[meow-gl4es] build=…` **自证行用的是它**）= **`2026-10-01-ctxlistid2`**（**当前装机件自证值**，即文末「显示列表 id 撞号（双 GL 上下文）」根因修复版 + 收尾加固；上一版为 `2026-10-01-ctxlistid`〔撞号根因修复版〕，再上一版为 `2026-09-29-fogfix-reentrant`〔雾兜底版〕）；③ `deltas/glcore/src/gl/meowctx.c` 的 **`MEOW_CTX_BUILD_TAG`**（首次 `meow_gl4es_bind` 的 `[meow-ctx] build=… tls=1 registry=on` **自证行用的是它**）= **`2026-09-30-ctxiso-tls3`**（**当前装机件自证值**；上一版为 `2026-09-29-ctxiso-tls2`，被本次"M-2 可观测化 warn（共享语义不变）"改动取代，见下节「每 EGL 上下文隔离 glstate」）。历史 `MC_BUILD_TAG` 值：r15 = `multidraw: EXT first, probe+loop fallback`、r14 = `multidraw: prefer core base-vertex loop`、r13 = `2026-09-26-r13 (honor glBindFragDataLocation too)`、r11 = `multidraw emulation + noop diag`、r12 = `honor glBindAttribLocation + multidraw`；更早 r6 = `ES-legal tex images`、r7 = `depth32 + core caps`、r8 = `uniform block cross-stage`、r9 = `sampler bindings + shader diag`、r10 = `entry coverage + diag keys`。换 tag 时改对应头文件一处并同步本文。
+- **构建 tag 记录（★2026-09-29 更正：实际有**三个** tag）**：tag 由**三处头文件各定义一处**（构建脚本都不写 tag）—— ① `deltas/glcore/src/gl/meowcore/meowcore.h` 的 **`MC_BUILD_TAG`**（gl4es init 日志打印）= `2026-09-27-r16 (multidraw: core base-vertex loop; ext diag)`（**雾改动前基准**）；② `deltas/glcore/src/gl/fog.c` 的 **`MEOW_GL4ES_BUILD_TAG`**（首次 `glFogfv` 的 `[meow-gl4es] build=…` **自证行用的是它**）= **`2026-10-21-fog-identity-state`**（**当前装机件自证值**，即文末 v49「恒等雾归一化」版；上一版为 `2026-10-21-fog-noop`〔PR #2 的生成器侧规避，因未进缓存键已被本版取代〕、再上一版为 `2026-10-01-ctxlistid2`〔文末「显示列表 id 撞号」根因修复版 + 收尾加固〕，再上一版为 `2026-10-01-ctxlistid`〔撞号根因修复版〕）；③ `deltas/glcore/src/gl/meowctx.c` 的 **`MEOW_CTX_BUILD_TAG`**（首次 `meow_gl4es_bind` 的 `[meow-ctx] build=… tls=1 registry=on` **自证行用的是它**）= **`2026-09-30-ctxiso-tls3`**（**当前装机件自证值**；上一版为 `2026-09-29-ctxiso-tls2`，被本次"M-2 可观测化 warn（共享语义不变）"改动取代，见下节「每 EGL 上下文隔离 glstate」）。历史 `MC_BUILD_TAG` 值：r15 = `multidraw: EXT first, probe+loop fallback`、r14 = `multidraw: prefer core base-vertex loop`、r13 = `2026-09-26-r13 (honor glBindFragDataLocation too)`、r11 = `multidraw emulation + noop diag`、r12 = `honor glBindAttribLocation + multidraw`；更早 r6 = `ES-legal tex images`、r7 = `depth32 + core caps`、r8 = `uniform block cross-stage`、r9 = `sampler bindings + shader diag`、r10 = `entry coverage + diag keys`。换 tag 时改对应头文件一处并同步本文。
 - 校验方式：同 tag + 同 SDK + 同路径下 **2× 干净重建 + `cmp` 逐字节**（不要只比 sha256）。**2026-09-27 实测 r16：2× 干净重建**（每次先 `rm -rf stuffs/research/gl4es/build-ohos`）**逐字节一致**（digest `f96d54a5…`，1,255,704 B），随包件与 `natives.manifest` 同哈希。**2026-09-29/30 实测 ctxtiso 三版均 2×/3× 干净重建 `cmp` 逐字节一致**（tls `f5c2d61f…`；tls2 `ea15f779…`；tls3 `35a81e4c…`，均 1,292,568 B）。**2026-10-01 实测「显示列表 id 撞号」修复版 2× 干净重建 + `cmp` 逐字节一致**（`444bc805…`，1,292,568 B）；**其收尾加固版（`993672d9…`，tag `2026-10-01-ctxlistid2`）同为 2× 干净重建 + `cmp` 逐字节一致**。（历史：2026-09-26 r13 2×、2026-09-22 r10 3× 干净重建一致。）
 
 ## Meowcraft delta：固定管线雾（2026-09-29，**已落地**）
@@ -78,6 +78,7 @@ sh tools/lwjgl/install_natives.sh --native libgl4es.so=stuffs/research/gl4es/out
 | `deltas/glcore/src/gl/fog.c` | ① 雾追踪（env `MEOW_FOG_TRACE=1`，打印每次雾状态变化，上限 4000）；② 平面雾兜底 `MEOW_FOG_FORCE_RADIAL`（默认开，见下「运行期开关」）。~~每次雾状态变化后调用 `fpe_UploadFogUniforms()`~~ **该推送机制已删除（2026-09-29）**，见下「已删除的机制」 |
 | `deltas/glcore/src/gl/fpe.c` | ① FPE 逐绘制诊断（env `MEOW_FPE_TRACE=1` → `[fpetrace]`/`[fogshader]`/`[fogreadback]`/`[fpeattr]`，见下「运行期开关」）。~~`meow_fpe_fog_push()` + `fpe_UploadFogUniforms()`~~ **该推送机制已删除（2026-09-29）**，见下「已删除的机制」 |
 | `deltas/glcore/src/gl/fpe.h` | 随上游整份覆盖（内容未改） |
+| `deltas/glcore/src/gl/fpe_shader.c` | 随上游整份覆盖 + 诊断：`MEOW_FPE_TRACE=1` 时 dump 前 2 份顶点着色器源码（`[meowshader]`）。**恒等雾（density==0）不在这里判断**——该判定落在 `fpe.c` 的 `fpe_ReleventState()`（见文末 v49 节） |
 
 **运行期开关**（不设 = 默认行为；均可用于实机 A/B）：
 
@@ -87,9 +88,10 @@ sh tools/lwjgl/install_natives.sh --native libgl4es.so=stuffs/research/gl4es/out
 | `MEOW_FOG_TRACE=1` | 打印每次雾**状态变化**的实际值（`MODE/START/END/DENSITY/COLOR/COORD_SRC/DISTANCE_MODE_NV`），上限 4000 条；`[fogtrace-list]` 另记**显示列表编译期**的雾调用 |
 | `MEOW_FPE_TRACE=1` | 每次 FPE 绘制打 `[fpetrace]`（含变体位与雾值；**只记开了雾的绘制**）+ `[fogshader]`（每个变体一次：真正编译进 GPU 的雾相关 shader 行）+ `[fogreadback]`（把雾 uniform 从 GL **回读**与 `glstate` 比对，上限 600）+ `[fpeattr]`（程序属性 location 与 VAO 顶点指针/步长；属性名按 gl4es 自己的 `builtin_attrib[]` 反查，见下） |
 | `MEOW_FOG_NO_NV_DISTANCE=1` | 反向开关：忽略距离模式设置、保持默认平面 ⇒ **可用来复现原 bug**（不是"有效二分"，见笔记 §1②） |
+| **`MEOW_FOG_NOOP`** | **默认开**（显式 `=0` 关回上游行为）：`fpe_ReleventState()` 把"EXP/EXP2 + density==0"（恒等雾）归一化成 fog-off 变体，让缓存键自洽（`fpe_state_t` 不含 density ⇒ 判定不能放在生成器里）。见文末 v49 节 |
 
 **日志标记**（**每次运行都会打**，用来证明"设备上跑的到底是哪一版 gl4es"）：
-- **`[meow-gl4es] build=<tag> force_radial=<0|1>`** —— 首次 `glFogfv` 时**无条件**打一行（当前 tag = **`2026-10-01-ctxlistid2`**）。踩过三次"换了件但跑的还是旧件"的坑（判据只看 `strings` 里的标记是**不够**的，必须看这一行）。
+- **`[meow-gl4es] build=<tag> force_radial=<0|1>`** —— 首次 `glFogfv` 时**无条件**打一行（当前 tag = **`2026-10-21-fog-identity-state`**）。踩过三次"换了件但跑的还是旧件"的坑（判据只看 `strings` 里的标记是**不够**的，必须看这一行）。
 - ~~`[fogfix] active: …`~~ —— 该标记随"雾 uniform 推送"整段删除而消失（见下）。
 - `[fpeattr]` 的属性名**必须**用 gl4es 自己钉的那套（`_gl4es_Vertex`/`_gl4es_Color`/`_gl4es_MultiTexCoordN`/`_gl4es_FogCoord`…，来自 `shaderconv.c` 的 `builtin_attrib[]`）；手写 `"vertex"`/`"texcoord0"` 之类在生成的 shader 里根本不存在 ⇒ `glGetAttribLocation` 恒 −1 ⇒ 该栏等于没测（已修：改为 `hasBuiltinAttrib()` 反查）。
 
@@ -156,5 +158,39 @@ sh tools/lwjgl/install_natives.sh --native libgl4es.so=stuffs/research/gl4es/out
 - **同 SDK + 同构建路径 2× 干净重建 + 哈希一致（本次实测）**；`strings` 自证产物内含 `2026-10-01-ctxlistid2`。已装到 `libs/meowlwjgls/libs/arm64-v8a/libgl4es.so` + `natives.manifest`（tag `common`）。
 - **实机验收：已验证（2026-10-01）**：用户导出日志 `Harmomeow-Craft-Launcher/.logs/This PC-1790866511-hilog.txt` 实测 `[meow-gl4es] build=2026-10-01-ctxlistid2` ✓、**`shared ctx created` 出现**（FML splash 第二上下文开着 ⇒ 修复在病态条件下成立）✓、无 `CROSS-CTX`、`lockCursor rc=0` ×8 无失败 ✓、四症状（天上巨三角/错色块/缺胳膊少腿/第一人称手）用户实机确认正常 ✓。
 > ⚠️ 仍未做（承接上节后续项）：**共享对象表并发加固**仍未做 —— 本轮（v48）除给 `glGenLists()` 的**扫描+插入**套了文件级 `glgenlists_lock`、并给 `drawing.c` 的三处 QUADS 索引缓存补齐叶锁外，**其余跨上下文共享表（textures / fpe_cache / glsl / buffers / fbo / samplers / queries）仍无锁**，`headlists` 的**释放 / 遍历交叉需引用计数**、`renderlist` 的 `vbo_array`/`vbo_indices`/`ind_lines`/`final_colors` 仍按 memcpy 共享无引用计数。残留项登记见 `notes/00-current/已知限制与待解.md` §C。
+
+## v49：恒等雾归一化（2026-10-21，修 PR #2 的缓存键缺口）
+
+**背景**：PR #2（`57bd4b6`）在 `fpe_shader.c` 的 4 个雾生成点按 `glstate->fog.density==0` 省略雾代码。方向对（density==0 时 EXP/EXP2 是恒等变换），**落点错**：FPE 程序按 `fpe_state_t` 缓存（`fpe_cache.c` 的 `memcmp` + khash），而 `fpe_state_t` 里**没有 density**（`fpe.h`）⇒ 判定在"首次编译某状态组合"时被冻死：
+
+- 先在 density=0 编 ⇒ 世界同组合（density>0）**丢雾**；
+- 先在 density>0 编 ⇒ GUI（density=0）**继续黑**；
+- PSA（`.gl4es.psa`）同样以该结构体为键 ⇒ 旧档案可绕过修复。
+
+**改法**（最小面）：把判定搬到缓存键的归一化处 —— `fpe.c` 的 `fpe_ReleventState()`（`fixed` 路径的唯一收口，每 draw 重算）：
+
+- 条件：`fixed && fog && !vertex_prg_enable && !fragment_prg_enable && mode∈{EXP,EXP2} && glstate->fog.density==0` ⇒ `dest->fog = 0`，直接落到既有 fog-off 变体；
+  （ARB/oldprogram 路径排除：`need_fogcoord` 会强制发雾、而归一化会把 fogmode/source/dist 清零 ⇒ 会改掉 FogSrc 来源）
+- **生成器必须消费归一化后的状态**：`fpe_program()` 里 `fpe_VertexShader/FragmentShader` 原本传的是**原始** `glstate->fpe_state` ⇒ 只改 key 的话"雾代码照样生成"（2026-10-21 实测：`[fogshader] prog=22 .fog=1`，1.16.5 字形仍旧全黑）。已改为传 `&state`（与 `fpe_CustomShader(&state)` 同源）；`[fogshader]` / `[meowshader]` 诊断也改成用归一化状态重算，否则 dump 会继续误导；
+- 生成器 4 处回到上游原样 `if(fog)`，删除 `meow_fog_noop()`；
+- 开关 `MEOW_FOG_NOOP=0` 关回上游行为；
+- 首次归一化打 `[fog] identity fog collapsed to fog-off variant (mode=N density=0)`（修法自身的装机自证）；
+- **不需要 bump `CACHE_VERSION`**：旧 PSA 里 fog=1 的条目只会在 density>0 的查找中命中（本就该带雾代码）；density=0 的查找归一化成 fog=0 ⇒ 必然 miss 并现场编译。
+
+**边界**：仅 `fixed`（固定管线）路径生效 ⇒ 自定义 / ARB shader 路径不动；`GL_LINEAR` 不纳入；`MEOW_FOG_FORCE_RADIAL` 无关。density 0↔非 0 切换会各编一次（每种状态组合最多 2 个变体），1.16 只在"菜单↔世界"之间切换，可忽略。
+
+**产物 / 校验**：
+
+- tag = `2026-10-21-fog-identity-state`
+- sha256 = `60f57b387bd8d62c52cfd8044dfd1d41e3f223187ac3d89fa5ced88bf952269b`，**1,297,272 B**
+- `delta-content-sha256` 的口径：对 `deltas/glcore` 下所有文件按相对路径排序，逐行写「路径 + 文件 sha256」，再对这份清单整体取 sha256：
+  `( cd deltas/glcore && find . -type f | LC_ALL=C sort | while read f; do printf '%s  ' "$f"; sha256sum "$f" | cut -d' ' -f1; done ) | sha256sum`
+- `delta-content-sha256` = `3b9434e6525df2d8cec03a60033b41dc9c8128f060611ceecff0e1d4807e64dc`
+- 同 SDK + 同路径 **2× 干净重建 + `cmp` 逐字节一致**（本次会话实测；构建日志每次覆盖写，事后无法回看 ⇒ 结论只能靠这里记录）
+- 已装到 `libs/meowlwjgls/libs/arm64-v8a/libgl4es.so` + `natives.manifest`（整文件哈希一致）
+- ⚠️ **HSP 内件不是源件的逐字节副本**：打包期去掉了 `.codesign`（16,384 B）与 `.comment`（286 B），整文件 1,297,272 → **1,277,120 B**。校验要比 `.text`（`llvm-objcopy --dump-section .text=/tmp/a.bin`，两份 `cmp`，本轮 921,808 B 一致）或 `strings` 看 tag —— **不要用整文件哈希判"装错件"**。
+- 实机验收：**1.16.5 主菜单文字已恢复**（用户实测，2026-10-21；首次通过的件是 `e8180c0a…`，其后只加 ARB 守卫 / 诊断字段 / 命名整理，未改 1.16.5 路径）。进世界雾、1.7.10 + OptiFine `Fog: Fast`、1.20.6 + Fabric 三项是在 `4796a180…`（仅 key 归一化那版）上验的；`e8180c0a…` 起生成器入参改变（所有 FPE 变体都受影响）⇒ 这三项待在本件复验。notes 侧（`现状基线` §5 第 26 条等）待同步。
+
+**注（归因）**：PR 原述"驱动没把 struct uniform 的 density 传给 GPU"与"未设置的 uniform = 0 ⇒ `FogF=1` ⇒ 恒等"自相矛盾；本修**不依赖该解释**（恒等即可省略）。notes 里按"实测该批绘制 `FogF` 被判为 0、机制未定、已规避"记录，别把可能错误的归因写成定论。
 
 

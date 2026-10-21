@@ -4,7 +4,14 @@
 
 #include "string_utils.h"
 #include "init.h"
-#include "gl4es.h"
+#include "../glx/hardext.h"
+
+//#define DEBUG
+#ifdef DEBUG
+#define DBG(a) a
+#else
+#define DBG(a)
+#endif
 
 /* Meowcraft diagnostics: read once, so an unset MEOW_FPE_TRACE costs one branch
    on the (cached) shader-generation path and nothing on the per-draw path. */
@@ -16,33 +23,6 @@ static int meow_shader_trace_on(void) {
     }
     return on;
 }
-
-
-static void meow_report_fog_noop(void) {
-    static int reported = 0;
-    if (!reported) {
-        reported = 1;
-        fprintf(stderr, "[fog] elided EXP/EXP2 fog with density=0\n");
-    }
-}
-
-static int meow_fog_noop(int fog, int fogmode) {
-    /* density==0 makes EXP/EXP2 fog an identity transform. Some GLES drivers do not
-       deliver a zeroed struct-uniform member to the shader, so GUI text ended up
-       painted with gl_Fog.color. Eliding the fog block is spec-equivalent. */
-    int noop = fog && (fogmode == FPE_FOG_EXP || fogmode == FPE_FOG_EXP2)
-               && glstate && glstate->fog.density == 0.0f;
-    if (noop) meow_report_fog_noop();
-    return noop;
-}
-#include "../glx/hardext.h"
-
-//#define DEBUG
-#ifdef DEBUG
-#define DBG(a) a
-#else
-#define DBG(a)
-#endif
 
 const char* fpeshader_signature = "// FPE_Shader generated\n";
 
@@ -356,7 +336,7 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
             }
         }
     }
-    if(fog && !meow_fog_noop(fog, fogmode)) {
+    if(fog) {
         #if 0   // vertex fog
         ShadAppend("varying mediump float FogF;\n");
         headers++;
@@ -796,7 +776,7 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
         shad = gl4es_inplace_insert(gl4es_getline(shad, headers), buff, shad, &shad_cap);
         headers += gl4es_countline(buff);
     }
-    if(fog && !meow_fog_noop(fog, fogmode)) {
+    if(fog) {
         if(comments) {
             sprintf(buff, "// Fog On: mode=%X, source=%X distance=%X\n", fogmode, fogsource, fogdist);
             ShadAppend(buff);
@@ -921,7 +901,7 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
             headers++;
         }
     }
-    if(fog && !meow_fog_noop(fog, fogmode)) {
+    if(fog) {
         #if 0   // vertex fog
         ShadAppend("varying mediump float FogF;\n");
         headers++;
@@ -1396,7 +1376,7 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
     }
 
     //*** Fog
-    if(fog && !meow_fog_noop(fog, fogmode)) {
+    if(fog) {
         if(comments) {
             sprintf(buff, "// Fog On: mode=%X, source=%X\n", fogmode, fogsource);
             ShadAppend(buff);
