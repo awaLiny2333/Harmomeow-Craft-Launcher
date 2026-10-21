@@ -1,4 +1,23 @@
 import { http } from '@kit.NetworkKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+
+const LOG_DOMAIN = 0x0001;
+const LOG_TAG = 'MicrosoftAuth';
+
+/**
+ * ⚠️ 日志铁律：**绝不打印 token / device_code / refresh_token 本身**。
+ * 只打"有没有、多长、前 6 位"这种可用于区分但不可复用的信息。
+ * 账户凭据一旦进 hilog 就等于泄露（hilog 落盘、可被其它调试工具读）。
+ */
+function maskToken(t: string | undefined): string {
+  if (t === undefined || t.length === 0) {
+    return '(none)';
+  }
+  if (t.length <= 6) {
+    return '***';
+  }
+  return `${t.substring(0, 6)}…(len=${t.length})`;
+}
 
 /**
  * Minecraft 正版（Microsoft / Xbox Live）在线登录协议（纯逻辑，不碰 UI）。
@@ -201,6 +220,17 @@ function formBody(pairs: string[][]): string {
   return parts.join('&');
 }
 
+/** 日志用端点短名：只保留 host + path，丢掉 query（query 里可能有 code/token）。 */
+function endpointOf(url: string): string {
+  const q = url.indexOf('?');
+  return q >= 0 ? url.substring(0, q) : url;
+}
+
+/** 截断过长的响应体（错误时用；600 字符够看清 error/error_description）。 */
+function clip(s: string): string {
+  return s.length > 600 ? `${s.substring(0, 600)}…(truncated)` : s;
+}
+
 async function httpSend(url: string, method: http.RequestMethod, header: Record<string, string>,
   body: string): Promise<HttpResp> {
   const req = http.createHttp();
@@ -215,10 +245,20 @@ async function httpSend(url: string, method: http.RequestMethod, header: Record<
     if (body.length > 0) {
       opts.extraData = body;
     }
+    const t0 = Date.now();
     const resp = await req.request(url, opts);
     const text = resp.result === undefined ? '' : resp.result as string;
+    hilog.info(LOG_DOMAIN, LOG_TAG, '%{public}s %{public}s -> %{public}d (%{public}dms, %{public}dB)',
+      method === http.RequestMethod.POST ? 'POST' : 'GET', endpointOf(url),
+      resp.responseCode, Date.now() - t0, text.length);
+    if (resp.responseCode >= 400) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG, '%{public}s %{public}s body: %{public}s',
+        method === http.RequestMethod.POST ? 'POST' : 'GET', endpointOf(url), clip(text));
+    }
     return { code: resp.responseCode, text: text };
   } catch (e) {
+    hilog.error(LOG_DOMAIN, LOG_TAG, '%{public}s %{public}s failed: %{public}s',
+      method === http.RequestMethod.POST ? 'POST' : 'GET', endpointOf(url), (e as Error).message);
     throw new MsAuthError(MsAuthErrorCode.NETWORK, 0, (e as Error).message);
   } finally {
     req.destroy();
@@ -263,18 +303,27 @@ function requireClientId(clientId: string): void {
 /** 步骤 1：申请设备码（用户在浏览器输入 user_code）。 */
 export async function requestDeviceCode(clientId: string): Promise<DeviceCode> {
   requireClientId(clientId);
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'device code: requesting (client_id=%{public}s)',
+    clientId.substring(0, 8) + '…');
   const r = await postForm(DEVICE_CODE_URL, [['client_id', clientId], ['scope', SCOPE]]);
   const body = JSON.parse(r.text) as DeviceCodeResp;
   if (r.code !== 200 || body.device_code === undefined || body.user_code === undefined) {
-    throw describeMsError(r.code, body.error, body.error_description);
+    const mapped = describeMsError(r.code, body.error, body.error_description);
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'device code: failed -> %{public}s (http=%{public}d)',
+      MsAuthErrorCode[mapped.code], r.code);
+    throw mapped;
   }
-  return {
+  const res: DeviceCode = {
     deviceCode: body.device_code,
     userCode: body.user_code,
     verificationUri: body.verification_uri ?? 'https://microsoft.com/link',
     intervalSec: body.interval ?? 5,
     expiresInSec: body.expires_in ?? 900,
   };
+  hilog.info(LOG_DOMAIN, LOG_TAG,
+    'device code: got user_code=%{public}s uri=%{public}s interval=%{public}ds expires=%{public}ds',
+    res.userCode, res.verificationUri, res.intervalSec, res.expiresInSec);
+  return res;
 }
 
 /**
@@ -284,6 +333,7 @@ export async function requestDeviceCode(clientId: string): Promise<DeviceCode> {
 export async function pollMsaToken(device: DeviceCode, clientId: string): Promise<TokenResp> {
   let intervalMs = device.intervalSec * 1000;
   const deadline = Date.now() + device.expiresInSec * 1000;
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'token poll: started (interval=%{public}dms)', intervalMs);
   while (Date.now() < deadline) {
     await delay(intervalMs);
     const r = await postForm(TOKEN_URL, [
@@ -294,6 +344,8 @@ export async function pollMsaToken(device: DeviceCode, clientId: string): Promis
     if (r.code === 200) {
       const body = JSON.parse(r.text) as TokenResp;
       if (body.access_token !== undefined) {
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'token poll: authorized (access=%{public}s)',
+          maskToken(body.access_token));
         return body;
       }
     }
@@ -303,10 +355,13 @@ export async function pollMsaToken(device: DeviceCode, clientId: string): Promis
         continue;
       case 'slow_down':
         intervalMs += 5000;
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'token poll: slow_down -> interval=%{public}dms', intervalMs);
         continue;
       case 'expired_token':
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'token poll: device code expired');
         throw new MsAuthError(MsAuthErrorCode.DEVICE_CODE_EXPIRED);
       case 'authorization_declined':
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'token poll: user declined authorization');
         throw new MsAuthError(MsAuthErrorCode.DECLINED);
       default:
         throw describeMsError(r.code, err.error, err.error_description);
@@ -318,6 +373,7 @@ export async function pollMsaToken(device: DeviceCode, clientId: string): Promis
 /** 用 refresh_token 续期 MSA token（refresh_token 会轮换，调用方须保存新值）。 */
 export async function refreshMsaToken(refreshToken: string, clientId: string): Promise<TokenResp> {
   requireClientId(clientId);
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'refresh: started (refresh=%{public}s)', maskToken(refreshToken));
   const r = await postForm(TOKEN_URL, [
     ['grant_type', 'refresh_token'],
     ['client_id', clientId],
@@ -327,6 +383,7 @@ export async function refreshMsaToken(refreshToken: string, clientId: string): P
   const body = JSON.parse(r.text) as TokenResp;
   if (r.code !== 200 || body.access_token === undefined) {
     if (body.error === 'invalid_grant') {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'refresh: invalid_grant (refresh token rejected)');
       throw new MsAuthError(MsAuthErrorCode.CREDENTIAL_EXPIRED);
     }
     throw describeMsError(r.code, body.error, body.error_description);
@@ -336,6 +393,7 @@ export async function refreshMsaToken(refreshToken: string, clientId: string): P
 
 /** 步骤 3：Xbox Live 用户认证 → {token, uhs}。 */
 export async function authenticateXbl(msaAccessToken: string): Promise<XblStep> {
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'xbl: authenticating (msa=%{public}s)', maskToken(msaAccessToken));
   const req: XblAuthRequest = {
     Properties: {
       AuthMethod: 'RPS',
@@ -350,13 +408,18 @@ export async function authenticateXbl(msaAccessToken: string): Promise<XblStep> 
   const body = JSON.parse(r.text) as XblResp;
   const uhs = xuiOf(body);
   if (r.code !== 200 || body.Token === undefined || uhs.length === 0) {
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'xbl: failed code=%{public}d token=%{public}s uhs=%{public}s',
+      r.code, body.Token === undefined ? 'missing' : 'ok', uhs.length === 0 ? 'missing' : 'ok');
     throw new MsAuthError(MsAuthErrorCode.XBL_HTTP, r.code);
   }
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'xbl: ok (uhs=%{public}s token=%{public}s)', uhs,
+    maskToken(body.Token));
   return { token: body.Token, uhs: uhs };
 }
 
 /** 步骤 4：XSTS 授权 → {token, uhs}；含常见 XErr 错误码。 */
 export async function authorizeXsts(xblToken: string): Promise<XblStep> {
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'xsts: authorizing (xbl=%{public}s)', maskToken(xblToken));
   const req: XstsRequest = {
     Properties: { SandboxId: 'RETAIL', UserTokens: [xblToken] },
     RelyingParty: 'rp://api.minecraftservices.com/',
@@ -366,31 +429,46 @@ export async function authorizeXsts(xblToken: string): Promise<XblStep> {
   const r = await postJson(XSTS_URL, json, '');
   if (r.code !== 200) {
     const xerr = extractXerr(r.text);
-    throw describeXstsError(xerr, r.code);
+    const mapped = describeXstsError(xerr, r.code);
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'xsts: failed code=%{public}d xerr=%{public}s -> %{public}s',
+      r.code, xerr === 0 ? '(none)' : `${xerr}`, MsAuthErrorCode[mapped.code]);
+    throw mapped;
   }
   const body = JSON.parse(r.text) as XblResp;
   const uhs = xuiOf(body);
   if (body.Token === undefined || uhs.length === 0) {
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'xsts: bad response code=%{public}d', r.code);
     throw new MsAuthError(MsAuthErrorCode.XSTS_BAD_RESPONSE, r.code);
   }
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'xsts: ok (uhs=%{public}s)', uhs);
   return { token: body.Token, uhs: uhs };
 }
 
 /** 步骤 5：用 XSTS 换 Minecraft access token。 */
 export async function loginWithXbox(uhs: string, xstsToken: string): Promise<McLoginStep> {
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'mc-login: exchanging xsts (uhs=%{public}s)', uhs);
   const json = JSON.stringify({ identityToken: `XBL3.0 x=${uhs};${xstsToken}` } as McLoginRequest);
   const r = await postJson(MC_LOGIN_URL, json, '');
   const body = JSON.parse(r.text) as McLoginResp;
   if (r.code !== 200 || body.access_token === undefined) {
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'mc-login: failed code=%{public}d err=%{public}s',
+      r.code, body.errorMessage ?? body.error ?? '(none)');
     throw new MsAuthError(MsAuthErrorCode.MC_LOGIN_HTTP, r.code);
   }
   const expiresIn = body.expires_in ?? 86400;
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'mc-login: ok (token=%{public}s ttl=%{public}ds)',
+    maskToken(body.access_token), expiresIn);
   return { accessToken: body.access_token, notAfter: Date.now() + expiresIn * 1000 };
 }
 
 /** 步骤 6：查询所有权（200 = 有 Java 版）。 */
 export async function hasMcEntitlement(mcToken: string): Promise<boolean> {
   const r = await getJson(MC_ENTITLEMENTS_URL, mcToken);
+  if (r.code !== 200) {
+    hilog.warn(LOG_DOMAIN, LOG_TAG, 'entitlement: not owned? code=%{public}d', r.code);
+  } else {
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'entitlement: java edition owned');
+  }
   return r.code === 200;
 }
 
@@ -398,18 +476,25 @@ export async function hasMcEntitlement(mcToken: string): Promise<boolean> {
 export async function fetchMcProfile(mcToken: string): Promise<McProfile> {
   const r = await getJson(MC_PROFILE_URL, mcToken);
   if (r.code !== 200) {
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'profile: failed code=%{public}d', r.code);
     throw new MsAuthError(MsAuthErrorCode.MC_PROFILE_HTTP, r.code);
   }
   const body = JSON.parse(r.text) as McProfileResp;
   if (body.id === undefined || body.name === undefined) {
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'profile: malformed body code=%{public}d', r.code);
     throw new MsAuthError(MsAuthErrorCode.PROFILE_BAD, r.code);
   }
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'profile: ok (name=%{public}s uuid=%{public}s)',
+    body.name, body.id);
   return { id: body.id, name: body.name };
 }
 
 /** 校验 MC token 是否仍有效（调 /minecraft/profile；200=有效）。网络异常会抛出，由调用方区分。 */
 export async function validateMcToken(mcToken: string): Promise<boolean> {
   const r = await getJson(MC_PROFILE_URL, mcToken);
+  if (r.code !== 200) {
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'validate: token invalid/expired (code=%{public}d)', r.code);
+  }
   return r.code === 200;
 }
 
@@ -431,15 +516,20 @@ export interface McProfile {
 /** 由 MSA token 走完整链得到最终产物（新登与刷新共用）。 */
 async function finishWithMsa(msa: TokenResp): Promise<MicrosoftResult> {
   if (msa.access_token === undefined || msa.refresh_token === undefined) {
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'chain: msa token missing (refresh=%{public}s)',
+      maskToken(msa.refresh_token));
     throw new MsAuthError(MsAuthErrorCode.MSA_MISSING);
   }
   const xbl = await authenticateXbl(msa.access_token);
   const xsts = await authorizeXsts(xbl.token);
   const login = await loginWithXbox(xsts.uhs, xsts.token);
   if (!(await hasMcEntitlement(login.accessToken))) {
+    hilog.error(LOG_DOMAIN, LOG_TAG, 'chain: no java edition entitlement');
     throw new MsAuthError(MsAuthErrorCode.NO_ENTITLEMENT);
   }
   const profile = await fetchMcProfile(login.accessToken);
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'chain: complete (name=%{public}s xuid=%{public}s)',
+    profile.name, xsts.uhs);
   return {
     name: profile.name,
     uuid: profile.id,
@@ -453,17 +543,23 @@ async function finishWithMsa(msa: TokenResp): Promise<MicrosoftResult> {
 /** 全新登录：申请设备码 → 轮询 → 走完整链。UI 用 onDevice 展示 user_code/URI。 */
 export async function loginMicrosoft(onDevice: (d: DeviceCode) => void,
   clientId: string): Promise<MicrosoftResult> {
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'login: starting full microsoft sign-in');
   const device = await requestDeviceCode(clientId);
   onDevice(device);
   const msa = await pollMsaToken(device, clientId);
-  return await finishWithMsa(msa);
+  const result = await finishWithMsa(msa);
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'login: succeeded as %{public}s', result.name);
+  return result;
 }
 
 /** 续期：refresh_token → 新 MSA token → 完整链（返回含轮换后的 refreshToken）。 */
 export async function refreshMicrosoft(refreshToken: string,
   clientId: string): Promise<MicrosoftResult> {
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'refresh: starting token renewal');
   const msa = await refreshMsaToken(refreshToken, clientId);
-  return await finishWithMsa(msa);
+  const result = await finishWithMsa(msa);
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'refresh: succeeded as %{public}s', result.name);
+  return result;
 }
 
 // ---- 错误信息 ----
