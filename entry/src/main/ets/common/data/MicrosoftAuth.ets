@@ -294,6 +294,8 @@ async function getJson(url: string, bearer: string): Promise<HttpResp> {
 /** client_id 守卫：未配置（空）时给出可读错误。 */
 function requireClientId(clientId: string): void {
   if (clientId.length === 0) {
+    hilog.error(LOG_DOMAIN, LOG_TAG,
+      'client_id missing: user has not configured a Microsoft Azure client id yet');
     throw new MsAuthError(MsAuthErrorCode.CLIENT_ID_MISSING);
   }
 }
