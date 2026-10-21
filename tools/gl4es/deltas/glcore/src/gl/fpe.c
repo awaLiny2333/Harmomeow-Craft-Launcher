@@ -13,6 +13,11 @@
 
 #include "fpe.h"
 
+/* 当前 draw 提交的 index/vertex 数（诊断用，每次 fpe_glDraw* 写入）。 */
+static int g_meow_draw_count = 0;
+static int meow_fpe_trace_on(void);
+
+
 #define fpe_state_t fpe_state_t
 #define fpe_fpe_t fpe_fpe_t
 #define kh_fpecachelist_t kh_fpecachelist_t
@@ -809,6 +814,7 @@ void APIENTRY_GL4ES fpe_glNormal3f(GLfloat nx, GLfloat ny, GLfloat nz) {
 void APIENTRY_GL4ES fpe_glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     DBG(printf("fpe_glDrawArrays(%s, %d, %d), program=%d, instanceID=%u\n", PrintEnum(mode), first, count, glstate->glsl->program, glstate->instanceID);)
     scratch_t scratch = {0};
+    g_meow_draw_count = count;
     realize_glenv(mode==GL_POINTS, first, count, 0, NULL, &scratch);
     LOAD_GLES(glDrawArrays);
     gles_glDrawArrays(mode, first, count);
@@ -817,6 +823,7 @@ void APIENTRY_GL4ES fpe_glDrawArrays(GLenum mode, GLint first, GLsizei count) {
 
 void APIENTRY_GL4ES fpe_glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices) {
     DBG(printf("fpe_glDrawElements(%s, %d, %s, %p), program=%d, instanceID=%u\n", PrintEnum(mode), count, PrintEnum(type), indices, glstate->glsl->program, glstate->instanceID);)
+    g_meow_draw_count = count;
     scratch_t scratch = {0};
     realize_glenv(mode==GL_POINTS, 0, count, type, indices, &scratch);
     LOAD_GLES(glDrawElements);
@@ -1252,6 +1259,112 @@ void realize_glenv(int ispoint, int first, int count, GLenum type, const void* i
                 p = nl + 1;
             }
             if (!printed) fprintf(stderr, "[fogshader]   (no fog/vertex line in this stage)\n");
+        }
+    }
+    /* ★ MEOW expL: 按 (program, alphatest, blend) 组合去重，每种组合打一次完整快照。
+     * 这比按次数截断有用：能一次看清 GUI 各层的 program / 纹理 / 矩阵差异。 */
+    if (meow_fpe_trace_on() && glstate->fpe_state) {
+        static unsigned char seen_prog[256][2][2];
+        static int seen_total = 0;
+        int pid = glprogram ? glprogram->id : -1;
+        int at  = glstate->fpe_state->alphatest ? 1 : 0;
+        int bl  = glstate->fpe_state->blend_enable ? 1 : 0;
+        int key = (pid >= 0 && pid < 256) ? pid : 255;
+        if (!seen_prog[key][at][bl] && seen_total < 40) {
+            seen_prog[key][at][bl] = 1;
+            ++seen_total;
+            int tu0 = fpe_gettexture(0);
+            gltexture_t *tx = (tu0 == -1) ? NULL : glstate->texture.bound[0][tu0];
+            fprintf(stderr, "[fpemat] prog=%d count=%d at=%d func=%d ref=%.4f blend=%d depth=%d vp=%d,%d %dx%d\n",
+                pid, g_meow_draw_count, at, (int)glstate->fpe_state->alphafunc,
+                (double)glstate->alpharef, bl, (int)glstate->enable.depth_test,
+                glstate->vp[0], glstate->vp[1], glstate->vp[2], glstate->vp[3]);
+            if (tx) {
+                fprintf(stderr, "[fpemat]   tex id=%u %dx%d fmt=0x%X fpe=%d valid=%d alpha=%d minf=0x%X\n",
+                    (unsigned)tx->glname, (int)tx->width, (int)tx->height,
+                    (unsigned)tx->format, (int)tx->fpe_format, (int)tx->valid, (int)tx->alpha,
+                    (unsigned)tx->sampler.min_filter);
+                fprintf(stderr, "[fpemat]   intfmt wanted=0x%X orig=0x%X internal=0x%X type=0x%X compressed=%d\n",
+                    (unsigned)tx->wanted_internal, (unsigned)tx->orig_internal,
+                    (unsigned)tx->internalformat, (unsigned)tx->type, (int)tx->compressed);
+                fprintf(stderr, "[fpemat]   fpe fog=%d fogmode=%d cmat=%d lighting=%d texcombine=%d\n",
+                    (int)glstate->fpe_state->fog, (int)glstate->fpe_state->fogmode,
+                    (int)glstate->fpe_state->color_material, (int)glstate->fpe_state->lighting,
+                    (int)glstate->fpe_state->texcombine[0]);
+                fprintf(stderr, "[fpemat]   glfog mode=0x%X density=%.4f start=%.3f end=%.3f color=(%.3f,%.3f,%.3f,%.3f) enabled=%d\n",
+                    (unsigned)glstate->fog.mode, (double)glstate->fog.density,
+                    (double)glstate->fog.start, (double)glstate->fog.end,
+                    (double)glstate->fog.color[0], (double)glstate->fog.color[1],
+                    (double)glstate->fog.color[2], (double)glstate->fog.color[3],
+                    (int)glstate->enable.fog);
+                
+            }
+            else
+                fprintf(stderr, "[fpemat]   tex (none)\n");
+            if (glstate->projection_matrix && glstate->projection_matrix->stack) {
+                const float *pm = glstate->projection_matrix->stack + glstate->projection_matrix->top * 16;
+                fprintf(stderr, "[fpemat]   proj m0=%.6f m5=%.6f m10=%.6f m12=%.3f m13=%.3f\n",
+                    pm[0], pm[5], pm[10], pm[12], pm[13]);
+            }
+            if (glstate->modelview_matrix && glstate->modelview_matrix->stack) {
+                const float *mm = glstate->modelview_matrix->stack + glstate->modelview_matrix->top * 16;
+                fprintf(stderr, "[fpemat]   mv m0=%.6f m5=%.6f m10=%.6f m12=%.3f m13=%.3f\n",
+                    mm[0], mm[5], mm[10], mm[12], mm[13]);
+            }
+            if (glstate->texture_matrix && glstate->texture_matrix[0] && glstate->texture_matrix[0]->stack) {
+                const float *tm = glstate->texture_matrix[0]->stack + glstate->texture_matrix[0]->top * 16;
+                fprintf(stderr, "[fpemat]   texmat m0=%.6f m5=%.6f m12=%.6f m13=%.6f identity=%d texadjust=%d textype=%d\n",
+                    tm[0], tm[5], tm[12], tm[13],
+                    glstate->texture_matrix[0]->identity,
+                    (int)glstate->fpe_state->texture[0].texadjust,
+                    (int)glstate->fpe_state->texture[0].textype);
+            } else fprintf(stderr, "[fpemat]   texmat (unavailable)\n");
+            {   /* expT: 顶点全量 + 手算 NDC，一次看清几何/UV/矩阵 */
+                const float *base = (const float *)glstate->vao->vertexattrib[ATT_VERTEX].pointer;
+                int vstride = glstate->vao->vertexattrib[ATT_VERTEX].stride;
+                const float *tcbase = (const float *)glstate->vao->vertexattrib[ATT_MULTITEXCOORD0].pointer;
+                int tstride = glstate->vao->vertexattrib[ATT_MULTITEXCOORD0].stride;
+                const float *pm = NULL, *mm = NULL;
+                if (glstate->projection_matrix && glstate->projection_matrix->stack)
+                    pm = glstate->projection_matrix->stack + glstate->projection_matrix->top * 16;
+                if (glstate->modelview_matrix && glstate->modelview_matrix->stack)
+                    mm = glstate->modelview_matrix->stack + glstate->modelview_matrix->top * 16;
+                if (pm) {
+                    fprintf(stderr, "[fpemat]   proj16 %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f\n",
+                        pm[0],pm[1],pm[2],pm[3], pm[4],pm[5],pm[6],pm[7]);
+                    fprintf(stderr, "[fpemat]   proj16 %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f\n",
+                        pm[8],pm[9],pm[10],pm[11], pm[12],pm[13],pm[14],pm[15]);
+                }
+                if (mm) {
+                    fprintf(stderr, "[fpemat]   mv16   %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f\n",
+                        mm[0],mm[1],mm[2],mm[3], mm[4],mm[5],mm[6],mm[7]);
+                    fprintf(stderr, "[fpemat]   mv16   %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f\n",
+                        mm[8],mm[9],mm[10],mm[11], mm[12],mm[13],mm[14],mm[15]);
+                }
+                int n, maxv = g_meow_draw_count < 4 ? g_meow_draw_count : 4;
+                for (n = 0; base && vstride > 0 && n < maxv; ++n) {
+                    const float *vp = (const float *)((const char *)base + n * vstride);
+                    if (tcbase && tstride > 0) {
+                        const float *tp = (const float *)((const char *)tcbase + n * tstride);
+                        fprintf(stderr, "[fpemat]   v%d pos=(%.2f,%.2f,%.2f) tex=(%.4f,%.4f,%.4f,%.4f)%s\n",
+                            n, vp[0], vp[1], vp[2], tp[0], tp[1], tp[2], tp[3],
+                            (fabsf(tp[3] - 1.0f) > 0.01f) ? "  <<< q!=1" : "");
+                        if (pm && mm) {
+                            float ex = mm[0]*vp[0] + mm[4]*vp[1] + mm[8]*vp[2] + mm[12];
+                            float ey = mm[1]*vp[0] + mm[5]*vp[1] + mm[9]*vp[2] + mm[13];
+                            float ez = mm[2]*vp[0] + mm[6]*vp[1] + mm[10]*vp[2] + mm[14];
+                            float cw = pm[3]*ex + pm[7]*ey + pm[11]*ez + pm[15];
+                            float cx = pm[0]*ex + pm[4]*ey + pm[8]*ez + pm[12];
+                            float cy = pm[1]*ex + pm[5]*ey + pm[9]*ez + pm[13];
+                            if (fabsf(cw) > 1e-6f)
+                                fprintf(stderr, "[fpemat]     ndc=(%.3f,%.3f) w=%.4f\n",
+                                    cx/cw, cy/cw, (double)cw);
+                            else
+                                fprintf(stderr, "[fpemat]     ndc=DEGENERATE w=%.6f\n", (double)cw);
+                        }
+                    }
+                }
+            }
         }
     }
     int need_hackfbo = 0;
