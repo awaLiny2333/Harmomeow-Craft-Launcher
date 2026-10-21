@@ -10,6 +10,18 @@ const LOG_DOMAIN = 0x0001;
 const LOG_TAG = 'Downloader';
 
 /**
+ * 写盘合并阈值（字节）。
+ *
+ * `dataReceive` 的分片通常只有几 KB～几十 KB；若每片都 `writeSync`，一个 100 MiB 的
+ * client jar 就是几千次同步系统调用，而同步写会占住 ArkTS 线程 —— 同一线程上其它
+ * 并发下载的接收回调也被一起堵住。攒到 1 MiB 再落盘，系统调用次数降到百分之一量级。
+ */
+const WRITE_BUFFER_BYTES: number = 1024 * 1024;
+
+/** 进度回调最小间隔（毫秒）：避免每个网络分片都触发一次 UI 状态更新。 */
+const PROGRESS_INTERVAL_MS: number = 100;
+
+/**
  * 网络下载原语（与业务无关）：拉文本、下文件（流式落盘 + 校验）。
  *
  * 设计：
@@ -74,7 +86,34 @@ function streamToFile(url: string, filePath: string,
   return new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
     const request = http.createHttp();
     let file: fileIo.File | null = null;
-    let settled = false;
+    // 两个独立事件：流结束（dataEnd）与 HTTP 结果（requestInStream 回调）。
+    // 以前 dataEnd 一到就 resolve，小响应（如镜像的 404 页面）会在状态码回来前被当成成功，
+    // 结果把错误页落盘成 jar。现在必须两个都到齐、且状态码为 2xx 才 resolve。
+    let streamEnded = false;
+    let httpDone = false;
+    let httpCode = 0;
+    let httpError: Error | null = null;
+    let finished = false;
+    // 写盘缓冲：接收分片先攒在内存里，满一个阈值（或数据结束时）再同步写一次。
+    const pending: Uint8Array = new Uint8Array(WRITE_BUFFER_BYTES);
+    let pendingLen = 0;
+    let writeError: Error | null = null;
+    let lastProgressAt = 0;
+
+    const flush = (): void => {
+      if (file === null || pendingLen === 0) {
+        return;
+      }
+      // 复制出恰好 pendingLen 字节：不能把缓冲区尾部未填充的部分写进文件。
+      const out = new ArrayBuffer(pendingLen);
+      new Uint8Array(out).set(pending.subarray(0, pendingLen));
+      try {
+        fileIo.writeSync(file.fd, out);
+        pendingLen = 0;
+      } catch (error) {
+        writeError = new Error(`write failed: ${(error as BusinessError).message ?? ''}`);
+      }
+    };
 
     const cleanup = (): void => {
       if (file !== null) {
@@ -88,6 +127,30 @@ function streamToFile(url: string, filePath: string,
       request.destroy();
     };
 
+    /** 两件事都到齐后一次性收尾：流结束 + 状态码。 */
+    const finalize = (): void => {
+      if (finished || !streamEnded || !httpDone) {
+        return;
+      }
+      finished = true;
+      flush();
+      cleanup();
+      if (httpError !== null) {
+        reject(httpError);
+        return;
+      }
+      if (httpCode < HTTP_STATUS_MIN || httpCode >= HTTP_STATUS_MAX) {
+        reject(new Error(`HTTP ${httpCode}`));
+        return;
+      }
+      if (writeError !== null) {
+        // 以前静默忽略写失败，只在 sha1 校验里间接暴露；这里直接报出来，避免无谓的重试。
+        reject(writeError);
+        return;
+      }
+      resolve();
+    };
+
     try {
       file = fileIo.openSync(filePath,
         fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
@@ -98,27 +161,48 @@ function streamToFile(url: string, filePath: string,
     }
 
     request.on('dataReceive', (data: ArrayBuffer) => {
-      if (file !== null) {
-        try {
-          fileIo.writeSync(file.fd, data);
-        } catch {
-          // 写入失败交由后续校验/HTTP 结果暴露
+      if (file === null || writeError !== null) {
+        return;
+      }
+      const chunk = new Uint8Array(data);
+      let offset = 0;
+      while (offset < chunk.length) {
+        const space = pending.length - pendingLen;
+        if (space === 0) {
+          flush();
+          if (writeError !== null) {
+            return;
+          }
+          continue;
         }
+        const take = Math.min(space, chunk.length - offset);
+        pending.set(chunk.subarray(offset, offset + take), pendingLen);
+        pendingLen += take;
+        offset += take;
+      }
+      if (pendingLen === pending.length) {
+        flush();
       }
     });
     request.on('dataEnd', () => {
-      if (settled) {
+      if (finished) {
         return;
       }
-      settled = true;
-      cleanup();
-      resolve();
+      streamEnded = true;
+      finalize();
     });
     // 进度（需服务端返回 Content-Length；无则回调不触发，UI 侧按 total<=0 处理）。
+    // 节流到 ~10Hz：多并发 worker 同时上报时，避免把 UI 状态刷成高频抖动。
     request.on('dataReceiveProgress', (info: http.DataReceiveProgressInfo) => {
-      if (onProgress !== undefined) {
-        onProgress(info.receiveSize, info.totalSize);
+      if (onProgress === undefined) {
+        return;
       }
+      const now = Date.now();
+      if (info.totalSize > 0 && now - lastProgressAt < PROGRESS_INTERVAL_MS) {
+        return;
+      }
+      lastProgressAt = now;
+      onProgress(info.receiveSize, info.totalSize);
     });
 
     const options: http.HttpRequestOptions = {
@@ -127,14 +211,27 @@ function streamToFile(url: string, filePath: string,
       readTimeout: HTTP_READ_TIMEOUT,
     };
     request.requestInStream(url, options, (err: BusinessError, code: number) => {
-      if (settled) {
+      if (finished) {
         return;
       }
-      if (err || code < HTTP_STATUS_MIN || code >= HTTP_STATUS_MAX) {
-        settled = true;
+      httpDone = true;
+      httpCode = code;
+      if (err) {
+        // 连接/传输失败：不会再有关键的 dataEnd，立即失败，避免永久挂起。
+        httpError = err;
+        finished = true;
+        cleanup();
+        reject(err);
+        return;
+      }
+      if (code < HTTP_STATUS_MIN || code >= HTTP_STATUS_MAX) {
+        // 非 2xx：不必等 body 收完（镜像的 404 页面可能很小，也可能很大），立即失败。
+        finished = true;
         cleanup();
         reject(new Error(`HTTP ${code}`));
+        return;
       }
+      finalize();
     });
   });
 }

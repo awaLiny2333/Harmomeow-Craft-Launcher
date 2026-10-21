@@ -45,8 +45,14 @@ export const LEGACY_INDEX_URL_PREFIX: string = `${MOJANG_LAUNCHERMETA}/v1/packag
 /** 完整性算法：与 Minecraft 生态一致（sha1 十六进制，hash.hash 返回大写）。 */
 export const HASH_ALGORITHM: string = 'sha1';
 
-/** 并发下载上限（小文件多，取适中值；http 无并发上限，避免过载）。 */
-export const DOWNLOAD_CONCURRENCY: number = 6;
+/**
+ * 并发下载上限。
+ *
+ * 资源对象（assets）动辄 2000~4000 个平均几十 KB 的小文件，单文件耗时主要花在 RTT /
+ * TLS 握手而非传输；6 路并发会把安装时间几乎全部消耗在等网络上。16 路对 fd、连接数
+ * 和 BMCLAPI 的并发限制都足够保守，同时能把小文件吞吐提升一个量级。
+ */
+export const DOWNLOAD_CONCURRENCY: number = 16;
 
 /** HTTP 成功码区间。 */
 export const HTTP_STATUS_MIN: number = 200;
