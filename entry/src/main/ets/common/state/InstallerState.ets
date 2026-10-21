@@ -4,7 +4,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { RemoteVersion, fetchManifest, installVersion, removeIncompleteInstance,
   fetchFabricLoaders, installFabricVersion, installNeoForgeVersion, fetchForgeVersions,
   installForgeVersion, FabricLoaderVersion, ForgeListResult,
-  ForgeInstallerUnavailableError } from '../data/VersionInstaller';
+  ForgeInstallerUnavailableError, PHASE_PROCESS, PHASE_WRITE } from '../data/VersionInstaller';
 import { fetchNeoForgeVersions, NeoForgeListResult, NeoForgeRemoteVersion } from '../data/NeoForgeVersionList';
 import { SOURCE_MIRROR, TYPE_OTHER, TYPE_RELEASE,
   TYPE_SNAPSHOT } from '../constants/DownloadContract';
@@ -145,9 +145,24 @@ export class InstallerState {
   /** 过滤后的可见版本列表（Repeat 渲染用；manifest 为原始全量）。 */
   @Trace visible: RemoteVersion[] = [];
 
-  /** 当前文件已接收 / 总字节数（进度显示；total<=0 表示服务端未给长度）。 */
-  @Trace fileReceived: number = 0;
-  @Trace fileTotal: number = 0;
+  /**
+   * 当前**批次**的已下载字节 / 总字节（由 `runDownloads` 聚合后上报，不是单个文件的读数）。
+   * `bytesTotal <= 0` 表示本批没有可用的大小信息（全未知大小批次）⇒ UI 隐藏字节行与进度条。
+   */
+  @Trace bytesDone: number = 0;
+  @Trace bytesTotal: number = 0;
+
+  /**
+   * 阶段切换：写清单 / processor 阶段没有下载字节 ⇒ 清掉字节读数，避免上一批的数字残留。
+   * 只在这两个阶段清（其余阶段由批次起点自己上报 0）。
+   */
+  private applyPhase(phase: number): void {
+    if (phase === PHASE_WRITE || phase === PHASE_PROCESS) {
+      this.bytesDone = 0;
+      this.bytesTotal = 0;
+    }
+    this.phase = phase;
+  }
 
   /** 拉取远程版本清单（首次展开面板或手动重试时调用）。 */
   async refreshManifest(): Promise<void> {
@@ -181,13 +196,13 @@ export class InstallerState {
     this.done = 0;
     this.total = 0;
     this.current = '';
-    this.fileReceived = 0;
-    this.fileTotal = 0;
+    this.bytesDone = 0;
+    this.bytesTotal = 0;
     let ok = true;
     try {
       await installVersion(gameRoot, remote, this.source, instanceName,
         (phase: number) => {
-          this.phase = phase;
+          this.applyPhase(phase);
         },
         (done: number, total: number) => {
           this.done = done;
@@ -196,9 +211,9 @@ export class InstallerState {
         (label: string) => {
           this.current = label;
         },
-        (received: number, total: number) => {
-          this.fileReceived = received;
-          this.fileTotal = total;
+        (done: number, total: number) => {
+          this.bytesDone = done;
+          this.bytesTotal = total;
         });
     } catch (error) {
       // 失败收尾：清掉半装残留（缺 <名>.json 才清，绝不碰完整实例），避免"扫描不到又占名"的僵尸目录。
@@ -313,13 +328,13 @@ export class InstallerState {
     this.done = 0;
     this.total = 0;
     this.current = '';
-    this.fileReceived = 0;
-    this.fileTotal = 0;
+    this.bytesDone = 0;
+    this.bytesTotal = 0;
     let ok = true;
     try {
       await installFabricVersion(gameRoot, remote, this.fabricLoader, instanceName, this.fabricSource,
         (phase: number) => {
-          this.phase = phase;
+          this.applyPhase(phase);
         },
         (done: number, total: number) => {
           this.done = done;
@@ -328,9 +343,9 @@ export class InstallerState {
         (label: string) => {
           this.current = label;
         },
-        (received: number, total: number) => {
-          this.fileReceived = received;
-          this.fileTotal = total;
+        (done: number, total: number) => {
+          this.bytesDone = done;
+          this.bytesTotal = total;
         });
     } catch (error) {
       // 失败收尾：清掉半装残留（缺 <名>.json 才清，绝不碰完整实例）。
@@ -428,14 +443,14 @@ export class InstallerState {
     this.done = 0;
     this.total = 0;
     this.current = '';
-    this.fileReceived = 0;
-    this.fileTotal = 0;
+    this.bytesDone = 0;
+    this.bytesTotal = 0;
     let ok = true;
     try {
       await installNeoForgeVersion(ctx, gameRoot, gameRootUri, remote, this.neoLoader, instanceName,
         this.neoForgeSource, ctx.cacheDir, jreId,
         (phase: number) => {
-          this.phase = phase;
+          this.applyPhase(phase);
         },
         (done: number, total: number) => {
           this.done = done;
@@ -444,9 +459,9 @@ export class InstallerState {
         (label: string) => {
           this.current = label;
         },
-        (received: number, total: number) => {
-          this.fileReceived = received;
-          this.fileTotal = total;
+        (done: number, total: number) => {
+          this.bytesDone = done;
+          this.bytesTotal = total;
         });
     } catch (error) {
       // 失败收尾：清掉半装残留（缺 <名>.json 才清，绝不碰完整实例）。
@@ -545,14 +560,14 @@ export class InstallerState {
     this.done = 0;
     this.total = 0;
     this.current = '';
-    this.fileReceived = 0;
-    this.fileTotal = 0;
+    this.bytesDone = 0;
+    this.bytesTotal = 0;
     let ok = true;
     try {
       await installForgeVersion(ctx, gameRoot, gameRootUri, remote, this.forgeLoader, instanceName,
         this.forgeSource, ctx.cacheDir, jreId,
         (phase: number) => {
-          this.phase = phase;
+          this.applyPhase(phase);
         },
         (done: number, total: number) => {
           this.done = done;
@@ -561,9 +576,9 @@ export class InstallerState {
         (label: string) => {
           this.current = label;
         },
-        (received: number, total: number) => {
-          this.fileReceived = received;
-          this.fileTotal = total;
+        (done: number, total: number) => {
+          this.bytesDone = done;
+          this.bytesTotal = total;
         });
     } catch (error) {
       // 失败收尾：清掉半装残留（缺 <名>.json 才清，绝不碰完整实例）。

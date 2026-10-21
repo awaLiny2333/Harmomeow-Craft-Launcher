@@ -557,6 +557,22 @@ function writeText(path: string, text: string): void {
 }
 
 /**
+ * 批量进度上报的最小间隔（毫秒）。
+ *
+ * 单文件的节流在 `Downloader` 里（每个 worker 各自一份）；这里是**整批共用一枚**节流戳，
+ * 于是 UI 更新频率与并发度无关（≤10Hz），不会被 16 个 worker 放大 16 倍。
+ */
+const BATCH_PROGRESS_INTERVAL_MS: number = 100;
+
+/**
+ * 批次未完成时给分母留的余量（字节）。
+ *
+ * 未知大小项「完成」时口径不转轨（保留在分母里），此时分子可能刚好等于分母 ⇒ 进度条提前满格。
+ * 留 1 字节即可保证「批次未结束就不显示 100%」（见设计档不变量 I6）。
+ */
+const PROGRESS_TAIL_BYTES: number = 1;
+
+/**
  * 文件级并发下载（已存在即跳过；总数为本批项数）。source 决定候选地址（官方/镜像）。
  *
  * 失败语义（**这一条是硬约束**）：
@@ -565,11 +581,14 @@ function writeText(path: string, text: string): void {
  *   立刻 `removeIncompleteInstance()`，若此时还有 worker 在跑，它能把刚被删掉的
  *   `versions/<name>/` 重新建出来、把 jar rename 进去 —— 清理动作被静默覆盖（PR #1 后实测的坑）；
  * - 只上报**第一个**错误：后面的失败多半是它的连锁反应，报最后一个只会误导定位。
+ *
+ * 字节进度按**批次聚合**（口径见 notes/20-design/launch/安装进度-聚合方案.md §3）：每个 worker 只写
+ * 自己 index 那格，统一求和后上报 ⇒ 读数与并发数无关、不会在多个文件之间乱跳。
  */
 async function runDownloads(items: DownloadItem[], source: string,
   onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void,
-  onFileProgress: (received: number, total: number) => void): Promise<void> {
+  onBytes: (done: number, total: number) => void): Promise<void> {
   // 防御性去重：同一 destPath 只能有一个下载任务（否则并发写同一 .part → 互相截断/损坏）。
   const unique: DownloadItem[] = [];
   const seenPaths: Set<string> = new Set<string>();
@@ -581,7 +600,97 @@ async function runDownloads(items: DownloadItem[], source: string,
     unique.push(it);
   }
   const total = unique.length;
+
+  // ---- 批次聚合状态（局部变量，随本次调用销毁）----
+  // 口径：bytesDone = settled + inflightSum + unknownSum；bytesTotal = knownTotal + unknownSum。
+  // `settled + inflightSum <= knownTotal` 恒成立 ⇒ 分子不会超过分母。
+  let knownTotal = 0;
+  let settled = 0;
+  let inflightSum = 0;
+  let unknownSum = 0;
+  let completedCount = 0;
+  let lastEmitAt = 0;
+  // 每项最后一次上报的已收字节（下标 = unique 下标）：只用来算增量，不做遍历求和。
+  const receivedByIndex: number[] = [];
+  for (let i = 0; i < total; i++) {
+    receivedByIndex.push(0);
+    if (unique[i].size > 0) {
+      knownTotal += unique[i].size;
+    }
+  }
+
+  /** 上报一次聚合读数；`force` = 批次起点 / 批次终态（不受中间节流约束）。 */
+  const emit = (force: boolean): void => {
+    const now = Date.now();
+    if (!force) {
+      if (now - lastEmitAt < BATCH_PROGRESS_INTERVAL_MS) {
+        return;
+      }
+    }
+    lastEmitAt = now;
+    const bytesDone = settled + inflightSum + unknownSum;
+    // 全未知大小批次（knownTotal === 0）没有分母锚点 ⇒ 报 0，让 UI 整段隐藏（设计档 §3 末段）。
+    let bytesTotal = knownTotal > 0 ? knownTotal + unknownSum : 0;
+    // 未完成时不让分母贴住分子（I6）。
+    if (bytesTotal > 0 && completedCount < total && bytesTotal <= bytesDone) {
+      bytesTotal = bytesDone + PROGRESS_TAIL_BYTES;
+    }
+    try {
+      onBytes(Math.min(bytesDone, bytesTotal), bytesTotal);
+    } catch {
+      // UI 回调异常不得影响下载状态机
+    }
+  };
+
+  /** 某文件收到字节：更新自己那格，再按**增量**维护聚合和（重试归零时贡献自然回落）。 */
+  const onFileBytes = (index: number, received: number): void => {
+    const size = unique[index].size;
+    const previous = receivedByIndex[index];
+    if (received === previous) {
+      return;
+    }
+    receivedByIndex[index] = received;
+    if (size > 0) {
+      // 已知大小：按 min 截断，声明 size 与实际不符也不会推高读数
+      inflightSum += Math.min(received, size) - Math.min(previous, size);
+    } else {
+      // 未知大小：分子、分母同增（I5）
+      unknownSum += received - previous;
+    }
+    emit(false);
+  };
+
+  /** 某文件完成（含装前已存在 / rename 成功）：在飞贡献转成已结算。 */
+  const onFileDone = (index: number): void => {
+    const size = unique[index].size;
+    if (size > 0) {
+      inflightSum -= Math.min(receivedByIndex[index], size);
+      settled += size;
+    }
+    // size === 0：把已收字节留在 unknownSum 里（转口径会让分母瞬间改变 ⇒ 读数跳变）
+    completedCount++;
+    // 走全局节流：资产阶段完成事件可达数百次/秒，强制上报会绕过节流（I3）。
+    emit(false);
+  };
+
+  /**
+   * 某文件失败：撤掉它的在飞贡献，避免失败批次把读数顶高（已知项从在飞和里减，未知项从桶里减）。
+   * 不单独上报：失败后不再领新任务，批次结束的终态事件会把真实读数带出去。
+   */
+  const onFileFailed = (index: number): void => {
+    const size = unique[index].size;
+    const received = receivedByIndex[index];
+    if (size > 0) {
+      inflightSum -= Math.min(received, size);
+    } else {
+      unknownSum -= received;
+    }
+    receivedByIndex[index] = 0;
+  };
+
   onCount(0, total);
+  // 批次起点（total === 0 时这就是本批唯一一次事件）。
+  emit(true);
   if (total === 0) {
     return;
   }
@@ -602,13 +711,15 @@ async function runDownloads(items: DownloadItem[], source: string,
         return;
       }
       const item = unique[index];
-      onCurrent(item.label);
+      // 幂等命中：先判命中、再报「当前项」，避免重装时闪一下已存在的文件名。
       if (!isDownloaded(item)) {
+        onCurrent(item.label);
         try {
           ensureParent(item.destPath);
           await downloadFile(fileCandidates(item.urls[0], source), item.destPath, item.sha1,
-            onFileProgress);
+            (received: number) => onFileBytes(index, received));
         } catch (error) {
+          onFileFailed(index);
           const err = error as BusinessError;
           // 带上文件标签，便于定位是哪个文件失败；只留第一个。
           if (failures.length === 0) {
@@ -617,6 +728,7 @@ async function runDownloads(items: DownloadItem[], source: string,
           return;
         }
       }
+      onFileDone(index);
       done++;
       onCount(done, total);
     }
@@ -628,9 +740,26 @@ async function runDownloads(items: DownloadItem[], source: string,
   }
   // worker 内部已吞掉所有异常 ⇒ 这里一定 settle 完毕才继续，绝不留下孤儿 worker。
   await Promise.all(workers);
+  // 批次终态：保证 UI 拿到本批最后一次读数（此后不再上报，见 I4）。
+  emit(true);
   if (failures.length > 0) {
     throw failures[0];
   }
+}
+
+/**
+ * 单文件直通的字节转发（Forge / NeoForge 的 installer jar 不走 `runDownloads` 聚合）。
+ *
+ * 带上界：`received` 可能大于声明长度（链路自动解压等）⇒ 截到 total，避免文本读数超 100%。
+ * `total <= 0`（服务端未给长度）报 0/0，UI 会整段隐藏字节行与进度条。
+ */
+function forwardSingleFileBytes(onBytes: (done: number, total: number) => void,
+  received: number, total: number): void {
+  if (total <= 0) {
+    onBytes(0, 0);
+    return;
+  }
+  onBytes(Math.min(received, total), total);
 }
 
 // ---- 对外 API ----
@@ -722,7 +851,7 @@ export async function installVersion(gameRoot: string, remote: RemoteVersion, so
   onPhase: (phase: number) => void,
   onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void,
-  onFileProgress: (received: number, total: number) => void): Promise<void> {
+  onBytes: (done: number, total: number) => void): Promise<void> {
   if (!isValidInstanceName(instanceName)) {
     throw new Error('invalid instance name');
   }
@@ -755,7 +884,7 @@ export async function installVersion(gameRoot: string, remote: RemoteVersion, so
   if (indexItem !== null) {
     files.push(indexItem);
   }
-  await runDownloads(files, source, onCount, onCurrent, onFileProgress);
+  await runDownloads(files, source, onCount, onCurrent, onBytes);
 
   // 第二批：资源对象（依赖已下好的资源索引）
   const assetId = (versionJson.assetIndex?.id ?? '').length > 0
@@ -771,7 +900,7 @@ export async function installVersion(gameRoot: string, remote: RemoteVersion, so
       index = {};
     }
     const objects = assetObjectItems(gameRoot, index);
-    await runDownloads(objects, source, onCount, onCurrent, onFileProgress);
+    await runDownloads(objects, source, onCount, onCurrent, onBytes);
   }
 
   // 最后写版本清单：扫描器只认这个文件，保证不出现"半装被识别"的版本
@@ -920,7 +1049,7 @@ export async function installFabricVersion(gameRoot: string, gameRemote: RemoteV
   onPhase: (phase: number) => void,
   onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void,
-  onFileProgress: (received: number, total: number) => void): Promise<void> {
+  onBytes: (done: number, total: number) => void): Promise<void> {
   if (!isValidInstanceName(instanceName)) {
     throw new Error('invalid instance name');
   }
@@ -964,7 +1093,7 @@ export async function installFabricVersion(gameRoot: string, gameRemote: RemoteV
   if (indexItem !== null) {
     files.push(indexItem);
   }
-  await runDownloads(files, loaderSource, onCount, onCurrent, onFileProgress);
+  await runDownloads(files, loaderSource, onCount, onCurrent, onBytes);
 
   // 4) 资源对象（依赖已下好的索引；Fabric 源）
   const assetId = (vanilla.assetIndex?.id ?? '').length > 0
@@ -978,7 +1107,7 @@ export async function installFabricVersion(gameRoot: string, gameRemote: RemoteV
     } catch {
       index = {};
     }
-    await runDownloads(assetObjectItems(gameRoot, index), loaderSource, onCount, onCurrent, onFileProgress);
+    await runDownloads(assetObjectItems(gameRoot, index), loaderSource, onCount, onCurrent, onBytes);
   }
 
   // 5) Fabric 库（Fabric 源；maven.fabricmc.net → 镜像/官方）
@@ -990,7 +1119,7 @@ export async function installFabricVersion(gameRoot: string, gameRemote: RemoteV
       fabricItems.push(item);
     }
   }
-  await runDownloads(fabricItems, loaderSource, onCount, onCurrent, onFileProgress);
+  await runDownloads(fabricItems, loaderSource, onCount, onCurrent, onBytes);
 
   // 6) 写清单：顶层扁平化 + patches[game,fabric]
   onPhase(PHASE_WRITE);
@@ -1142,7 +1271,7 @@ export async function installNeoForgeVersion(ctx: common.UIAbilityContext, gameR
   onPhase: (phase: number) => void,
   onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void,
-  onFileProgress: (received: number, total: number) => void): Promise<void> {
+  onBytes: (done: number, total: number) => void): Promise<void> {
   if (!isValidInstanceName(instanceName)) {
     throw new Error('invalid instance name');
   }
@@ -1172,7 +1301,7 @@ export async function installNeoForgeVersion(ctx: common.UIAbilityContext, gameR
     onCount(0, 1);
     onCurrent('neoforge-installer.jar');
     await downloadFile(neoforgeInstallerCandidates(loaderVersion, loaderSource), jarPath, '',
-      onFileProgress);
+      (received: number, total: number) => forwardSingleFileBytes(onBytes, received, total));
     onCount(1, 1);
   };
 
@@ -1282,7 +1411,7 @@ export async function installNeoForgeVersion(ctx: common.UIAbilityContext, gameR
       files.push(newItem(e.fileName, [`${NEOFORGE_RELEASES}${e.relPath}`], dest, '', 0));
     }
   }
-  await runDownloads(files, loaderSource, onCount, onCurrent, onFileProgress);
+  await runDownloads(files, loaderSource, onCount, onCurrent, onBytes);
 
   // 4) 资源对象（依赖已下好的索引；NeoForge 源）
   const assetId = (vanilla.assetIndex?.id ?? '').length > 0
@@ -1296,13 +1425,13 @@ export async function installNeoForgeVersion(ctx: common.UIAbilityContext, gameR
     } catch {
       index = {};
     }
-    await runDownloads(assetObjectItems(gameRoot, index), loaderSource, onCount, onCurrent, onFileProgress);
+    await runDownloads(assetObjectItems(gameRoot, index), loaderSource, onCount, onCurrent, onBytes);
   }
 
   // 5) processor 链：installer 只当数据容器，按 profile 顺序执行工具，产出 patched client jar。
   //    `{MINECRAFT_JAR}` 必须用**独立 temp 副本**（HMCL 同款硬约束）：工具会就地改写该 jar。
   onPhase(PHASE_PROCESS);
-  onFileProgress(0, 0); // 处理器阶段无文件进度（清掉上一阶段残留的字节数显示）
+  onBytes(0, 0); // 处理器阶段无文件进度（清掉上一阶段残留的字节数显示）
   const mcJarForTools = `${workDir}/mc.jar`;
   try {
     fileIo.copyFileSync(versionJarPath(gameRoot, instanceName), mcJarForTools);
@@ -2249,7 +2378,7 @@ export async function installForgeVersion(ctx: common.UIAbilityContext, gameRoot
   onPhase: (phase: number) => void,
   onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void,
-  onFileProgress: (received: number, total: number) => void): Promise<void> {
+  onBytes: (done: number, total: number) => void): Promise<void> {
   if (!isValidInstanceName(instanceName)) {
     throw new Error('invalid instance name');
   }
@@ -2279,7 +2408,7 @@ export async function installForgeVersion(ctx: common.UIAbilityContext, gameRoot
     onCount(0, 1);
     onCurrent('forge-installer.jar');
     try {
-      await downloadFile(installerUrls, jarPath, '', onFileProgress);
+      await downloadFile(installerUrls, jarPath, '', (received: number, total: number) => forwardSingleFileBytes(onBytes, received, total));
     } catch (error) {
       // 官方列表（`maven-metadata.xml`）只有目录名、**没有文件清单** ⇒ 会列出"该目录不含 installer jar"的
       // 构建（HMCL 不踩这个坑：它的列表项自带文件表，镜像端点更直接过滤 `category == "installer"`）。
@@ -2350,7 +2479,7 @@ export async function installForgeVersion(ctx: common.UIAbilityContext, gameRoot
     hilog.info(LOG_DOMAIN, LOG_TAG, 'forge spec+processors form (client=%{public}d); delegating to new chain',
       forgeClientProcessorCount(profile));
     await installForgeNewVersion(ctx, gameRoot, gameRootUri, gameRemote, loaderVersion, instanceName,
-      loaderSource, cacheDir, jreId, onPhase, onCount, onCurrent, onFileProgress);
+      loaderSource, cacheDir, jreId, onPhase, onCount, onCurrent, onBytes);
     return;
   }
   if (form === FORGE_FORM_UNSUPPORTED) {
@@ -2456,7 +2585,7 @@ export async function installForgeVersion(ctx: common.UIAbilityContext, gameRoot
       files.push(item);
     }
   }
-  await runDownloads(files, loaderSource, onCount, onCurrent, onFileProgress);
+  await runDownloads(files, loaderSource, onCount, onCurrent, onBytes);
 
   // 7) 资源对象（依赖已下好的索引；Forge 源）
   const assetId = (vanilla.assetIndex?.id ?? '').length > 0
@@ -2470,7 +2599,7 @@ export async function installForgeVersion(ctx: common.UIAbilityContext, gameRoot
     } catch {
       index = {};
     }
-    await runDownloads(assetObjectItems(gameRoot, index), loaderSource, onCount, onCurrent, onFileProgress);
+    await runDownloads(assetObjectItems(gameRoot, index), loaderSource, onCount, onCurrent, onBytes);
   }
 
   // 8) 写清单：顶层扁平 + patches[game, forge]
@@ -2512,7 +2641,7 @@ export async function installForgeNewVersion(ctx: common.UIAbilityContext, gameR
   onPhase: (phase: number) => void,
   onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void,
-  onFileProgress: (received: number, total: number) => void): Promise<void> {
+  onBytes: (done: number, total: number) => void): Promise<void> {
   if (!isValidInstanceName(instanceName)) {
     throw new Error('invalid instance name');
   }
@@ -2537,7 +2666,7 @@ export async function installForgeNewVersion(ctx: common.UIAbilityContext, gameR
     onCount(0, 1);
     onCurrent('forge-installer.jar');
     try {
-      await downloadFile(installerUrls, jarPath, '', onFileProgress);
+      await downloadFile(installerUrls, jarPath, '', (received: number, total: number) => forwardSingleFileBytes(onBytes, received, total));
     } catch (error) {
       const err = error as BusinessError;
       const buildId = `${gameRemote.id}-${loaderVersion}`;
@@ -2643,7 +2772,7 @@ export async function installForgeNewVersion(ctx: common.UIAbilityContext, gameR
       files.push(item);
     }
   }
-  await runDownloads(files, loaderSource, onCount, onCurrent, onFileProgress);
+  await runDownloads(files, loaderSource, onCount, onCurrent, onBytes);
 
   // 5) 资源对象（依赖已下好的索引；Forge 源）
   const assetId = (vanilla.assetIndex?.id ?? '').length > 0
@@ -2657,13 +2786,13 @@ export async function installForgeNewVersion(ctx: common.UIAbilityContext, gameR
     } catch {
       index = {};
     }
-    await runDownloads(assetObjectItems(gameRoot, index), loaderSource, onCount, onCurrent, onFileProgress);
+    await runDownloads(assetObjectItems(gameRoot, index), loaderSource, onCount, onCurrent, onBytes);
   }
 
   // 6) processor 链：installer 只当数据容器，按 profile 顺序执行工具，产出 patched client jar。
   //    `{MINECRAFT_JAR}` 必须用**独立 temp 副本**（HMCL 同款硬约束）：工具会就地改写该 jar。
   onPhase(PHASE_PROCESS);
-  onFileProgress(0, 0); // 处理器阶段无文件进度（清掉上一阶段残留的字节数显示）
+  onBytes(0, 0); // 处理器阶段无文件进度（清掉上一阶段残留的字节数显示）
   const mcJarForTools = `${workDir}/mc.jar`;
   try {
     fileIo.copyFileSync(versionJarPath(gameRoot, instanceName), mcJarForTools);

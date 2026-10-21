@@ -1744,17 +1744,23 @@ export struct GameVersionsView {
                   .opacity(OPACITY_SECONDARY);
                 Text($r('app.string.download_progress', this.installer.done, this.installer.total))
                   .opacity(OPACITY_SECONDARY);
+                // 本批字节进度（bytesTotal > 0 才有意义；全未知大小批次整段不渲染）
+                if (this.installer.bytesTotal > 0) {
+                  Text($r('app.string.download_file_progress',
+                    this.fmtSize(this.installer.bytesDone),
+                    this.fmtSize(this.installer.bytesTotal)))
+                    .opacity(OPACITY_SECONDARY);
+                  Progress({
+                    value: Math.min(this.installer.bytesDone, this.installer.bytesTotal),
+                    total: this.installer.bytesTotal,
+                    type: ProgressType.Linear
+                  })
+                    .width('100%');
+                }
                 Text(this.installer.current)
                   .opacity(OPACITY_SECONDARY)
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis });
-                // 当前文件大小进度（服务端给了 Content-Length 才显示）
-                if (this.installer.fileTotal > 0) {
-                  Text($r('app.string.download_file_progress',
-                    this.fmtSize(this.installer.fileReceived),
-                    this.fmtSize(this.installer.fileTotal)))
-                    .opacity(OPACITY_SECONDARY);
-                }
               } else if (this.installer.errorKind === INSTALL_ERR_FORGE_NO_INSTALLER) {
                 // 构建名已由 $r 的 %s 参数带出，不再额外渲染 errorDetail（避免重复显示裸构建名）。
                 Text(this.errorText())

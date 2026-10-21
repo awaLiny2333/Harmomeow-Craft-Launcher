@@ -203,6 +203,32 @@ function streamToFile(url: string, filePath: string,
       }
     };
 
+    /**
+     * 进度发射器（本文件的**唯一**流内上报出口）：节流到 ~10Hz，并统一守住前置条件。
+     *
+     * total 只取「服务端声明长度」：`declaredLength` 未给时上报 0，由上层按“长度未知”处理。
+     * 上报走**累计字节** `received`（由 `dataReceive` 维护），而不是某个事件的载荷 —— 于是
+     * 服务端不给 `Content-Length` 时读数照样推进。
+     */
+    const emitProgress = (): void => {
+      if (finished || writeError !== null || onProgress === undefined) {
+        return;
+      }
+      if (received <= 0) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastProgressAt < PROGRESS_INTERVAL_MS) {
+        return;
+      }
+      lastProgressAt = now;
+      try {
+        onProgress(received, declaredLength > 0 ? declaredLength : 0);
+      } catch {
+        // UI 回调异常不得影响下载状态机
+      }
+    };
+
     /** 唯一失败出口：丢弃缓冲 → destroy → close → 恰好结算一次。 */
     const fail = (err: Error): void => {
       if (finished) {
@@ -265,6 +291,7 @@ function streamToFile(url: string, filePath: string,
         reject(new Error(`size mismatch: disk=${finalSize} received=${received}`));
         return;
       }
+      // 结算补发已移到 `downloadFile`（rename 成功之后）：此处只做状态机结算，不动进度。
       hilog.info(LOG_DOMAIN, LOG_TAG, 'downloaded file=%{public}s bytes=%{public}d code=%{public}d',
         filePath, received, httpCode);
       resolve();
@@ -302,6 +329,8 @@ function streamToFile(url: string, filePath: string,
         pendingLen += take;
         offset += take;
       }
+      // 每收一片就尝试上报一次（节流在发射器里）：这条路不依赖 Content-Length。
+      emitProgress();
     });
     request.on('dataEnd', () => {
       if (finished) {
@@ -311,8 +340,8 @@ function streamToFile(url: string, filePath: string,
       lastActivityAt = Date.now();
       finalize();
     });
-    // 进度（需服务端返回 Content-Length；无则回调不触发，UI 侧按 total<=0 处理）。
-    // 节流到 ~10Hz：多并发 worker 同时上报时，避免把 UI 状态刷成高频抖动。
+    // 进度（服务端给 Content-Length 时才有此事件）。
+    // 职责收窄为：记录声明长度（完整性账目）→ 交给同一个发射器（节流会自然去重）。
     request.on('dataReceiveProgress', (info: http.DataReceiveProgressInfo) => {
       if (finished) {
         return;
@@ -322,19 +351,7 @@ function streamToFile(url: string, filePath: string,
       if (info.totalSize > 0) {
         declaredLength = info.totalSize;
       }
-      if (onProgress === undefined) {
-        return;
-      }
-      const now = Date.now();
-      if (now - lastProgressAt < PROGRESS_INTERVAL_MS) {
-        return;
-      }
-      lastProgressAt = now;
-      try {
-        onProgress(info.receiveSize, info.totalSize);
-      } catch {
-        // UI 回调异常不得影响下载状态机
-      }
+      emitProgress();
     });
 
     // 看门狗：只要还在收数据就一直重置；静默超时就把「挂起」变成「失败」。
@@ -424,6 +441,16 @@ export async function downloadFile(candidates: string[], destPath: string,
       }
       removeQuietly(destPath);
       fileIo.renameSync(tempPath, destPath);
+      // 终态：文件已落到正式名（sha1 / 空产物等校验全部通过后）才补发满格读数 ——
+      // `streamToFile` 的 100ms 节流会把最后一片丢掉，不补发就会停在 < total。
+      // 用已取到的实际大小当分子分母，不依赖服务端是否给长度。
+      if (onProgress !== undefined) {
+        try {
+          onProgress(st.size, st.size);
+        } catch {
+          // UI 回调异常不得影响下载
+        }
+      }
       return;
     } catch (error) {
       if (outcome.localFailure) {
