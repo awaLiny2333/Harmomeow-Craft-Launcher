@@ -16,6 +16,49 @@ export const SPOOF_CPU_NAME: string = 'harmonyos';
 export const LOCALE_LANGUAGE: string = 'zh';
 export const LOCALE_COUNTRY: string = 'CN';
 export const LOCALE_TIMEZONE: string = 'Asia/Shanghai';
+/**
+ * JVM 的**控制台/日志**编码（不是文件名编码，见下）。
+ *
+ * ⚠️ **`sun.jnu.encoding`（文件名编码）无法用 `-D` 覆盖，且本仓目前无解。**
+ * 别再走这条路了 —— 2026-10-21 试过两种方法，都失败：
+ *
+ * ① `-Dsun.jnu.encoding=UTF-8`：JDK 的 `jdk.internal.util.SystemProps.initProperties()`
+ *    用 `put()`（**不是** `putIfAbsent()`）写入该属性，源码注释原文
+ *    `// Platform defined encodings cannot be overridden on the command line`。
+ *    JDK 8 的 `System.c` 同样是无条件 `PUTPROP`。JEP 400 只保证 `file.encoding` 可覆盖，
+ *    对 `sun.jnu.encoding` 明说它是内部未支持属性。实测：参数确实进了命令行，但毫无效果。
+ *
+ * ② 在 libc6 兼容层（`tools/jre26/glibc_compat.c`、`tools/jre8/glibc_compat.c`）里覆盖
+ *    `nl_langinfo(CODESET)`：
+ *    OHOS musl 的 `nl_langinfo` / `setlocale` / `newlocale` / `nl_langinfo_l` 是**同一个
+ *    4 字节 `ret` 桩**（`llvm-objdump` 实测 `0x11d3c: d65f03c0  ret`），且 musl 在全局
+ *    作用域加载更早 ⇒ 兼容层的同名符号**抢不到**（`tools/jre8/README.md` §2.2 早有此结论）。
+ *    实测：自证日志一条都没出现，文件名编码问题原样复现。
+ *
+ * ⇒ 它唯一的来源是 `libjava.so` 调 `nl_langinfo(CODESET)`
+ *   （`java_props_md.c`：`sprops.sun_jnu_encoding = sprops.encoding`），
+ *   而 OHOS 上这条链返回随机值。**中文 mod 文件名会让 Fabric 扫描直接
+ *   `Mod discovery failed`（`InvalidPathException`），当前只能靠用户重命名规避。**
+ *   完整取证与候选方案见 `notes/20-design/launch/环境与载体.md` §8。
+ *
+ * 下面这些参数只负责控制台/日志里的中文显示：`file.encoding` 是 JEP 400 认可的官方入口
+ * （对 JRE 8 也有效），`stdout/stderr` 是 JDK 19+ 的属性名、`sun.*` 是旧名。代价为零。
+ */
+export const JVM_FILE_ENCODING: string = 'UTF-8';
+
+/**
+ * 编码相关的 JVM 参数（游戏 JVM 与工具 JVM **共用同一份**，避免两处漂移）。
+ *
+ * 注意这里**故意没有** `-Dsun.jnu.encoding`：它会被 JDK 无条件覆盖，写了只会让后人
+ * 误以为文件名编码靠它。文件名编码在当前栈上**没有** JVM 侧解法。
+ */
+export const JVM_ENCODING_ARGS: string[] = [
+  `-Dfile.encoding=${JVM_FILE_ENCODING}`,
+  `-Dstdout.encoding=${JVM_FILE_ENCODING}`,
+  `-Dstderr.encoding=${JVM_FILE_ENCODING}`,
+  `-Dsun.stdout.encoding=${JVM_FILE_ENCODING}`,
+  `-Dsun.stderr.encoding=${JVM_FILE_ENCODING}`,
+];
 /** 版本 rules 平台匹配（鸿蒙视作 linux + aarch64）。 */
 export const RULE_OS_NAME: string = 'linux';
 export const RULE_OS_ARCH: string = 'aarch64';

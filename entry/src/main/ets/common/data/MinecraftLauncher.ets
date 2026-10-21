@@ -4,7 +4,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
 import { RENDERER_LIB, VULKAN_LIB_SHIM, VULKAN_LIB_DISABLED, WINDOW_DEFAULT_W, WINDOW_DEFAULT_H,
   SPOOF_OS_NAME, SPOOF_OS_VERSION, SPOOF_CPU_NAME,
-  LOCALE_LANGUAGE, LOCALE_COUNTRY, LOCALE_TIMEZONE, RULE_OS_NAME, RULE_OS_ARCH,
+  LOCALE_LANGUAGE, LOCALE_COUNTRY, LOCALE_TIMEZONE, JVM_ENCODING_ARGS, RULE_OS_NAME, RULE_OS_ARCH,
   OFFLINE_USERNAME, OFFLINE_TOKEN, LAUNCHER_NAME, LAUNCHER_VERSION,
   CLIENT_MOD_NAME, LWJGL_GEN_343, LWJGL_JAR_PREFIX,
   LWJGL_NAME_MAPPER,
@@ -430,6 +430,9 @@ export function buildLaunchArgv(opts: LaunchOptions): string[] {
   argv.push(`-Duser.language=${LOCALE_LANGUAGE}`);
   argv.push(`-Duser.country=${LOCALE_COUNTRY}`);
   argv.push(`-Duser.timezone=${LOCALE_TIMEZONE}`);
+  // 文件名编码（详见 LaunchDefaults.JVM_ENCODING_ARGS 的注释）。缺 sun.jnu.encoding 时
+  // 中文 mod 文件名会让 Fabric 扫描直接 Mod discovery failed。
+  argv.push(...JVM_ENCODING_ARGS);
   argv.push('-Dlog4j2.formatMsgNoLookups=true');
   // Tools.getMinecraftArgs 会读 Server_Ip 属性并 isBlank() 判空（历史启动器 JVMLauncher 同款）；
   // 缺属性则 getProperty 返回 null → NPE。空值可安全走"无服务器直连"分支。
