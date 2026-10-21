@@ -65,7 +65,7 @@ export interface DownloadItem {
   destPath: string;
   /** 期望 sha1（空串 = 不校验）。 */
   sha1: string;
-  /** 期望大小（0 = 未知，仅展示用）。 */
+  /** 期望大小（0 = 未知）；> 0 时参与「已下载」判定（见 `isDownloaded`），不只用于展示。 */
   size: number;
 }
 
@@ -556,7 +556,16 @@ function writeText(path: string, text: string): void {
   }
 }
 
-/** 文件级并发下载（已存在即跳过；总数为本批项数）。source 决定候选地址（官方/镜像）。 */
+/**
+ * 文件级并发下载（已存在即跳过；总数为本批项数）。source 决定候选地址（官方/镜像）。
+ *
+ * 失败语义（**这一条是硬约束**）：
+ * - 第一个失败之后**不再领新任务**，但已经发出的请求允许收尾；
+ * - 必须等**全部 worker settle** 才把错误抛给上游。上游（`InstallerState`）一收到异常就
+ *   立刻 `removeIncompleteInstance()`，若此时还有 worker 在跑，它能把刚被删掉的
+ *   `versions/<name>/` 重新建出来、把 jar rename 进去 —— 清理动作被静默覆盖（PR #1 后实测的坑）；
+ * - 只上报**第一个**错误：后面的失败多半是它的连锁反应，报最后一个只会误导定位。
+ */
 async function runDownloads(items: DownloadItem[], source: string,
   onCount: (done: number, total: number) => void,
   onCurrent: (label: string) => void,
@@ -578,8 +587,15 @@ async function runDownloads(items: DownloadItem[], source: string,
   }
   let next = 0;
   let done = 0;
+  // 用数组而不是 `let firstError: Error | null`：闭包内赋值不会参与外层控制流收窄，
+  // 数组长度在这里是唯一不会被编译器判死的写法。
+  const failures: Error[] = [];
   const worker = async (): Promise<void> => {
     while (true) {
+      // 首个失败之后一个字节都不再新起：领 index 之前先看闸门。
+      if (failures.length > 0) {
+        return;
+      }
       const index = next;
       next++;
       if (index >= total) {
@@ -588,14 +604,17 @@ async function runDownloads(items: DownloadItem[], source: string,
       const item = unique[index];
       onCurrent(item.label);
       if (!isDownloaded(item)) {
-        ensureParent(item.destPath);
         try {
+          ensureParent(item.destPath);
           await downloadFile(fileCandidates(item.urls[0], source), item.destPath, item.sha1,
             onFileProgress);
         } catch (error) {
           const err = error as BusinessError;
-          // 带上文件标签，便于定位是哪个文件失败。
-          throw new Error(`${item.label}: ${err.message ?? ''}`);
+          // 带上文件标签，便于定位是哪个文件失败；只留第一个。
+          if (failures.length === 0) {
+            failures.push(new Error(`${item.label}: ${err.message ?? ''}`));
+          }
+          return;
         }
       }
       done++;
@@ -607,7 +626,11 @@ async function runDownloads(items: DownloadItem[], source: string,
   for (let i = 0; i < count; i++) {
     workers.push(worker());
   }
+  // worker 内部已吞掉所有异常 ⇒ 这里一定 settle 完毕才继续，绝不留下孤儿 worker。
   await Promise.all(workers);
+  if (failures.length > 0) {
+    throw failures[0];
+  }
 }
 
 // ---- 对外 API ----
