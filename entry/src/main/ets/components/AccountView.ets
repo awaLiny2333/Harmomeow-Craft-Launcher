@@ -1,5 +1,6 @@
 import { common, Want } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   BORDER_RADIUS, LAYOUT_MARGIN_HAIRLINE, LAYOUT_PADDING_SMALL, LAYOUT_SPACE, LAYOUT_SPACE_SMALL,
   OPACITY_SECONDARY
@@ -9,6 +10,9 @@ import { AccountState, getAccountState } from '../common/state/AccountState';
 import { asMsAuthError, DeviceCode, loginMicrosoft } from '../common/data/MicrosoftAuth';
 import { msAuthErrorText } from './MsAuthErrorText';
 import { SettingsTools } from '../common/data/SettingsTools';
+
+const LOG_DOMAIN = 0x0001;
+const LOG_TAG = 'AccountView';
 
 /**
  * 账户管理区块（与 GameDirsView / GameVersionsView 等平级，由 Index 挂载）。
@@ -121,25 +125,37 @@ export struct AccountView {
     this.state.msDeviceUserCode = '';
     this.state.msDeviceUri = '';
     this.state.msLoggingIn = true;
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'ms-login: start (updateId=%{public}s)',
+      updateId.length > 0 ? updateId : '(new)');
     try {
       const clientId = new SettingsTools(this.context()).msClientId();
       if (clientId.length === 0) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'ms-login: abort, no client id configured');
         this.state.msNoClientId = true;
         return;
       }
       const r = await loginMicrosoft((d: DeviceCode) => {
         this.state.msDeviceUserCode = d.userCode;
         this.state.msDeviceUri = d.verificationUri;
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'ms-login: device code shown to user (%{public}s)',
+          d.userCode);
       }, clientId);
       const tools = new AccountsTools(this.context());
       if (updateId.length > 0) {
         tools.updateMicrosoft(updateId, r);
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'ms-login: relinked account %{public}s as %{public}s',
+          updateId, r.name);
       } else {
         tools.createMicrosoft(r);
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'ms-login: created account %{public}s', r.name);
       }
       this.state.reload(this.context());
     } catch (e) {
-      this.state.msError = asMsAuthError(e as Error);
+      const err = asMsAuthError(e as Error);
+      this.state.msError = err;
+      hilog.error(LOG_DOMAIN, LOG_TAG,
+        'ms-login: failed code=%{public}s status=%{public}d detail=%{public}s',
+        err.code.toString(), err.status, err.detail);
     } finally {
       this.state.msLoggingIn = false;
       this.state.msDeviceUserCode = '';
@@ -156,11 +172,17 @@ export struct AccountView {
     this.state.msError = null;
     this.state.msNoClientId = false;
     this.state.msLoggingIn = true;
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'ms-refresh: start (account=%{public}s)', account.id);
     try {
       await new AccountsTools(this.context()).ensureMicrosoftFresh(account, true);
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'ms-refresh: ok (account=%{public}s)', account.id);
       this.state.reload(this.context());
     } catch (e) {
-      this.state.msError = asMsAuthError(e as Error);
+      const err = asMsAuthError(e as Error);
+      this.state.msError = err;
+      hilog.error(LOG_DOMAIN, LOG_TAG,
+        'ms-refresh: failed account=%{public}s code=%{public}s status=%{public}d detail=%{public}s',
+        account.id, err.code.toString(), err.status, err.detail);
     } finally {
       this.state.msLoggingIn = false;
     }
@@ -168,6 +190,7 @@ export struct AccountView {
 
   /** 退出登录：清 token，保留账户条目（可重新登录）。 */
   private logoutMs(account: Account): void {
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'ms-logout: clearing tokens (account=%{public}s)', account.id);
     new AccountsTools(this.context()).logoutMicrosoft(account.id);
     this.state.reload(this.context());
   }
@@ -184,15 +207,21 @@ export struct AccountView {
 
   /** 打开系统浏览器到校验地址。 */
   private openVerification(): void {
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'ms-login: opening browser for %{public}s',
+      this.state.msDeviceUri);
     try {
       const want: Want = {
         action: 'ohos.want.action.viewData',
         entities: ['entity.system.browsable'],
         uri: this.state.msDeviceUri,
       };
-      this.context().startAbility(want).catch(() => {
+      this.context().startAbility(want).catch((e: Error) => {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'ms-login: startAbility(viewData) failed: %{public}s',
+          e.message);
       });
-    } catch {
+    } catch (e) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'ms-login: cannot build browser intent: %{public}s',
+        (e as Error).message);
       return;
     }
   }

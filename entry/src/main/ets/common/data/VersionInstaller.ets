@@ -17,7 +17,7 @@ import { NEO_INSTALL_ABILITY, NEO_INSTALL_PROCESS_SUFFIX } from '../constants/La
 // 的 `TOOL_JVM_PLATFORM_SPOOF_ARGS`（内含 `SPOOF_OS_NAME` / `SPOOF_OS_VERSION`；游戏侧用法见
 // `MinecraftLauncher.buildLaunchArgv`）。Forge（`runForgeProcessors`）与 NeoForge
 // （`runNeoForgeProcessors`）两处工具 JVM 的 argv 都复用本前缀——工具 JVM 与游戏 JVM 必须伪装成同一个平台。
-import { TOOL_JVM_PLATFORM_SPOOF_ARGS } from '../constants/LaunchDefaults';
+import { TOOL_JVM_PLATFORM_SPOOF_ARGS, JVM_ENCODING_ARGS } from '../constants/LaunchDefaults';
 import { buildNeoForgeProcessorPlans, libraryNames, NeoForgeExpandContext, NeoForgeInstallProfileJson,
   NeoForgeLaunchJson, NeoForgeMergeModuleEntry, NeoForgeProcessorJob, NeoForgeProcessorPlan,
   NeoForgeProcessorSet, resolveMergeModuleEntries, stringArgs } from './NeoForgeInstaller';
@@ -1572,7 +1572,7 @@ interface ToolJvmRunRequest {
  * （解压 / 落盘中间产物）会用它，默认值在设备上不可写。
  */
 function toolJvmArgv(workDir: string, classpath: string[], mainClass: string, args: string[]): string[] {
-  const argv: string[] = ['java', ...TOOL_JVM_PLATFORM_SPOOF_ARGS,
+  const argv: string[] = ['java', ...TOOL_JVM_PLATFORM_SPOOF_ARGS, ...JVM_ENCODING_ARGS,
     `-Djava.io.tmpdir=${workDir}`, '-cp', classpath.join(':'), mainClass];
   for (const a of args) {
     argv.push(a);

@@ -243,14 +243,24 @@ export class AccountsTools {
         if (await validateMcToken(token)) {
           return account;
         }
-      } catch {
+        hilog.info(LOG_DOMAIN, LOG_TAG,
+          'freshness: token rejected by server, renewing (account=%{public}s)', account.id);
+      } catch (e) {
+        // 校验本身失败（网络/超时）≠ token 失效：不能因此强制用户重登，按原样放行。
+        hilog.warn(LOG_DOMAIN, LOG_TAG,
+          'freshness: validate threw, keeping token (account=%{public}s): %{public}s',
+          account.id, (e as Error).message);
         return account;
       }
     }
     const rt = account.refreshToken ?? '';
     if (rt.length === 0) {
+      hilog.error(LOG_DOMAIN, LOG_TAG,
+        'freshness: no refresh token, user must sign in again (account=%{public}s)', account.id);
       throw new MsAuthError(MsAuthErrorCode.NO_REFRESH_TOKEN);
     }
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'freshness: renewing now (account=%{public}s force=%{public}s)',
+      account.id, force ? 'yes' : 'no');
     const r = await refreshMicrosoft(rt, this.readMsClientId());
     const updated = this.updateMicrosoft(account.id, r);
     return updated ?? account;
